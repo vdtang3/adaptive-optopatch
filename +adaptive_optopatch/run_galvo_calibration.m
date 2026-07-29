@@ -101,8 +101,13 @@ save(fullfile(folder,"galvo_calibration_result.mat"), ...
 end
 
 function original=capture_state(daq,cameras)
-original=struct("global_props",daq.global_props,"wfm_data",daq.wfm_data, ...
-    "camera",cell(numel(cameras),1));
+% Assign these fields separately.  Passing a multi-element cell array to
+% struct(...) creates a structure array, which makes original.camera{k}
+% fail on rigs (such as the VU) that expose more than one camera.
+original=struct;
+original.global_props=daq.global_props;
+original.wfm_data=daq.wfm_data;
+original.camera=cell(numel(cameras),1);
 for k=1:numel(cameras)
     names=["roiJS","ROI","bin","daqtrig_period_ms","frametrigger_source", ...
         "frames_requested"];

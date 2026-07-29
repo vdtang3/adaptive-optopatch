@@ -28,7 +28,7 @@ if level=="attenuated_test"
             options.ModulatorVoltageOverride<=0
         issues(end+1)="Attenuated mode requires an explicit positive Pockels voltage.";
     end
-    if ~isempty(manifest.trials)
+    if isfield(manifest,"trials") && ~isempty(manifest.trials)
         p=adaptive_optopatch.flatten_pulse_schedule(manifest.trials.pulse_schedule{1});
         if height(p)>10
             issues(end+1)="Attenuated test mode is limited to 10 pulses.";
@@ -41,6 +41,23 @@ elseif level=="experimental"
     if strlength(options.HardwareValidationRecord)==0 || ...
             ~isfile(options.HardwareValidationRecord)
         issues(end+1)="A galvo hardware-validation record is required.";
+    else
+        try
+            saved=load(options.HardwareValidationRecord,"galvo_hardware_validation");
+            required=["passed","feedback_recorded","phase_validated", ...
+                "terminal_return_validated","calibration_id"];
+            if ~isfield(saved,"galvo_hardware_validation") || ...
+                    ~all(isfield(saved.galvo_hardware_validation,required)) || ...
+                    ~all([logical(saved.galvo_hardware_validation.passed), ...
+                    logical(saved.galvo_hardware_validation.feedback_recorded), ...
+                    logical(saved.galvo_hardware_validation.phase_validated), ...
+                    logical(saved.galvo_hardware_validation.terminal_return_validated)])
+                issues(end+1)="The galvo hardware-validation record is incomplete or did not pass.";
+            end
+        catch exception
+            issues(end+1)="Could not read hardware-validation record: "+ ...
+                string(exception.message);
+        end
     end
 end
 if level=="experimental", maximumTrials=Inf; else, maximumTrials=1; end

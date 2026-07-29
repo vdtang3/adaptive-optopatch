@@ -177,6 +177,44 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyEqual(loaded.calibration_id,"test_calibration");
         end
 
+        function enforcesStagedTwoPhotonReleaseLevels(testCase)
+            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",3);
+            trials=table(1,"2p_spiral","cell_001",false,1,{protocol}, ...
+                protocol.acquisition_duration_s,"test","planned","", ...
+                'VariableNames',{'trial_id','stimulation_mode','target_cell_id', ...
+                'is_null','target_index','pulse_schedule','acquisition_duration_s', ...
+                'output_tag','acquisition_status','experiment_directory'});
+            manifest=struct("trials",trials);
+            blocked=adaptive_optopatch.validate_2p_release_level( ...
+                manifest,"blocked_test","ConfirmTrajectoryTest",true);
+            testCase.verifyTrue(blocked.passed);
+            attenuated=adaptive_optopatch.validate_2p_release_level( ...
+                manifest,"attenuated_test","ConfirmTrajectoryTest",true, ...
+                "ConfirmLiveOutput",true,"ModulatorVoltageOverride",0.1);
+            testCase.verifyTrue(attenuated.passed);
+            rejected=adaptive_optopatch.validate_2p_release_level( ...
+                manifest,"attenuated_test","ConfirmTrajectoryTest",true, ...
+                "ModulatorVoltageOverride",0.1);
+            testCase.verifyFalse(rejected.passed);
+        end
+
+        function constructsTwoPhotonTestRunnerGui(testCase)
+            folder=tempname; mkdir(folder); cleanup=onCleanup(@()rmdir(folder,"s")); %#ok<NASGU>
+            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",3);
+            targets=struct("targets",struct("spiral_center_xy",[20 20])); %#ok<NASGU>
+            trials=table(1,"2p_spiral","cell_001",false,1,{protocol}, ...
+                protocol.acquisition_duration_s,"test","planned","", ...
+                'VariableNames',{'trial_id','stimulation_mode','target_cell_id', ...
+                'is_null','target_index','pulse_schedule','acquisition_duration_s', ...
+                'output_tag','acquisition_status','experiment_directory'});
+            manifest=struct("trials",trials); %#ok<NASGU>
+            save(fullfile(folder,"pattern_bundle.mat"),"targets");
+            save(fullfile(folder,"trial_manifest.mat"),"manifest");
+            gui=adaptive_optopatch.TwoPhotonTestRunnerApp([],folder,"Visible","off");
+            guiCleanup=onCleanup(@()delete(gui)); %#ok<NASGU>
+            testCase.verifyTrue(isvalid(gui.Figure));
+        end
+
         function evaluatesConservativeGalvoLimits(testCase)
             t=linspace(0,2*pi,4001)';
             x=0.05*cos(t); y=0.05*sin(t);

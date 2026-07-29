@@ -94,7 +94,7 @@ classdef TwoPhotonTestRunnerApp < handle
             protocol.acquisition_duration_s=protocol.events.offset_s(end)+ ...
                 protocol.post_delay_ms/1000;
             voltage=gui.Voltage.Value;
-            if gui.ReleaseLevel.Value=="blocked_test", voltage=0; end
+            if string(gui.ReleaseLevel.Value)=="blocked_test", voltage=0; end
             protocol.events.modulator_voltage(:)=voltage;
             target=gui.Targets.targets(trial.target_index);
         end

@@ -7,9 +7,202 @@ coordinates and supports two interchangeable stimulation backends:
 - `1p_dmd`: logical soma masks transformed by Luminos through `DMD_Blue`.
 - `2p_spiral`: soma centers and radii passed to the Luminos scanning device.
 
-The package does not start acquisitions or write to a rig unless an explicit
-adapter call is made. Scanner and DMD calibration remain the responsibility of
-the live Luminos instance.
+The planning GUI is read-only with respect to hardware. Separate guarded
+calibration, staged 2P, and automated 1P runners can start Luminos acquisitions
+only after their explicit confirmation controls are satisfied.
+
+## First installation on the VU
+
+### Requirements
+
+- Windows VU computer with MATLAB R2023b.
+- MATLAB Image Processing Toolbox.
+- Luminos with the synchronized combined Dev1/Dev2 implementation.
+- Dev1 and Dev2 clock/trigger cabling installed and tested.
+- This complete `adaptive_optopatch` folder, including the
+  `+adaptive_optopatch` and `tests` subfolders.
+
+Clone or copy the repository to a location visible to the VU, for example:
+
+```text
+Z:\Lab\code\adaptive_optopatch
+```
+
+In the same MATLAB process that will run Luminos:
+
+```matlab
+packageRoot = "Z:\Lab\code\adaptive_optopatch";
+addpath(packageRoot)
+
+which launch_reference_gui
+which launch_galvo_calibration_gui
+which launch_2p_test_runner_gui
+```
+
+Each `which` command should resolve to the copied repository. Do not add a
+different or older Adaptive Optopatch checkout earlier on the MATLAB path.
+
+Choose a persistent calibration/configuration location:
+
+```matlab
+setenv("ADAPTIVE_OPTOPATCH_CONFIG_ROOT", ...
+    "Z:\Lab\Virtual_Upright\AdaptiveOptopatchConfig")
+
+adaptive_optopatch.galvo_calibration_store_root()
+```
+
+The displayed path should end in `Virtual_Upright`. Put the `addpath` and
+`setenv` commands in the VU MATLAB `startup.m` after the first successful test,
+or configure the environment variable permanently in Windows.
+
+### Test 1: offline package tests
+
+This test does not require Luminos or connected hardware:
+
+```matlab
+cd(packageRoot)
+results = run_tests()
+```
+
+The returned test table must contain no failed or incomplete tests, and
+`run_tests` must return without an `assertSuccess` error. Do not proceed
+otherwise. Save the complete test report or screenshot with the Git commit
+identifier being tested:
+
+```matlab
+system("git rev-parse HEAD")
+```
+
+If the VU copy is not a Git checkout, record the commit identifier manually.
+
+### Test 2: start Luminos and inspect synchronization
+
+Start Luminos normally. Before any light-producing test:
+
+- confirm both DAQs are present as the combined DAQ;
+- select `Internal Dev1`;
+- select self-trigger;
+- confirm the DAQ is idle;
+- load a waveform protocol that contains the Camera 1 acquisition settings;
+- use `Dev2/ai1` and `Dev2/ai2` in the active protocol when galvo feedback
+  recording is desired.
+
+Run the read-only checker:
+
+```matlab
+report = verify_vu_setup(luminosApp)
+```
+
+Save or screenshot `report`. Before galvo calibration, a warning or failure
+about a missing active galvo calibration is expected. Errors involving missing
+Camera 1, combined DAQ, Chameleon scanner, `2P mod`, clock bridge, or trigger
+configuration must be resolved before continuing.
+
+### Test 3: blocked Camera 1/galvo calibration
+
+```matlab
+calibrationGui = launch_galvo_calibration_gui(luminosApp);
+```
+
+Use the defaults and:
+
+1. Mechanically block the 2P beam.
+2. Keep the Pockels command at `0 V`.
+3. Preview the 3-by-3, +/-0.1 V grid.
+4. Check **Blocked trajectory reviewed**.
+5. Acquire the grid.
+
+Spot detection is expected to fail with the beam blocked. Confirm instead that:
+
+- Camera 1 acquired;
+- the DAQs started together;
+- no abrupt terminal galvo jump occurred;
+- `2P mod` returned to `0 V`;
+- Camera 1 ROI/binning/trigger settings were restored;
+- the previous Luminos waveform was restored;
+- the acquisition folder contains `galvo_calibration_plan.mat`.
+
+Do not proceed to light if any restoration or motion check fails.
+
+### Test 4: attenuated calibration and persistence
+
+Use a uniform fluorescent sample, strong attenuation, and a low independently
+tested Pockels voltage. Run the grid again with
+**ARM attenuated calibration light** checked. Review every detected point,
+reject or correct bad centroids, and refit.
+
+Apply only a calibration for which both direct and leave-one-point-out RMSE
+pass. Click **Apply accepted calibration**, then verify:
+
+```matlab
+[artifact,activeStatus] = ...
+    adaptive_optopatch.get_active_galvo_calibration()
+```
+
+`activeStatus.found` should be true. Restart MATLAB and Luminos, restore the
+package path and environment variable, then run:
+
+```matlab
+reloadStatus = ...
+    adaptive_optopatch.load_active_galvo_calibration(luminosApp)
+```
+
+Both `reloadStatus.found` and `reloadStatus.applied` should be true, and the
+calibration identifier should match the one that was accepted.
+
+### Test 5: Camera 1 Snap and target planning
+
+Take a Camera 1 Snap in Luminos and launch:
+
+```matlab
+targetGui = launch_reference_gui(luminosApp);
+```
+
+Load the Snap MAT file, draw one test soma, choose `2p_spiral`, preview the
+spiral and parking point, and save the planning bundle. Confirm that exact
+calibrated spiral metrics are shown rather than “pending calibration.”
+
+### Test 6: blocked target acquisition
+
+```matlab
+runner = launch_2p_test_runner_gui( ...
+    luminosApp, ...
+    "Z:\path\to\the_saved_planning_bundle");
+```
+
+With the beam mechanically blocked:
+
+1. Select `blocked_test`.
+2. Use one test pulse.
+3. Keep Pockels at `0 V`.
+4. Click **Validate + preview**.
+5. Inspect the complete X, Y, and Pockels traces.
+6. Arrange oscilloscope monitoring or record `Dev2/ai1` and `Dev2/ai2`.
+7. Check **Blocked trajectory reviewed**.
+8. Run one acquisition.
+
+Confirm synchronization, frame timing, bounded tracking, terminal return,
+parking behavior, `2P mod = 0 V`, and settings restoration. Preserve
+`adaptive_optopatch_2p_waveforms.mat` and `output_data.mat`.
+
+### Test 7: attenuated target acquisition
+
+Only after Test 6 passes, use a strongly attenuated fluorescent sample:
+
+1. Select `attenuated_test`.
+2. Use one pulse.
+3. Enter a low tested Pockels voltage.
+4. Preview again.
+5. Check both confirmation boxes.
+6. Run one acquisition.
+
+Verify that the illuminated spiral lands on the selected Camera 1 target and
+that no light is commanded during movement or parking. Increase to at most ten
+test pulses only after the single-pulse run passes.
+
+The unrestricted `experimental` runner is intentionally unavailable until a
+structured hardware-validation record documents feedback, phase alignment, and
+terminal-return validation.
 
 ## Workflow
 
@@ -112,9 +305,10 @@ run = adaptive_optopatch.run_manifest(manifest, targets, ...
     "OutputDirectory", "/path/to/run_folder");
 ```
 
-This writes a resumable `run_checkpoint.mat`. Live 2P mode remains locked until
-a valid camera/galvo calibration and a commanded-versus-feedback recording are
-available.
+This writes a resumable `run_checkpoint.mat`. Staged blocked and attenuated 2P
+tests are available after a valid camera/galvo calibration; unrestricted
+experimental manifests remain locked pending commanded-versus-feedback
+validation.
 
 Inspect the first synchronized VU 2P acquisition without modifying it:
 
@@ -286,8 +480,8 @@ run = adaptive_optopatch.run_manifest(manifest, targets, ...
 
 The live path is implemented but has not yet been validated with light on the
 VU. The first run should therefore use a low OBIS setpoint, a low mod488 command,
-one trial (`Run next trial`), and a nonbiological fluorescent target. Live 2P
-execution remains locked pending its separate timing and calibration work.
+one trial (`Run next trial`), and a nonbiological fluorescent target. Staged 2P
+tests use the separate guarded runner described below.
 
 ## Camera 1 / galvo calibration
 
@@ -399,6 +593,66 @@ Camera 1 settings are restored.
 - [ ] Direct and leave-one-out RMSE both pass.
 - [ ] Accepted calibration applied and versioned artifact path recorded.
 - [ ] A fresh MATLAB/Luminos session successfully reloads the active artifact.
+
+## Staged 2P acquisition runner
+
+After saving a `2p_spiral` planning bundle and applying a passing Camera 1/galvo
+calibration, open the staged runner:
+
+```matlab
+runner = launch_2p_test_runner_gui( ...
+    luminosApp, ...
+    "Z:\path\to\adaptive_optopatch_fov_YYYYMMDD_HHMMSS");
+```
+
+The runner uses the first non-null cell in the planning bundle and automatically
+truncates its connectivity-screen schedule to the requested 1–10 test pulses.
+It does not modify the saved planning bundle.
+
+For the first target acquisition:
+
+1. Mechanically block the 2P beam.
+2. Select `blocked_test`.
+3. Leave **Test pulses** at `1`.
+4. Leave **Pockels (V)** at `0`.
+5. Click **Validate + preview** and inspect X, Y, and Pockels traces.
+6. Arrange an oscilloscope measurement or include `Dev2/ai1` and `Dev2/ai2`
+   in the active Luminos protocol for feedback recording.
+7. Check **Blocked trajectory reviewed**.
+8. Click **Run one test acquisition**.
+
+`blocked_test` forces every Pockels sample to `0 V`, regardless of the planning
+bundle or voltage field. It runs exactly one target acquisition.
+
+After inspecting the blocked run, use a strongly attenuated fluorescent sample:
+
+1. Select `attenuated_test`.
+2. Use one pulse initially.
+3. Enter a low tested positive Pockels voltage.
+4. Preview the exact waveforms.
+5. Check both **Blocked trajectory reviewed** and
+   **ARM attenuated 2P output**.
+6. Run one acquisition and confirm that the illuminated spiral lands at the
+   selected Camera 1 target.
+
+Attenuated mode is limited to one target and at most ten pulses. Full
+`experimental` manifests are not exposed in this GUI; they require a separate
+galvo hardware-validation record.
+
+Each successful test folder contains:
+
+- the normal Luminos camera files and `output_data.mat`;
+- `adaptive_optopatch_2p_waveforms.mat`, containing the exact X/Y/Pockels
+  sample vectors actually sent to the waveform builder;
+- `adaptive_optopatch_record` appended to `output_data.mat`, containing the
+  release level, active calibration artifact, DAQ synchronization state,
+  parking voltage, waveform summary, and expected Camera 1 frame mapping.
+
+On completion or error, cleanup commands `2P mod = 0 V`, restores the previous
+Luminos waveform and camera frame settings, and resets active DAQ tasks after an
+abort. A normal waveform ends at the selected dark parking point. An emergency
+abort may necessarily stop the DAQ immediately rather than completing the
+planned smooth return.
 
 ### Windows/R2023b installation check
 

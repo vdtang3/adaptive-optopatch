@@ -20,7 +20,8 @@ else
     add("Image Processing Toolbox","PASS",string(imageVersion(1).Version));
 end
 
-installed=string({ver.Name});
+installedProducts=ver;
+installed=string({installedProducts.Name});
 luminosToolboxes=["Instrument Control Toolbox", ...
     "Optimization Toolbox", ...
     "Image Processing Toolbox", ...
@@ -37,7 +38,10 @@ end
 packageFunctions=["adaptive_optopatch.ReferencePreparationApp", ...
     "adaptive_optopatch.read_reference_snapshot", ...
     "adaptive_optopatch.OnePhotonRunnerApp", ...
+    "adaptive_optopatch.GalvoCalibrationApp", ...
+    "adaptive_optopatch.TwoPhotonTestRunnerApp", ...
     "adaptive_optopatch.run_1p_manifest", ...
+    "adaptive_optopatch.run_2p_manifest", ...
     "adaptive_optopatch.luminos_event_waveform"];
 missingPackage=packageFunctions(arrayfun(@(name)isempty(which(name)),packageFunctions));
 if isempty(missingPackage)
@@ -87,7 +91,56 @@ else
             strjoin(hardware.daq_sync.clock_bridge,", "), ...
             strjoin(hardware.daq_sync.default_trigger,", ")));
     catch exception
-        add("Live 1P hardware","FAIL",string(exception.message));
+        add("Live 1P hardware","WARN", ...
+            "Optional for the 2P workflow: "+string(exception.message));
+    end
+    try
+        profile=adaptive_optopatch.virtual_upright_2p_profile();
+        daq=luminosApp.getDevice("DAQ");
+        scanner=luminosApp.getDevice("Scanning_Device","name",profile.scanner.name);
+        modulator=luminosApp.getDevice("NI_DAQ_Modulator","name",profile.modulator.name);
+        cameras=luminosApp.getDevice("Camera");
+        serials=arrayfun(@(camera)strip(erase(string(camera.cam_id),"S/N: ")),cameras);
+        if numel(daq)~=1 || numel(scanner)~=1 || numel(modulator)~=1 || ...
+                ~any(serials=="001125")
+            error("adaptive_optopatch:TwoPhotonHardwareMissing", ...
+                "Combined DAQ, Chameleon scanner, 2P mod, or Camera 1 is missing.");
+        end
+        if string(scanner.galvox_physport)~=profile.scanner.x_port || ...
+                string(scanner.galvoy_physport)~=profile.scanner.y_port || ...
+                string(modulator.port)~=profile.modulator.port
+            error("adaptive_optopatch:UnexpectedTwoPhotonPorts", ...
+                "Expected Dev2/ao0, Dev2/ao1, and Dev1/ao3.");
+        end
+        sync=adaptive_optopatch.capture_luminos_daq_sync(daq);
+        if ~sync.daq_master || ...
+                ~ismember(sync.selected_master_device,["Dev1","Dev2"])
+            error("adaptive_optopatch:MultiDaqSyncNotReady", ...
+                "Select Internal Dev1 or Internal Dev2 and self-trigger.");
+        end
+        add("Live 2P hardware","PASS",sprintf( ...
+            "Camera 1, Chameleon X/Y, and 2P mod found; master %s at %.0f Hz.", ...
+            sync.selected_master_device,sync.sample_rate_hz));
+    catch exception
+        add("Live 2P hardware","FAIL",string(exception.message));
+    end
+    try
+        [artifact,active]=adaptive_optopatch.get_active_galvo_calibration();
+        if ~active.found
+            add("Active galvo calibration","WARN", ...
+                "No active calibration yet; expected before the calibration workflow.");
+        else
+            validation=adaptive_optopatch.validate_galvo_calibration_artifact( ...
+                artifact,luminosApp);
+            if validation.passed
+                add("Active galvo calibration","PASS", ...
+                    "Validated calibration "+artifact.calibration_id+".");
+            else
+                add("Active galvo calibration","FAIL",strjoin(validation.issues," "));
+            end
+        end
+    catch exception
+        add("Active galvo calibration","FAIL",string(exception.message));
     end
 end
 
@@ -100,10 +153,14 @@ else
         try
             saved=load(manifestPath,"manifest");
             if isfield(saved,"manifest") && ...
-                    all(string(saved.manifest.trials.stimulation_mode)=="1p_dmd")
-                add("Planning bundle","PASS","A 1p_dmd manifest and target bundle were found.");
+                    all(ismember(string(saved.manifest.trials.stimulation_mode), ...
+                    ["1p_dmd","2p_spiral"]))
+                modes=unique(string(saved.manifest.trials.stimulation_mode));
+                add("Planning bundle","PASS", ...
+                    "A "+strjoin(modes,", ")+" manifest and target bundle were found.");
             else
-                add("Planning bundle","FAIL","The manifest is missing or is not entirely 1p_dmd.");
+                add("Planning bundle","FAIL", ...
+                    "The manifest is missing or has an unsupported stimulation mode.");
             end
         catch exception
             add("Planning bundle","FAIL",string(exception.message));

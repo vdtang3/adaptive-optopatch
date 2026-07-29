@@ -53,11 +53,18 @@ if ~sync.daq_master || sync.selected_master_device~="Dev1"
 end
 original=capture_state(daq,cameras);
 cleanup=onCleanup(@()restore_state(app,daq,cameras,original,modulator,profile)); %#ok<NASGU>
-modulator.level=profile.modulator.dark_v;
-configure_camera(camera,options.CameraRoi,plan.camera_frame_rate_hz);
+% Do not write modulator.level here.  On the synchronized multi-DAQ VU
+% branch that property setter can call the side-effect-only DAQ_MEX gateway
+% while requesting an output, producing "output arguments not assigned".
+% The acquired AO waveform explicitly drives Dev1/ao3 to pockels_v (all
+% zeros for the blocked test), and the mechanical beam block remains the
+% authoritative off state.
+run_stage("configuring Camera 1", ...
+    @()configure_camera(camera,options.CameraRoi,plan.camera_frame_rate_hz));
 for k=1:numel(cameras)
     if k==cameraIndex
-        cameras(k).AutoN(plan.duration_s);
+        run_stage("setting the Camera 1 frame count", ...
+            @()cameras(k).AutoN(plan.duration_s));
     else
         try, cameras(k).frametrigger_source="Off"; catch, end
     end
@@ -69,10 +76,13 @@ daq.global_props=globalProps; daq.wfm_data=wfmData; daq.waveforms_built=false;
 app.acquisition_active=true;
 bins=arrayfun(@(c)c.bin,cameras);
 if strlength(options.OutputRoot)>0
-    Waveform_Camera_Sync_Acquisition(app,bins,"tag","galvo_calibration", ...
-        "fullpath",char(options.OutputRoot));
+    run_stage("starting the synchronized Luminos acquisition", ...
+        @()Waveform_Camera_Sync_Acquisition(app,bins, ...
+        "tag","galvo_calibration","fullpath",char(options.OutputRoot)));
 else
-    Waveform_Camera_Sync_Acquisition(app,bins,"tag","galvo_calibration");
+    run_stage("starting the synchronized Luminos acquisition", ...
+        @()Waveform_Camera_Sync_Acquisition(app,bins, ...
+        "tag","galvo_calibration"));
 end
 started=tic;
 while ~logical(app.exp_complete)
@@ -98,6 +108,15 @@ result=adaptive_optopatch.analyze_galvo_calibration_acquisition(folder,plan);
 calibration_result=result; %#ok<NASGU>
 save(fullfile(folder,"galvo_calibration_result.mat"), ...
     "calibration_result","-v7.3");
+end
+
+function run_stage(stage,operation)
+try
+    operation();
+catch exception
+    error("adaptive_optopatch:GalvoCalibrationLiveApiFailure", ...
+        "Error while %s: %s",stage,exception.message);
+end
 end
 
 function original=capture_state(daq,cameras)

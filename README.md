@@ -520,6 +520,24 @@ The acquisition folder contains `output_data.mat`, `frames1.bin`,
 archive the exact commands, frame assignment, averaged spot images, detections,
 transform, residuals, and held-out QC.
 
+If the moving spot was visible but too few points passed detection, update the
+package and reanalyze the existing acquisition without exposing the sample
+again:
+
+```matlab
+calibrationFolder = "D:\path\to\the\galvo_calibration_acquisition";
+savedPlan = load(fullfile(calibrationFolder,"galvo_calibration_plan.mat"));
+calibration_result = ...
+    adaptive_optopatch.analyze_galvo_calibration_acquisition( ...
+    calibrationFolder,savedPlan.calibration_plan);
+save(fullfile(calibrationFolder,"galvo_calibration_result.mat"), ...
+    "calibration_result","-v7.3");
+```
+
+The detector subtracts the median stationary image across grid positions before
+finding the moving spot. Inspect `calibration_result.points`, including
+`detection_snr` and `use`, before applying the result.
+
 Applying a passing calibration also creates a versioned rig-local artifact and
 an `active_galvo_calibration.mat` pointer. By default these are stored under:
 

@@ -24,6 +24,7 @@ if numel(daq)~=1
     error("adaptive_optopatch:CombinedDaqRequired", ...
         "Expected one combined Luminos DAQ object, found %d.",numel(daq));
 end
+require_multidaq_luminos(daq);
 scanner=app.getDevice("Scanning_Device","name",profile.scanner.name);
 modulator=app.getDevice("NI_DAQ_Modulator","name",profile.modulator.name);
 cameras=app.getDevice("Camera");
@@ -64,7 +65,8 @@ run_stage("configuring Camera 1", ...
 for k=1:numel(cameras)
     if k==cameraIndex
         run_stage("setting the Camera 1 frame count", ...
-            @()cameras(k).AutoN(plan.duration_s));
+            @()set_camera_frame_count(cameras(k),plan.duration_s, ...
+            plan.camera_frame_rate_hz));
     else
         try, cameras(k).frametrigger_source="Off"; catch, end
     end
@@ -108,6 +110,35 @@ result=adaptive_optopatch.analyze_galvo_calibration_acquisition(folder,plan);
 calibration_result=result; %#ok<NASGU>
 save(fullfile(folder,"galvo_calibration_result.mat"), ...
     "calibration_result","-v7.3");
+end
+
+function set_camera_frame_count(camera,durationS,frameRateHz)
+% In synchronous triggering mode the DAQ period, not Camera.exposuretime,
+% determines the frame cadence. Camera.AutoN uses exposuretime and therefore
+% under-requests frames whenever those two values differ.
+camera.frames_requested=ceil(durationS*frameRateHz);
+end
+
+function require_multidaq_luminos(daq)
+requiredMethods=["Resolve_Buffered_Sync","Route_Clock_Bridge", ...
+    "Disconnect_Clock_Bridge"];
+requiredProperties=["clock_bridge","master_clock_task_index", ...
+    "clock_master_device"];
+missingMethods=requiredMethods(~arrayfun(@(name)ismethod(daq,name),requiredMethods));
+missingProperties=requiredProperties(~arrayfun(@(name)isprop(daq,name),requiredProperties));
+if ~isempty(missingMethods) || ~isempty(missingProperties)
+    details=strings(0,1);
+    if ~isempty(missingMethods)
+        details(end+1)="missing methods: "+strjoin(missingMethods,", ");
+    end
+    if ~isempty(missingProperties)
+        details(end+1)="missing properties: "+strjoin(missingProperties,", ");
+    end
+    error("adaptive_optopatch:IncompatibleLuminosMultiDaqApi", ...
+        ["This Luminos checkout does not provide the synchronized multi-DAQ " ...
+         "API required for Dev1 Pockels plus Dev2 galvos (%s). Use a branch " ...
+         "that includes VU_MultiDAQ_Synchronization."],strjoin(details,"; "));
+end
 end
 
 function run_stage(stage,operation)

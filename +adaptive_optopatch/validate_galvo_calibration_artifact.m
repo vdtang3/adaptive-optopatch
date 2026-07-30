@@ -36,9 +36,23 @@ if string(artifact.scanner_name)~=profile.scanner.name || ...
 end
 if isfield(c,"galvo_volts") && isfield(c,"camera_pixels")
     try
-        recovered=adaptive_optopatch.camera_to_galvo_volts(c.tform,c.camera_pixels);
-        if max(abs(recovered-c.galvo_volts),[],"all")>1e-6
-            issues(end+1)="Saved transform fails inverse-coordinate validation.";
+        % Measured camera_pixels contain the localization residual used to
+        % calculate the fit, so inverting those measurements should not be
+        % expected to reproduce the commanded voltages exactly. Validate
+        % the mathematical transform by round-tripping its fitted pixels.
+        [predictedX,predictedY]=transformPointsForward(c.tform, ...
+            c.galvo_volts(:,1),c.galvo_volts(:,2));
+        predictedPixels=[double(predictedX(:)) double(predictedY(:))];
+        recovered=adaptive_optopatch.camera_to_galvo_volts( ...
+            c.tform,predictedPixels);
+        inverseError=max(abs(recovered-c.galvo_volts),[],"all");
+        inverseTolerance=1e-6;
+        if inverseError>inverseTolerance
+            issues(end+1)=sprintf([ ...
+                'Saved transform fails inverse-coordinate validation: ' ...
+                'maximum round-trip error %.9g V exceeds %.9g V ' ...
+                '(transform class %s).'], ...
+                inverseError,inverseTolerance,class(c.tform));
         end
     catch exception
         issues(end+1)="Transform validation failed: "+string(exception.message);

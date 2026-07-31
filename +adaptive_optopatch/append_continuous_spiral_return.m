@@ -1,5 +1,5 @@
 function [xOut,yOut] = append_continuous_spiral_return(x,y,centerXY)
-%APPEND_CONTINUOUS_SPIRAL_RETURN Return inward while angle keeps increasing.
+%APPEND_CONTINUOUS_SPIRAL_RETURN Return inward without reversing rotation.
 arguments
     x (:,1) double
     y (:,1) double
@@ -26,13 +26,17 @@ end
 theta(1:firstNonzero-1)=theta(firstNonzero);
 theta=unwrap(theta);
 
-% Mirror the outbound radial schedule, but mirror the positive angular
-% increments forward in time. This produces an interleaved inward spiral
-% with no reversal of rotational direction.
+% Mirror the outbound radial schedule and continue its angular increments
+% forward in time. A camera/galvo calibration may reverse handedness, so a
+% valid outbound spiral can be consistently clockwise (negative dtheta) or
+% counterclockwise (positive dtheta). Only an actual sign reversal is
+% unsafe here.
 dtheta=diff(theta);
-if any(dtheta < -1e-9)
+significant=dtheta(abs(dtheta)>1e-9);
+if ~isempty(significant) && any(significant>0) && any(significant<0)
     error("adaptive_optopatch:NonmonotonicOutboundAngle", ...
-        "The outbound spiral angle must be monotonically increasing.");
+        ["The outbound spiral reverses rotational direction. Its angle " + ...
+         "must be monotonic, either increasing or decreasing."]);
 end
 returnRadius=radius(end-1:-1:1);
 returnTheta=theta(end)+cumsum(dtheta(end:-1:1));

@@ -310,6 +310,30 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyGreaterThanOrEqual(min(diff(angle)),-1e-9);
         end
 
+        function acceptsClockwiseContinuousAngularReturn(testCase)
+            t=(0:199)'; r=sqrt(t/199); theta=-4*pi*r;
+            x=r.*cos(theta); y=r.*sin(theta);
+            [xd,yd]=adaptive_optopatch.append_continuous_spiral_return( ...
+                x,y,[0 0]);
+            nonzero=hypot(xd,yd)>1e-10;
+            angle=unwrap(atan2(yd(nonzero),xd(nonzero)));
+            testCase.verifyLessThanOrEqual(max(diff(angle)),1e-9);
+            testCase.verifyEqual([xd(end) yd(end)],[0 0],"AbsTol",1e-12);
+        end
+
+        function handlesHandednessReversingScannerCalibration(testCase)
+            tform=affinetform2d([0 100 500;100 0 400;0 0 1]);
+            cycle=adaptive_optopatch.generate_2p_spiral_cycle( ...
+                tform,[550 450],10,50);
+            testCase.verifyEqual(cycle.galvo_angle_direction,"decreasing");
+            center=cycle.center_v;
+            outbound=[cycle.x_v(1:cycle.outbound_samples)-center(1), ...
+                cycle.y_v(1:cycle.outbound_samples)-center(2)];
+            nonzero=hypot(outbound(:,1),outbound(:,2))>1e-10;
+            angle=unwrap(atan2(outbound(nonzero,2),outbound(nonzero,1)));
+            testCase.verifyLessThanOrEqual(max(diff(angle)),1e-9);
+        end
+
         function readsLuminosCameraSnapshot(testCase)
             folder=tempname; mkdir(folder); cleanup=onCleanup(@()rmdir(folder,"s")); %#ok<NASGU>
             expected=uint16([1 2 3;4 5 6]);

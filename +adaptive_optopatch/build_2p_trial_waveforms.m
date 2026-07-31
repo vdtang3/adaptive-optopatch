@@ -24,19 +24,29 @@ cycle.cycle_samples=numel(cycle.x_v);
 parkV=adaptive_optopatch.camera_to_galvo_volts(tform,target.parking_point_xy);
 centerV=cycle.center_v;
 fs=options.SampleRateHz;
-nTotal=ceil(protocol.acquisition_duration_s*fs);
-x=repmat(parkV(1),nTotal,1); y=repmat(parkV(2),nTotal,1);
-pockels=repmat(options.DarkVoltage,nTotal,1);
 moveIn=adaptive_optopatch.minimum_jerk_transition(parkV,centerV,fs, ...
     "MaximumVelocityVPerS",options.MaximumVelocityVPerS, ...
     "MaximumAccelerationVPerS2",options.MaximumAccelerationVPerS2);
 moveOut=adaptive_optopatch.minimum_jerk_transition(centerV,parkV,fs, ...
     "MaximumVelocityVPerS",options.MaximumVelocityVPerS, ...
     "MaximumAccelerationVPerS2",options.MaximumAccelerationVPerS2);
+requestedTotal=ceil(protocol.acquisition_duration_s*fs);
+% Grow only the final acquisition tail when needed. Pulse timing and every
+% end-to-start dark interval remain exactly as requested.
+finalOn=max(1,floor(pulses.onset_s(end)*fs)+1);
+finalOff=ceil(pulses.offset_s(end)*fs);
+finalLightCount=finalOff-finalOn+1;
+finalRemainder=mod(finalLightCount,cycle.cycle_samples);
+finalFinishCount=mod(cycle.cycle_samples-finalRemainder,cycle.cycle_samples);
+requiredTotal=finalOff+finalFinishCount+size(moveOut,1);
+nTotal=max(requestedTotal,requiredTotal);
+x=repmat(parkV(1),nTotal,1); y=repmat(parkV(2),nTotal,1);
+pockels=repmat(options.DarkVoltage,nTotal,1);
 cursor=1;
 perPulse=repmat(struct("on_sample",0,"off_sample",0, ...
     "cycle_count_during_light",0,"cycle_fraction_during_light",0, ...
-    "dark_completion_samples",0),height(pulses),1);
+    "dark_completion_samples",0,"center_return_sample",0, ...
+    "parking_arrival_sample",0),height(pulses),1);
 for k=1:height(pulses)
     on=max(1,floor(pulses.onset_s(k)*fs)+1);
     off=min(nTotal,ceil(pulses.offset_s(k)*fs));
@@ -74,6 +84,8 @@ for k=1:height(pulses)
     perPulse(k).cycle_count_during_light=floor(lightCount/cycle.cycle_samples);
     perPulse(k).cycle_fraction_during_light=lightCount/cycle.cycle_samples;
     perPulse(k).dark_completion_samples=finishCount;
+    perPulse(k).center_return_sample=finishEnd;
+    perPulse(k).parking_arrival_sample=parkEnd;
 end
 report=adaptive_optopatch.evaluate_galvo_waveform(x,y,fs, ...
     "CommandBoundsVolts",options.CommandBoundsV, ...
@@ -87,5 +99,8 @@ end
 waveforms=struct("schema_version","0.1.0","sample_rate_hz",fs, ...
     "x_v",x,"y_v",y,"pockels_v",pockels,"cycle",cycle, ...
     "parking_camera_xy",target.parking_point_xy,"parking_v",parkV, ...
-    "per_pulse",perPulse,"preflight",report);
+    "per_pulse",perPulse,"preflight",report, ...
+    "requested_acquisition_duration_s",requestedTotal/fs, ...
+    "actual_acquisition_duration_s",nTotal/fs, ...
+    "automatic_extension_s",(nTotal-requestedTotal)/fs);
 end

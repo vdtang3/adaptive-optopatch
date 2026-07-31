@@ -330,6 +330,43 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyEqual(info.snapshot_directory,string(folder));
         end
 
+
+        function mapsSnapshotRoisIntoFullCameraCoordinates(testCase)
+            image=zeros(20,30,"single");
+            masks=false(20,30,1); masks(7:9,9:11,1)=true;
+            camera=struct("x_world_limits",[600 630], ...
+                "y_world_limits",[756 776]);
+            scanner=struct("tform",affinetform2d( ...
+                [100 0 600;0 100 756;0 0 1]),"sample_rate",200000);
+            metadata=struct("rig_name","Virtual_Upright", ...
+                "voltage_camera",camera,"scanner",scanner);
+            reference=adaptive_optopatch.create_reference_model( ...
+                image,masks,metadata,"MicronsPerPixel",1);
+            testCase.verifyEqual(reference.cells.image_centroid_xy,[10 8], ...
+                "AbsTol",1e-12);
+            testCase.verifyEqual(reference.cells.camera_centroid_xy, ...
+                [609.5 763.5],"AbsTol",1e-12);
+            targets=adaptive_optopatch.build_target_bundle(reference, ...
+                "SpiralRadiusUm",2,"PulseDurationMs",5);
+            testCase.verifyEqual(targets.targets.spiral_preview_center_xy, ...
+                [10 8],"AbsTol",1e-12);
+            testCase.verifyEqual(targets.targets.spiral_center_xy, ...
+                [609.5 763.5],"AbsTol",1e-12);
+            testCase.verifyTrue(targets.targets.spiral_cycle_metrics.calibrated);
+            validation=adaptive_optopatch.validate_2p_planning_bundle(targets);
+            testCase.verifyTrue(validation.passed);
+        end
+
+        function rejectsPreCoordinateFixTwoPhotonBundle(testCase)
+            oldTargets=struct("schema_version","0.1.0", ...
+                "coordinate_space","voltage_camera_acquired_roi", ...
+                "targets",struct("spiral_center_xy",[20 30], ...
+                "spiral_radius_pixels",10,"parking_point_xy",[40 30]));
+            validation=adaptive_optopatch.validate_2p_planning_bundle(oldTargets);
+            testCase.verifyFalse(validation.passed);
+            testCase.verifyTrue(any(contains(validation.issues,"schema 0.2.0")));
+        end
+
         function extractsBackgroundCorrectedRoiTrace(testCase)
             folder=tempname; mkdir(folder); cleanup=onCleanup(@()rmdir(folder,"s")); %#ok<NASGU>
             camera=struct("deviceType","Camera","name","Voltage", ...

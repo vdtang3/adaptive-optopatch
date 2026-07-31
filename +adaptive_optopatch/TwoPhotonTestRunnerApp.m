@@ -48,6 +48,13 @@ classdef TwoPhotonTestRunnerApp < handle
                 error("adaptive_optopatch:InvalidTwoPhotonBundle", ...
                     "Select a planning bundle saved in 2p_spiral mode.");
             end
+            validation=adaptive_optopatch.validate_2p_planning_bundle(a.targets);
+            if ~validation.passed
+                error("adaptive_optopatch:OutdatedTwoPhotonBundle", ...
+                    "This planning bundle cannot be run safely. Load the "+ ...
+                    "Snap and save a new planning bundle with the updated "+ ...
+                    "GUI. Details: %s",strjoin(validation.issues," "));
+            end
             gui.BundleFolder=folder; gui.Targets=a.targets; gui.Manifest=b.manifest;
         end
         function buildUI(gui,visible)

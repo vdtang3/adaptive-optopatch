@@ -14,8 +14,8 @@ end
 [snapshotDirectory,baseName,extension]=fileparts(snapshotPath);
 if ~strcmpi(extension,".mat")
     error("adaptive_optopatch:SnapshotMatRequired", ...
-        ["Select the .mat file written by the Luminos Snap button. " ...
-         "The TIFF does not contain the camera and DMD coordinate metadata."]);
+        "Select the .mat file written by the Luminos Snap button. "+ ...
+        "The TIFF does not contain the camera and DMD coordinate metadata.");
 end
 
 loaded=load(snapshotPath,"snap");

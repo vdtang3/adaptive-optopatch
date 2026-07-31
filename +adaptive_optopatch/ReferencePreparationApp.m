@@ -138,8 +138,8 @@ classdef ReferencePreparationApp < handle
                 title(app.Axes,sprintf("%s — %s snapshot", ...
                     info.metadata.rig_name,info.camera_name), ...
                     "Interpreter","none");
-                app.setStatus(sprintf(["Loaded snapshot:\n%s\nCamera: %s, " ...
-                    "%d × %d pixels, binning %.3g."], ...
+                app.setStatus(sprintf(['Loaded snapshot:\n%s\nCamera: %s, ' ...
+                    '%d × %d pixels, binning %.3g.'], ...
                     info.snapshot_path,info.camera_name, ...
                     info.image_size(2),info.image_size(1),info.camera_bin));
                 app.restoreLatestPlanning(info.snapshot_directory);
@@ -250,6 +250,15 @@ classdef ReferencePreparationApp < handle
             end
             [liveScanner,app.ScannerWarning]= ...
                 adaptive_optopatch.get_live_scanner_calibration(app.LuminosApp);
+            if isempty(liveScanner)
+                [persistedScanner,persistedWarning]=persisted_scanner_calibration();
+                if ~isempty(persistedScanner)
+                    liveScanner=persistedScanner;
+                    app.ScannerWarning="";
+                elseif strlength(persistedWarning)>0
+                    app.ScannerWarning=app.ScannerWarning+" "+persistedWarning;
+                end
+            end
             scannerSampleRate=200000;
             if ~isempty(liveScanner)
                 reference.scanner=liveScanner;
@@ -364,14 +373,15 @@ classdef ReferencePreparationApp < handle
                 theta=linspace(0,2*pi,100);
                 for k=1:numel(targets.targets)
                     if app.Mode.Value=="2p_spiral"
-                        c=targets.targets(k).spiral_center_xy; r=targets.targets(k).spiral_radius_pixels;
+                        c=targets.targets(k).spiral_preview_center_xy;
+                        r=targets.targets(k).spiral_preview_radius_pixels;
                         plot(app.Axes,c(1)+r*cos(theta),c(2)+r*sin(theta),"c--", ...
                             "LineWidth",1.2,"Tag","TargetPreview");
                         spiral=adaptive_optopatch.generate_spiral_preview(c,r, ...
                             targets.targets(k).spiral_density_points_per_volt);
                         plot(app.Axes,spiral(:,1),spiral(:,2),"c-", ...
                             "LineWidth",1.1,"Tag","TargetPreview");
-                        park=targets.targets(k).parking_point_xy;
+                        park=targets.targets(k).parking_preview_point_xy;
                         plot(app.Axes,park(1),park(2),"mo","MarkerFaceColor","m", ...
                             "MarkerSize",7,"Tag","TargetPreview");
                         plot(app.Axes,[c(1) park(1)],[c(2) park(2)],"m--", ...
@@ -497,5 +507,30 @@ end
 function set_if_present(control,parameters,name)
 if isfield(parameters,name)
     control.Value=parameters.(name);
+end
+end
+
+function [calibration,warningMessage]=persisted_scanner_calibration()
+calibration=struct([]); warningMessage="";
+try
+    [artifact,status]=adaptive_optopatch.get_active_galvo_calibration();
+    if ~status.found, return; end
+    validation=adaptive_optopatch.validate_galvo_calibration_artifact(artifact);
+    if ~validation.passed
+        warningMessage="Persisted calibration was rejected: "+ ...
+            strjoin(validation.issues,"; ");
+        return
+    end
+    profile=adaptive_optopatch.virtual_upright_2p_profile();
+    calibration=struct("name",artifact.scanner_name, ...
+        "device_type","Scanning_Device", ...
+        "tform",artifact.calibration.tform, ...
+        "sample_rate",profile.scanner.sample_rate_hz, ...
+        "source","active_galvo_calibration", ...
+        "calibration_id",artifact.calibration_id, ...
+        "transform_direction","galvo_volts_to_camera_pixels");
+catch exception
+    warningMessage="Could not load persisted scanner calibration: "+ ...
+        string(exception.message);
 end
 end

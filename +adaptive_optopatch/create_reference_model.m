@@ -45,9 +45,13 @@ for i = 1:nCells
     edgeDistance = min([min(x)-1, size(mask,2)-max(x), ...
         min(y)-1, size(mask,1)-max(y)]);
     equivRadiusPx = sqrt(stats.Area/pi);
+    imageCentroid=stats.Centroid;
+    cameraCentroid=image_to_camera_coordinates( ...
+        imageCentroid,metadata.voltage_camera,size(referenceImage));
     cellRecord = struct( ...
         "cell_id", cellIds(i), ...
-        "camera_centroid_xy", stats.Centroid, ...
+        "image_centroid_xy",imageCentroid, ...
+        "camera_centroid_xy",cameraCentroid, ...
         "area_pixels", stats.Area, ...
         "equivalent_radius_pixels", equivRadiusPx, ...
         "mean_reference_intensity", stats.MeanIntensity, ...
@@ -63,13 +67,15 @@ for i = 1:nCells
 end
 
 reference = struct;
-reference.schema_version = "0.1.0";
+reference.schema_version = "0.2.0";
 reference.created_at = string(datetime("now", "TimeZone", "local"));
 reference.fov_id = options.FovId;
 reference.source_experiment = options.SourceExperiment;
 reference.reference_image = single(referenceImage);
 reference.roi_masks = roiMasks;
 reference.image_size = size(referenceImage);
+reference.image_coordinate_space="snapshot_intrinsic_pixels";
+reference.camera_coordinate_space="voltage_camera_full_sensor_pixels";
 reference.microns_per_pixel = options.MicronsPerPixel;
 reference.voltage_camera = metadata.voltage_camera;
 if isfield(metadata,"stimulation_dmd"), reference.stimulation_dmd=metadata.stimulation_dmd; end
@@ -77,4 +83,18 @@ if isfield(metadata,"snapshot_path"), reference.source_snapshot=metadata.snapsho
 if isfield(metadata,"scanner"), reference.scanner=metadata.scanner; end
 reference.rig_name = metadata.rig_name;
 reference.cells = cells;
+end
+
+function cameraXY=image_to_camera_coordinates(imageXY,camera,imageSize)
+cameraXY=double(imageXY);
+if isfield(camera,"x_world_limits") && numel(camera.x_world_limits)==2
+    xLimits=double(camera.x_world_limits);
+    cameraXY(:,1)=xLimits(1)+(cameraXY(:,1)-0.5)* ...
+        diff(xLimits)/imageSize(2);
+end
+if isfield(camera,"y_world_limits") && numel(camera.y_world_limits)==2
+    yLimits=double(camera.y_world_limits);
+    cameraXY(:,2)=yLimits(1)+(cameraXY(:,2)-0.5)* ...
+        diff(yLimits)/imageSize(1);
+end
 end

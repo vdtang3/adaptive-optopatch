@@ -18,6 +18,13 @@ arguments
     options.TimeoutMarginS (1,1) double {mustBePositive} = 30
     options.TestPulseCount (1,1) double {mustBePositive,mustBeInteger} = 1
 end
+bundleValidation=adaptive_optopatch.validate_2p_planning_bundle(targets);
+if ~bundleValidation.passed
+    error("adaptive_optopatch:OutdatedTwoPhotonBundle", ...
+        "This planning bundle cannot be run safely. Regenerate it from "+ ...
+        "the Camera 1 Snap using the updated planning GUI. Details: %s", ...
+        strjoin(bundleValidation.issues," "));
+end
 if options.ReleaseLevel~="experimental"
     if options.TestPulseCount>10
         error("adaptive_optopatch:TooManyTestPulses", ...

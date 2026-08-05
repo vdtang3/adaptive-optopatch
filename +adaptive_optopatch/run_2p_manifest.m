@@ -5,7 +5,8 @@ arguments
     targets (1,1) struct
     app
     options.ReleaseLevel (1,1) string {mustBeMember(options.ReleaseLevel, ...
-        ["blocked_test","attenuated_test","experimental"])} = "blocked_test"
+        ["blocked_test","attenuated_test","pilot_single", ...
+        "pilot_mixed_trains","experimental"])} = "blocked_test"
     options.OutputDirectory (1,1) string = ""
     options.OutputRoot (1,1) string = ""
     options.Resume (1,1) logical = true
@@ -17,6 +18,7 @@ arguments
     options.HardwareValidationRecord (1,1) string = ""
     options.TimeoutMarginS (1,1) double {mustBePositive} = 30
     options.TestPulseCount (1,1) double {mustBePositive,mustBeInteger} = 1
+    options.AllowCalibrationExtrapolation (1,1) logical = false
 end
 bundleValidation=adaptive_optopatch.validate_2p_planning_bundle(targets);
 if ~bundleValidation.passed
@@ -25,12 +27,10 @@ if ~bundleValidation.passed
         "the Camera 1 Snap using the updated planning GUI. Details: %s", ...
         strjoin(bundleValidation.issues," "));
 end
-if options.ReleaseLevel~="experimental"
-    if options.TestPulseCount>10
-        error("adaptive_optopatch:TooManyTestPulses", ...
-            "Staged test runs are limited to at most 10 pulses.");
-    end
+if ismember(options.ReleaseLevel,["blocked_test","attenuated_test"])
     manifest=make_staged_manifest(manifest,options.TestPulseCount,options.ReleaseLevel);
+elseif ismember(options.ReleaseLevel,["pilot_single","pilot_mixed_trains"])
+    manifest=make_pilot_manifest(manifest,options.ReleaseLevel);
 end
 release=adaptive_optopatch.validate_2p_release_level(manifest, ...
     options.ReleaseLevel,"ConfirmTrajectoryTest",options.ConfirmTrajectoryTest, ...
@@ -79,12 +79,16 @@ for k=1:n
         calibrationCoverage= ...
             adaptive_optopatch.validate_2p_calibration_coverage( ...
             target,hardware.calibration);
-        if ~calibrationCoverage.passed
+        if ~calibrationCoverage.passed && ~options.AllowCalibrationExtrapolation
             error("adaptive_optopatch:TargetOutsideGalvoCalibration", ...
                 ['The target cannot be run without extrapolating the camera-to-galvo ' ...
                  'calibration. Acquire a wider calibration grid. Details: %s'], ...
                 strjoin(calibrationCoverage.issues," "));
         end
+        calibrationCoverage.extrapolation_allowed= ...
+            options.AllowCalibrationExtrapolation;
+        calibrationCoverage.extrapolation_used= ...
+            ~calibrationCoverage.passed && options.AllowCalibrationExtrapolation;
         protocol=row.pulse_schedule{1};
         voltage=options.ModulatorVoltageOverride;
         if options.ReleaseLevel=="blocked_test" || row.is_null, voltage=0; end
@@ -196,15 +200,41 @@ if ~isfield(protocol,"protocol_type") || ...
     error("adaptive_optopatch:StagedScreenProtocolRequired", ...
         "Blocked and attenuated tests currently require a connectivity-screen protocol.");
 end
-count=min(pulseCount,height(protocol.events));
-protocol.events=protocol.events(1:count,:);
-protocol.pulse_count=count;
-protocol.total_light_on_s=sum(protocol.events.duration_s);
+count=pulseCount;
+if count>height(protocol.events)
+    protocol=adaptive_optopatch.generate_screen_protocol( ...
+        "PulseCount",count,"PulseDurationMs",protocol.pulse_duration_ms, ...
+        "DarkIntervalMs",protocol.dark_interval_range_ms, ...
+        "PreDelayMs",protocol.pre_delay_ms, ...
+        "PostDelayMs",protocol.post_delay_ms, ...
+        "ModulatorVoltage",protocol.modulator_voltage, ...
+        "RandomSeed",protocol.random_seed);
+else
+    protocol.events=protocol.events(1:count,:);
+    protocol.pulse_count=count;
+    protocol.total_light_on_s=sum(protocol.events.duration_s);
+end
 postDelay=100;
 if isfield(protocol,"post_delay_ms"), postDelay=protocol.post_delay_ms; end
 protocol.acquisition_duration_s=protocol.events.offset_s(end)+postDelay/1000;
 trials.pulse_schedule={protocol};
 trials.acquisition_duration_s=protocol.acquisition_duration_s;
+trials.output_tag=string(trials.output_tag)+"_"+level;
+trials.acquisition_status="planned";
+trials.experiment_directory="";
+manifest.trials=trials;
+manifest.staged_from_trial_id=trials.trial_id;
+manifest.release_level=level;
+end
+
+function manifest=make_pilot_manifest(manifest,level)
+trials=manifest.trials;
+idx=find(~trials.is_null,1);
+if isempty(idx)
+    error("adaptive_optopatch:NoStimulatedTrial", ...
+        "No non-null 2P trial was found.");
+end
+trials=trials(idx,:);
 trials.output_tag=string(trials.output_tag)+"_"+level;
 trials.acquisition_status="planned";
 trials.experiment_directory="";

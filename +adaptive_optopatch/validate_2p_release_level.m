@@ -2,7 +2,8 @@ function report=validate_2p_release_level(manifest,level,options)
 %VALIDATE_2P_RELEASE_LEVEL Enforce staged live-run restrictions.
 arguments
     manifest (1,1) struct
-    level (1,1) string {mustBeMember(level,["blocked_test","attenuated_test","experimental"])}
+    level (1,1) string {mustBeMember(level,["blocked_test","attenuated_test", ...
+        "pilot_single","pilot_mixed_trains","experimental"])}
     options.ConfirmTrajectoryTest (1,1) logical = false
     options.ConfirmLiveOutput (1,1) logical = false
     options.ModulatorVoltageOverride (1,1) double = NaN
@@ -20,18 +21,24 @@ end
 if ~options.ConfirmTrajectoryTest
     issues(end+1)="Blocked trajectory review has not been confirmed.";
 end
-if level=="attenuated_test"
+if level=="attenuated_test" || ...
+        ismember(level,["pilot_single","pilot_mixed_trains"])
     if ~options.ConfirmLiveOutput
-        issues(end+1)="Attenuated light output has not been explicitly armed.";
+        issues(end+1)="Live 2P output has not been explicitly armed.";
     end
     if ~isfinite(options.ModulatorVoltageOverride) || ...
             options.ModulatorVoltageOverride<=0
-        issues(end+1)="Attenuated mode requires an explicit positive Pockels voltage.";
+        issues(end+1)="This light-on mode requires an explicit positive Pockels voltage.";
     end
     if isfield(manifest,"trials") && ~isempty(manifest.trials)
-        p=adaptive_optopatch.flatten_pulse_schedule(manifest.trials.pulse_schedule{1});
-        if height(p)>10
-            issues(end+1)="Attenuated test mode is limited to 10 pulses.";
+        if level=="pilot_single" && ...
+                string(manifest.trials.pulse_schedule{1}.protocol_type)~= ...
+                "connectivity_screen"
+            issues(end+1)="pilot_single requires a connectivity-screen protocol.";
+        elseif level=="pilot_mixed_trains" && ...
+                string(manifest.trials.pulse_schedule{1}.protocol_type)~= ...
+                "stf_mixed_conditions"
+            issues(end+1)="pilot_mixed_trains requires a mixed STF protocol.";
         end
     end
 elseif level=="experimental"

@@ -197,11 +197,16 @@ Only after Test 6 passes, use a strongly attenuated fluorescent sample:
 6. Run one acquisition.
 
 Verify that the illuminated spiral lands on the selected Camera 1 target and
-that no light is commanded during movement or parking. Increase to at most ten
-test pulses only after the single-pulse run passes.
+that no light is commanded during movement or parking. Increase the test pulse
+count only after the single-pulse run passes; the software imposes no numeric
+ceiling.
 
-The unrestricted `experimental` runner is intentionally unavailable until a
-structured hardware-validation record documents feedback, phase alignment, and
+Two guarded production-pilot levels are available after blocked and attenuated
+checks pass: `pilot_single` for single-pulse trials, and
+`pilot_mixed_trains` for randomized single-pulse and ten-pulse trials. A train
+is one event even though it contains multiple light pulses. Fully
+unrestricted multi-target `experimental` execution still requires a structured
+hardware-validation record documenting feedback, phase alignment, and
 terminal-return validation.
 
 ## Workflow
@@ -623,9 +628,21 @@ runner = launch_2p_test_runner_gui( ...
     "Z:\path\to\adaptive_optopatch_fov_YYYYMMDD_HHMMSS");
 ```
 
-The runner uses the first non-null cell in the planning bundle and automatically
-truncates its connectivity-screen schedule to the requested 1–10 test pulses.
-It does not modify the saved planning bundle.
+The runner uses the first non-null cell in the planning bundle. Blocked and
+attenuated modes truncate its connectivity-screen schedule to the requested
+number of test pulses. Both pilot modes run one target without a software
+pulse-count or event-count ceiling. They do not modify the saved planning bundle.
+
+The release-level selector chooses the production protocol:
+
+- `pilot_single` uses the bundle's randomized connectivity schedule. Set
+  **Screen/test pulses** to the desired count.
+- `pilot_mixed_trains` randomizes single-pulse controls, ten-pulse
+  50 Hz trains, and ten-pulse 100 Hz trains in one acquisition. It uses the
+  bundle pulse duration, 450--550 ms end-to-start dark intervals between
+  events, and the **STF repeats/condition** value. The default 50 repeats gives
+  150 randomized events and 1,050 individual light pulses. There is no software
+  maximum for repeats per condition.
 
 For every active camera, the runner calculates `frames_requested` independently.
 For a DAQ-triggered camera it first compares `1000/daqtrig_period_ms` with the
@@ -637,8 +654,10 @@ using DAQ frame triggering retain Luminos's `AutoN` behavior. The rate estimate,
 guarded limit, calculation, and resulting frame count are archived in the trial's
 `camera_frame_plan`.
 
-The staged 2P runner also rejects targets whose center, spiral boundary, or dark
-parking point lies outside the convex hull of the accepted calibration spots.
+The staged 2P runner rejects targets whose center, spiral boundary, or dark
+parking point lies outside the convex hull of the accepted calibration spots by
+default. **Allow calibration extrapolation** explicitly overrides this hull
+check. It does not disable absolute voltage or motion limits.
 Attenuated tests must illuminate far enough along the retimed path to reach at
 least 95% of the requested spiral radius. Blocked tests may preview shorter
 illumination because no light reaches the sample. Until the dedicated feedback
@@ -673,9 +692,35 @@ After inspecting the blocked run, use a strongly attenuated fluorescent sample:
 6. Run one acquisition and confirm that the illuminated spiral lands at the
    selected Camera 1 target.
 
-Attenuated mode is limited to one target and at most ten pulses. Full
+Attenuated and pilot modes remain limited to one target per runner invocation,
+but have no pulse-count or event-count ceiling. Light-on modes require both
+confirmation checkboxes and an explicit positive Pockels voltage, and retain all
+camera-rate, motion, waveform, and cleanup checks. Full multi-target
 `experimental` manifests are not exposed in this GUI; they require a separate
 galvo hardware-validation record.
+
+After the single- and ten-pulse attenuated tests pass, run a 200-pulse pilot:
+
+1. Select `pilot_single`.
+2. Set **Screen/test pulses** to `200`.
+3. Enter the independently tested Pockels voltage.
+4. Click **Validate + preview** and inspect the complete acquisition.
+5. Check both confirmation boxes.
+6. Run the one-target acquisition.
+
+For the mixed train pilot, select `pilot_mixed_trains` and set **STF
+repeats/condition** to the desired positive integer. The intended production setting is 50.
+The **Screen/test pulses** field is ignored in this mode. During a train the
+galvos follow a continuous spiral while the Pockels waveform gates the ten
+pulses; the scanner finishes its cycle and returns to the dark parking point
+only after the train.
+
+To deliberately target outside the accepted calibration hull, check **Allow
+calibration extrapolation** before previewing. The preview displays a warning,
+and the saved waveform summary records the failed coverage report together with
+`extrapolation_allowed` and `extrapolation_used`. Absolute scanner-voltage
+bounds, velocity limits, acceleration limits, spiral-radius checks, and parking
+checks remain enforced.
 
 Each successful test folder contains:
 

@@ -35,16 +35,19 @@ moveOut=adaptive_optopatch.minimum_jerk_transition(centerV,parkV,fs, ...
 requestedTotal=ceil(protocol.acquisition_duration_s*fs);
 % Grow only the final acquisition tail when needed. Pulse timing and every
 % end-to-start dark interval remain exactly as requested.
-finalOn=max(1,ceil(pulses.onset_s(end)*fs)+1);
 finalOff=ceil(pulses.offset_s(end)*fs);
-finalLightCount=finalOff-finalOn+1;
-finalRemainder=mod(finalLightCount,cycle.cycle_samples);
+finalEvent=pulses.event_index(end);
+finalEventFirst=find(pulses.event_index==finalEvent,1,"first");
+finalEventOn=max(1,ceil(pulses.onset_s(finalEventFirst)*fs)+1);
+finalEventSamples=finalOff-finalEventOn+1;
+finalRemainder=mod(finalEventSamples,cycle.cycle_samples);
 finalFinishCount=mod(cycle.cycle_samples-finalRemainder,cycle.cycle_samples);
 requiredTotal=finalOff+finalFinishCount+size(moveOut,1);
 nTotal=max(requestedTotal,requiredTotal);
 x=repmat(parkV(1),nTotal,1); y=repmat(parkV(2),nTotal,1);
 pockels=repmat(options.DarkVoltage,nTotal,1);
 cursor=1;
+eventCycleStart=NaN;
 perPulse=repmat(struct("on_sample",0,"off_sample",0, ...
     "cycle_count_during_light",0,"cycle_fraction_during_light",0, ...
     "maximum_illuminated_radius_fraction",0, ...
@@ -55,35 +58,51 @@ for k=1:height(pulses)
     % onset and the final sample strictly before offset.
     on=max(1,ceil(pulses.onset_s(k)*fs)+1);
     off=min(nTotal,ceil(pulses.offset_s(k)*fs));
-    moveStart=on-size(moveIn,1)+1;
-    if moveStart<cursor
-        if k==1
-            availableMs=pulses.onset_s(k)*1000;
-            requiredMs=size(moveIn,1)/fs*1000;
-            error("adaptive_optopatch:InsufficientGalvoPreDelay", ...
-                ['Pulse 1 has %.3f ms of pre-delay, but the bounded move from ' ...
-                 'the dark parking point to the target requires at least %.3f ms. ' ...
-                 'Increase the pre-delay to at least %d ms.'], ...
-                availableMs,requiredMs,ceil(requiredMs+1));
+    continuingEvent=k>1 && pulses.event_index(k)==pulses.event_index(k-1);
+    lastInEvent=k==height(pulses) || ...
+        pulses.event_index(k)~=pulses.event_index(k+1);
+    if continuingEvent
+        if on<cursor
+            error("adaptive_optopatch:OverlappingTrainPulses", ...
+                "Pulse %d overlaps the preceding pulse in its train.",k);
         end
-        availableMs=(pulses.onset_s(k)-pulses.offset_s(k-1))*1000;
-        completionMs=perPulse(k-1).dark_completion_samples/fs*1000;
-        parkOutMs=size(moveOut,1)/fs*1000;
-        parkInMs=size(moveIn,1)/fs*1000;
-        requiredMs=completionMs+parkOutMs+parkInMs;
-        error("adaptive_optopatch:InsufficientGalvoDarkInterval", ...
-            ['Pulse %d has %.3f ms of end-to-start dark time, but this ' ...
-             'trajectory requires at least %.3f ms: %.3f ms to finish the ' ...
-             'spiral, %.3f ms to reach the dark parking point, and %.3f ms ' ...
-             'to return to the target. Set the minimum dark interval to at ' ...
-             'least %d ms and save a new planning bundle.'], ...
-            k,availableMs,requiredMs,completionMs,parkOutMs,parkInMs, ...
-            ceil(requiredMs+1));
+        if on>cursor
+            darkIdx=(cursor:on-1)';
+            phase=mod(darkIdx-eventCycleStart,cycle.cycle_samples)+1;
+            x(darkIdx)=cycle.x_v(phase); y(darkIdx)=cycle.y_v(phase);
+        end
+    else
+        moveStart=on-size(moveIn,1)+1;
+        if moveStart<cursor
+            if k==1
+                availableMs=pulses.onset_s(k)*1000;
+                requiredMs=size(moveIn,1)/fs*1000;
+                error("adaptive_optopatch:InsufficientGalvoPreDelay", ...
+                    ['Pulse 1 has %.3f ms of pre-delay, but the bounded move from ' ...
+                     'the dark parking point to the target requires at least %.3f ms. ' ...
+                     'Increase the pre-delay to at least %d ms.'], ...
+                    availableMs,requiredMs,ceil(requiredMs+1));
+            end
+            availableMs=(pulses.onset_s(k)-pulses.offset_s(k-1))*1000;
+            completionMs=perPulse(k-1).dark_completion_samples/fs*1000;
+            parkOutMs=size(moveOut,1)/fs*1000;
+            parkInMs=size(moveIn,1)/fs*1000;
+            requiredMs=completionMs+parkOutMs+parkInMs;
+            error("adaptive_optopatch:InsufficientGalvoDarkInterval", ...
+                ['Pulse %d has %.3f ms of end-to-start dark time, but this ' ...
+                 'trajectory requires at least %.3f ms: %.3f ms to finish the ' ...
+                 'spiral, %.3f ms to reach the dark parking point, and %.3f ms ' ...
+                 'to return to the target. Set the minimum dark interval to at ' ...
+                 'least %d ms and save a new planning bundle.'], ...
+                k,availableMs,requiredMs,completionMs,parkOutMs,parkInMs, ...
+                ceil(requiredMs+1));
+        end
+        idx=moveStart:on;
+        x(idx)=moveIn(:,1); y(idx)=moveIn(:,2);
+        eventCycleStart=on;
     end
-    idx=moveStart:on;
-    x(idx)=moveIn(:,1); y(idx)=moveIn(:,2);
     lightCount=off-on+1;
-    cycleIndex=mod((0:lightCount-1)',cycle.cycle_samples)+1;
+    cycleIndex=mod((on:off)'-eventCycleStart,cycle.cycle_samples)+1;
     [illuminatedX,illuminatedY]=transformPointsForward(tform, ...
         cycle.x_v(cycleIndex),cycle.y_v(cycleIndex));
     illuminatedRadius=max(hypot( ...
@@ -109,32 +128,38 @@ for k=1:height(pulses)
     end
     x(on:off)=cycle.x_v(cycleIndex); y(on:off)=cycle.y_v(cycleIndex);
     pockels(on:off)=pulses.modulator_voltage(k);
-    remainder=mod(lightCount,cycle.cycle_samples);
-    finishCount=mod(cycle.cycle_samples-remainder,cycle.cycle_samples);
-    finishEnd=off+finishCount;
-    if finishCount>0
-        if finishEnd>nTotal
-            error("adaptive_optopatch:GalvoReturnOutsideAcquisition", ...
-                "The final spiral cannot return to center before acquisition end.");
+    finishCount=0; finishEnd=off; parkEnd=0;
+    if lastInEvent
+        eventSamples=off-eventCycleStart+1;
+        remainder=mod(eventSamples,cycle.cycle_samples);
+        finishCount=mod(cycle.cycle_samples-remainder,cycle.cycle_samples);
+        finishEnd=off+finishCount;
+        if finishCount>0
+            if finishEnd>nTotal
+                error("adaptive_optopatch:GalvoReturnOutsideAcquisition", ...
+                    "The final spiral cannot return to center before acquisition end.");
+            end
+            finishIndex=(remainder+1:cycle.cycle_samples)';
+            x(off+1:finishEnd)=cycle.x_v(finishIndex);
+            y(off+1:finishEnd)=cycle.y_v(finishIndex);
         end
-        finishIndex=(remainder+1:cycle.cycle_samples)';
-        x(off+1:finishEnd)=cycle.x_v(finishIndex);
-        y(off+1:finishEnd)=cycle.y_v(finishIndex);
+        parkStart=finishEnd+1; parkEnd=parkStart+size(moveOut,1)-1;
+        if parkEnd>nTotal
+            error("adaptive_optopatch:GalvoReturnOutsideAcquisition", ...
+                "Pulse %d cannot reach the parking point before acquisition end.",k);
+        end
+        x(parkStart:parkEnd)=moveOut(:,1); y(parkStart:parkEnd)=moveOut(:,2);
+        cursor=parkEnd+1;
+    else
+        cursor=off+1;
     end
-    parkStart=finishEnd+1; parkEnd=parkStart+size(moveOut,1)-1;
-    if parkEnd>nTotal
-        error("adaptive_optopatch:GalvoReturnOutsideAcquisition", ...
-            "Pulse %d cannot reach the parking point before acquisition end.",k);
-    end
-    x(parkStart:parkEnd)=moveOut(:,1); y(parkStart:parkEnd)=moveOut(:,2);
-    cursor=parkEnd+1;
     perPulse(k).on_sample=on; perPulse(k).off_sample=off;
     perPulse(k).cycle_count_during_light=floor(lightCount/cycle.cycle_samples);
     perPulse(k).cycle_fraction_during_light=lightCount/cycle.cycle_samples;
     perPulse(k).maximum_illuminated_radius_fraction= ...
         illuminatedRadiusFraction;
     perPulse(k).dark_completion_samples=finishCount;
-    perPulse(k).center_return_sample=finishEnd;
+    perPulse(k).center_return_sample=finishEnd*(lastInEvent);
     perPulse(k).parking_arrival_sample=parkEnd;
 end
 report=adaptive_optopatch.evaluate_galvo_waveform(x,y,fs, ...

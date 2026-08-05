@@ -1,5 +1,5 @@
 function gui=launch_2p_test_runner_gui(luminosApp,bundleFolder,options)
-%LAUNCH_2P_TEST_RUNNER_GUI Open the staged blocked/attenuated 2P runner.
+%LAUNCH_2P_TEST_RUNNER_GUI Open the guarded staged/production-pilot 2P runner.
 arguments
     luminosApp
     bundleFolder (1,1) string = ""

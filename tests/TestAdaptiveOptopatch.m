@@ -133,6 +133,11 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyError(@() ...
                 adaptive_optopatch.set_camera_frames_for_duration(camera,1), ...
                 "adaptive_optopatch:CameraTriggerTooFastForRoi");
+            [updated,plan]=adaptive_optopatch.set_camera_frames_for_duration( ...
+                camera,1,"AllowRateLimitOverride",true);
+            testCase.verifyEqual(updated.frames_requested,1000);
+            testCase.verifyTrue(plan.rate_override_allowed);
+            testCase.verifyTrue(plan.rate_override_used);
         end
 
         function rejectsTargetOutsideCalibrationGrid(testCase)
@@ -411,6 +416,14 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyEqual(p.events.onset_s(1),0.1,"AbsTol",1e-12);
             testCase.verifyEqual(p.acquisition_duration_s, ...
                 p.events.offset_s(end)+0.1,"AbsTol",1e-12);
+        end
+
+        function allowsLongSinglePulseDurations(testCase)
+            protocol=adaptive_optopatch.generate_screen_protocol( ...
+                "PulseCount",2,"PulseDurationMs",250, ...
+                "DarkIntervalMs",[50 50]);
+            testCase.verifyEqual(protocol.events.duration_s,0.25*ones(2,1));
+            testCase.verifyEqual(protocol.pulse_duration_ms,250);
         end
 
         function randomizesMixedStfConditions(testCase)

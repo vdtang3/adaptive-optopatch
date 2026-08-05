@@ -82,7 +82,8 @@ classdef ReferencePreparationApp < handle
             app.PulseCount = uieditfield(controls,"numeric","Value",200, ...
                 "Limits",[1 Inf],"RoundFractionalValues","on");
             uilabel(controls,"Text","Pulse duration (ms)");
-            app.PulseDuration = uieditfield(controls,"numeric","Value",5,"Limits",[5 10]);
+            app.PulseDuration = uieditfield(controls,"numeric", ...
+                "Value",5,"Limits",[eps Inf]);
             uilabel(controls,"Text","Dark gap min (ms)");
             app.DarkIntervalMin = uieditfield(controls,"numeric","Value",45,"Limits",[eps Inf]);
             uilabel(controls,"Text","Dark gap max (ms)");

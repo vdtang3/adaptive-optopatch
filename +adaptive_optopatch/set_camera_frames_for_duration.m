@@ -5,6 +5,7 @@ arguments
     durationS (1,1) double {mustBePositive}
     options.SustainableRateFraction (1,1) double ...
         {mustBePositive,mustBeLessThanOrEqual(options.SustainableRateFraction,1)} = 0.85
+    options.AllowRateLimitOverride (1,1) logical = false
 end
 n=numel(cameras);
 plan=repmat(struct("camera_index",0,"camera_name","", ...
@@ -12,11 +13,14 @@ plan=repmat(struct("camera_index",0,"camera_name","", ...
     "trigger_period_ms",NaN,"frame_rate_hz",NaN, ...
     "calculated_camera_limit_hz",NaN,"conservative_camera_limit_hz",NaN, ...
     "frames_requested",0,"acquisition_duration_s",durationS, ...
-    "rate_validation_passed",false),n,1);
+    "rate_validation_passed",false,"rate_override_allowed",false, ...
+    "rate_override_used",false),n,1);
 for k=1:n
     camera=cameras(k);
     source=string(read_member(camera,"frametrigger_source",""));
     isDaq=contains(upper(source),"DAQ");
+    limitUnavailable=false;
+    tooFast=false;
     if isDaq
         periodMs=double(read_member(camera,"daqtrig_period_ms",NaN));
         if ~isscalar(periodMs) || ~isfinite(periodMs) || periodMs<=0
@@ -25,13 +29,16 @@ for k=1:n
         end
         frameRate=1000/periodMs;
         cameraLimit=read_camera_rate_limit(camera);
-        if ~isfinite(cameraLimit) || cameraLimit<=0
+        limitUnavailable=~isfinite(cameraLimit) || cameraLimit<=0;
+        if limitUnavailable && ~options.AllowRateLimitOverride
             error("adaptive_optopatch:CameraRateLimitUnavailable", ...
                 ['Camera %d is DAQ-triggered, but its ROI-dependent maximum ' ...
                  'frame rate could not be calculated.'],k);
         end
         conservativeLimit=options.SustainableRateFraction*cameraLimit;
-        if frameRate>conservativeLimit*(1+1e-9)
+        tooFast=isfinite(conservativeLimit) && ...
+            frameRate>conservativeLimit*(1+1e-9);
+        if tooFast && ~options.AllowRateLimitOverride
             error("adaptive_optopatch:CameraTriggerTooFastForRoi", ...
                 ['Camera %d requests %.3f Hz (%.4g ms period), but its current ' ...
                  'ROI/readout configuration supports only %.3f Hz by the ' ...
@@ -71,6 +78,9 @@ for k=1:n
     plan(k).conservative_camera_limit_hz=conservativeLimit;
     plan(k).frames_requested=count;
     plan(k).rate_validation_passed=true;
+    plan(k).rate_override_allowed=options.AllowRateLimitOverride;
+    plan(k).rate_override_used=isDaq && options.AllowRateLimitOverride && ...
+        (limitUnavailable || tooFast);
 end
 
 function rate=read_camera_rate_limit(camera)

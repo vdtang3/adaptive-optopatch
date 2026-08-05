@@ -19,13 +19,15 @@ arguments
     options.TimeoutMarginS (1,1) double {mustBePositive} = 30
     options.TestPulseCount (1,1) double {mustBePositive,mustBeInteger} = 1
     options.AllowCalibrationExtrapolation (1,1) logical = false
+    options.AllowCameraRateOverride (1,1) logical = false
 end
 bundleValidation=adaptive_optopatch.validate_2p_planning_bundle(targets);
 if ~bundleValidation.passed
-    error("adaptive_optopatch:OutdatedTwoPhotonBundle", ...
-        "This planning bundle cannot be run safely. Regenerate it from "+ ...
-        "the Camera 1 Snap using the updated planning GUI. Details: %s", ...
-        strjoin(bundleValidation.issues," "));
+    details=char(strjoin(bundleValidation.issues(:)'," "));
+    message=sprintf([ ...
+        'This planning bundle cannot be run safely. Regenerate it from ' ...
+        'the Camera 1 Snap using the updated planning GUI. Details: %s'],details);
+    error('adaptive_optopatch:OutdatedTwoPhotonBundle','%s',message);
 end
 if ismember(options.ReleaseLevel,["blocked_test","attenuated_test"])
     manifest=make_staged_manifest(manifest,options.TestPulseCount,options.ReleaseLevel);
@@ -112,7 +114,8 @@ for k=1:n
         hardware.daq.waveforms_built=false;
         [hardware.cameras,cameraFramePlan]= ...
             adaptive_optopatch.set_camera_frames_for_duration( ...
-            hardware.cameras,globalProps.total_time);
+            hardware.cameras,globalProps.total_time, ...
+            "AllowRateLimitOverride",options.AllowCameraRateOverride);
         summary.camera_frame_plan=cameraFramePlan;
         summary.calibration_coverage=calibrationCoverage;
         run.trials.waveform_summary{k}=summary;

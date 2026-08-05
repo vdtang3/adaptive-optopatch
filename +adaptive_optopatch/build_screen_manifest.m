@@ -10,7 +10,7 @@ arguments
     options.PulseProtocolId (1,1) string = "screen_v1"
     options.OutputPrefix (1,1) string = "connectivity_screen"
     options.PulseCount (1,1) double {mustBePositive,mustBeInteger} = 200
-    options.PulseDurationMs (1,1) double {mustBeGreaterThanOrEqual(options.PulseDurationMs,5),mustBeLessThanOrEqual(options.PulseDurationMs,10)} = 5
+    options.PulseDurationMs (1,1) double {mustBePositive} = 5
     options.DarkIntervalMs (1,2) double {mustBePositive} = [45 55]
     options.PreDelayMs (1,1) double {mustBeNonnegative} = 100
     options.PostDelayMs (1,1) double {mustBeNonnegative} = 100

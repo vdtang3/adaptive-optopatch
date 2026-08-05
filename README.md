@@ -644,6 +644,12 @@ The release-level selector chooses the production protocol:
   150 randomized events and 1,050 individual light pulses. There is no software
   maximum for repeats per condition.
 
+Single-pulse and connectivity-screen pulse duration may be any positive number
+of milliseconds; the earlier 5--10 ms software range has been removed. Train
+protocols still reject pulse durations greater than or equal to their pulse
+period because those commands would overlap (for example, 100 Hz requires a
+duration below 10 ms).
+
 For every active camera, the runner calculates `frames_requested` independently.
 For a DAQ-triggered camera it first compares `1000/daqtrig_period_ms` with the
 ROI/readout-dependent rate estimated by Luminos. Because Luminos notes that its
@@ -653,6 +659,14 @@ otherwise the count is `ceil(total_time * 1000 / daqtrig_period_ms)`. Cameras no
 using DAQ frame triggering retain Luminos's `AutoN` behavior. The rate estimate,
 guarded limit, calculation, and resulting frame count are archived in the trial's
 `camera_frame_plan`.
+
+If the configured DAQ cadence is known to be valid despite the approximate
+Luminos estimate, check **Allow camera-rate override**. The runner then uses the
+positive `daqtrig_period_ms` even when the ROI-dependent estimate is unavailable
+or below the requested rate. The archived camera plan records
+`rate_override_allowed` and `rate_override_used`. This does not change the
+camera trigger waveform or guarantee that the camera accepts every trigger, so
+written-frame counts and dropped-frame reports should still be checked.
 
 The staged 2P runner rejects targets whose center, spiral boundary, or dark
 parking point lies outside the convex hull of the accepted calibration spots by

@@ -5,7 +5,7 @@ arguments
     y (:,1) double
     sampleRate (1,1) double {mustBePositive}
     options.CommandBoundsVolts (1,2) double = [-5 5]
-    options.DriverVoltsPerDegree (1,1) double {mustBeMember(options.DriverVoltsPerDegree,[0.5 0.8 1.0])} = 0.5
+    options.DriverVoltsPerDegree (1,1) double {mustBeMember(options.DriverVoltsPerDegree,[0.5 0.8 1.0])} = 0.8
     options.SmallAngleLimitDegrees (1,1) double {mustBePositive} = 0.2
     options.SmallAngleMaxRateHz (1,1) double {mustBePositive} = 1000
     options.LargeAngleMaxRateHz (1,1) double {mustBePositive} = 100

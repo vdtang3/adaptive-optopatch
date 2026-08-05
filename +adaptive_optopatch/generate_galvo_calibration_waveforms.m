@@ -9,8 +9,8 @@ arguments
     options.SettleTimeMs (1,1) double {mustBeNonnegative} = 30
     options.FramesPerPoint (1,1) double {mustBePositive,mustBeInteger} = 4
     options.PockelsVoltage (1,1) double {mustBeGreaterThanOrEqual(options.PockelsVoltage,0),mustBeLessThanOrEqual(options.PockelsVoltage,5)} = 0
-    options.MaximumVelocityVPerS (1,1) double {mustBePositive} = 30
-    options.MaximumAccelerationVPerS2 (1,1) double {mustBePositive} = 1800
+    options.MaximumVelocityVPerS (1,1) double {mustBePositive} = 1000
+    options.MaximumAccelerationVPerS2 (1,1) double {mustBePositive} = 6e6
     options.CommandBoundsV (1,2) double = [-5 5]
     options.PreDelayMs (1,1) double {mustBeNonnegative} = 100
     options.PostDelayMs (1,1) double {mustBeNonnegative} = 100

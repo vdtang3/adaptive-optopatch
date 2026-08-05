@@ -69,8 +69,8 @@ classdef TwoPhotonTestRunnerApp < handle
                 "Items",["blocked_test","attenuated_test"],"Value","blocked_test");
             add("Test pulses","PulseCount",1);
             add("Pockels (V)","Voltage",0);
-            add("Max velocity (V/s)","MaxVelocity",30);
-            add("Max acceleration (V/s²)","MaxAcceleration",1800);
+            add("Max velocity (V/s)","MaxVelocity",1000);
+            add("Max acceleration (V/s²)","MaxAcceleration",6e6);
             gui.TrajectoryConfirmed=uicheckbox(controls, ...
                 "Text","Blocked trajectory reviewed","Value",false);
             gui.TrajectoryConfirmed.Layout.Column=[1 2];
@@ -107,11 +107,23 @@ classdef TwoPhotonTestRunnerApp < handle
         end
         function preview(gui)
             try
+                motionValidation= ...
+                    adaptive_optopatch.validate_provisional_2p_motion_limits( ...
+                    gui.MaxVelocity.Value,gui.MaxAcceleration.Value);
+                if ~motionValidation.passed
+                    error("adaptive_optopatch:UnvalidatedGalvoMotionLimits", ...
+                        "%s",strjoin(motionValidation.issues,newline));
+                end
                 [hardware,protocol,target]=gui.preparePreview();
+                minimumRadiusFraction=0.95;
+                if string(gui.ReleaseLevel.Value)=="blocked_test"
+                    minimumRadiusFraction=eps;
+                end
                 w=adaptive_optopatch.build_2p_trial_waveforms( ...
                     protocol,target,hardware.scanner.tform, ...
                     "MaximumVelocityVPerS",gui.MaxVelocity.Value, ...
-                    "MaximumAccelerationVPerS2",gui.MaxAcceleration.Value);
+                    "MaximumAccelerationVPerS2",gui.MaxAcceleration.Value, ...
+                    "MinimumIlluminatedRadiusFraction",minimumRadiusFraction);
                 t=(0:numel(w.x_v)-1)'/w.sample_rate_hz;
                 cla(gui.Axes); yyaxis(gui.Axes,"left");
                 plot(gui.Axes,t,w.x_v,t,w.y_v); ylabel(gui.Axes,"Galvo (V)");

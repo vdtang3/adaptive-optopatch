@@ -50,8 +50,8 @@ classdef GalvoCalibrationApp < handle
             add("Settle time (ms)","settle_ms",30);
             add("Frames / point","frames_per_point",4);
             add("Pockels (V)","pockels_v",0);
-            add("Max velocity (V/s)","max_velocity",30);
-            add("Max accel. (V/s²)","max_acceleration",1800);
+            add("Max velocity (V/s)","max_velocity",1000);
+            add("Max accel. (V/s²)","max_acceleration",6e6);
             add("ROI left","roi_left",628);
             add("ROI width","roi_width",768);
             add("ROI top","roi_top",756);

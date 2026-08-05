@@ -120,13 +120,14 @@ for k=1:n
             adaptive_optopatch.build_luminos_1p_waveform_config( ...
             original.global_props,original.wfm_data,row.pulse_schedule{1},profile, ...
             "ModulatorVoltageOverride",voltageOverride);
-        run.trials.waveform_summary{k}=waveformSummary;
         hardware.daq.global_props=globalProps;
         hardware.daq.wfm_data=wfmData;
         hardware.daq.waveforms_built=false;
-        for c=1:numel(hardware.cameras)
-            hardware.cameras(c).AutoN(globalProps.total_time);
-        end
+        [hardware.cameras,cameraFramePlan]= ...
+            adaptive_optopatch.set_camera_frames_for_duration( ...
+            hardware.cameras,globalProps.total_time);
+        waveformSummary.camera_frame_plan=cameraFramePlan;
+        run.trials.waveform_summary{k}=waveformSummary;
 
         hardware.modulator.level=profile.modulator.dark_v;
         hardware.shutter.State=profile.shutter.open_state;
@@ -215,8 +216,10 @@ save_checkpoint();
     end
 
     function map=make_frame_map(pulses)
-        camera=hardware.voltage_camera;
-        frameRate=double(camera.calculate_framerate());
+        frameRate=cameraFramePlan(hardware.voltage_camera_index).frame_rate_hz;
+        if ~isfinite(frameRate)
+            frameRate=double(hardware.voltage_camera.calculate_framerate());
+        end
         expected_frame=floor(pulses.onset_s*frameRate)+1;
         map=table(pulses.pulse_index,pulses.onset_s,expected_frame, ...
             repmat(frameRate,height(pulses),1), ...

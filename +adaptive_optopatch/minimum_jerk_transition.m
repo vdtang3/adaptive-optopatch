@@ -4,8 +4,8 @@ arguments
     startXY (1,2) double
     endXY (1,2) double
     sampleRate (1,1) double {mustBePositive}
-    options.MaximumVelocityVPerS (1,1) double {mustBePositive} = 30
-    options.MaximumAccelerationVPerS2 (1,1) double {mustBePositive} = 1800
+    options.MaximumVelocityVPerS (1,1) double {mustBePositive} = 1000
+    options.MaximumAccelerationVPerS2 (1,1) double {mustBePositive} = 6e6
 end
 distance=norm(endXY-startXY);
 if distance==0, xy=startXY; return; end

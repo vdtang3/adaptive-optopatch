@@ -1,0 +1,23 @@
+function characterization=run_galvo_dynamics_characterization(luminosApp,options)
+%RUN_GALVO_DYNAMICS_CHARACTERIZATION Public guarded VU galvo sweep entry point.
+arguments
+    luminosApp
+    options.AmplitudesV (1,:) double = [0.05 0.10 0.16 0.22]
+    options.FrequenciesHz (1,:) double = [25 50 100 200 400 600 800 1000]
+    options.Cycles (1,1) double = 20
+    options.RampCycles (1,1) double = 2
+    options.OutputDirectory (1,1) string = ""
+    options.OutputRoot (1,1) string = ""
+    options.ConfirmMechanicalBeamBlock (1,1) logical = false
+    options.ConfirmFeedbackWiring (1,1) logical = false
+    options.StopOnFailure (1,1) logical = true
+end
+characterization=adaptive_optopatch.run_galvo_dynamics_characterization( ...
+    luminosApp,"AmplitudesV",options.AmplitudesV, ...
+    "FrequenciesHz",options.FrequenciesHz,"Cycles",options.Cycles, ...
+    "RampCycles",options.RampCycles,"OutputDirectory",options.OutputDirectory, ...
+    "OutputRoot",options.OutputRoot, ...
+    "ConfirmMechanicalBeamBlock",options.ConfirmMechanicalBeamBlock, ...
+    "ConfirmFeedbackWiring",options.ConfirmFeedbackWiring, ...
+    "StopOnFailure",options.StopOnFailure);
+end

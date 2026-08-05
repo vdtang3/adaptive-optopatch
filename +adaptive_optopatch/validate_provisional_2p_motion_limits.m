@@ -1,0 +1,26 @@
+function report=validate_provisional_2p_motion_limits(maximumVelocity,maximumAcceleration)
+%VALIDATE_PROVISIONAL_2P_MOTION_LIMITS Enforce current unvalidated caps.
+arguments
+    maximumVelocity (1,1) double {mustBePositive}
+    maximumAcceleration (1,1) double {mustBePositive}
+end
+profile=adaptive_optopatch.virtual_upright_2p_profile();
+velocityLimit=profile.safety.provisional_maximum_velocity_v_per_s;
+accelerationLimit=profile.safety.provisional_maximum_acceleration_v_per_s2;
+issues=strings(0,1);
+if maximumVelocity>velocityLimit
+    issues(end+1)=sprintf( ...
+        "Requested velocity %.4g V/s exceeds the provisional %.4g V/s cap.", ...
+        maximumVelocity,velocityLimit);
+end
+if maximumAcceleration>accelerationLimit
+    issues(end+1)=sprintf( ...
+        "Requested acceleration %.4g V/s^2 exceeds the provisional %.4g V/s^2 cap.", ...
+        maximumAcceleration,accelerationLimit);
+end
+report=struct("schema_version","0.1.0","passed",isempty(issues), ...
+    "issues",issues,"maximum_velocity_v_per_s",maximumVelocity, ...
+    "maximum_acceleration_v_per_s2",maximumAcceleration, ...
+    "velocity_cap_v_per_s",velocityLimit, ...
+    "acceleration_cap_v_per_s2",accelerationLimit);
+end

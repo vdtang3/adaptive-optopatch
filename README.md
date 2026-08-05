@@ -627,6 +627,26 @@ The runner uses the first non-null cell in the planning bundle and automatically
 truncates its connectivity-screen schedule to the requested 1–10 test pulses.
 It does not modify the saved planning bundle.
 
+For every active camera, the runner calculates `frames_requested` independently.
+For a DAQ-triggered camera it first compares `1000/daqtrig_period_ms` with the
+ROI/readout-dependent rate estimated by Luminos. Because Luminos notes that its
+Fusion-camera formula is approximate, the guarded limit is 85% of that estimate.
+An incompatible trigger period is rejected with the minimum acceptable period;
+otherwise the count is `ceil(total_time * 1000 / daqtrig_period_ms)`. Cameras not
+using DAQ frame triggering retain Luminos's `AutoN` behavior. The rate estimate,
+guarded limit, calculation, and resulting frame count are archived in the trial's
+`camera_frame_plan`.
+
+The staged 2P runner also rejects targets whose center, spiral boundary, or dark
+parking point lies outside the convex hull of the accepted calibration spots.
+Attenuated tests must illuminate far enough along the retimed path to reach at
+least 95% of the requested spiral radius. Blocked tests may preview shorter
+illumination because no light reaches the sample. Until the dedicated feedback
+sweep replaces them, calibration and staged execution use manufacturer-derived
+provisional caps of 1000 V/s and 6.0e6 V/s^2. These are rounded below the GVS002
+small-angle envelope calculated from +/-0.2 degrees at 1 kHz and the inferred
+0.8 V/degree input setting; they are not a measured thermal-duty limit.
+
 For the first target acquisition:
 
 1. Mechanically block the 2P beam.
@@ -665,6 +685,99 @@ Each successful test folder contains:
 - `adaptive_optopatch_record` appended to `output_data.mat`, containing the
   release level, active calibration artifact, DAQ synchronization state,
   parking voltage, waveform summary, and expected Camera 1 frame mapping.
+
+### Required VU validation sequence before experimental release
+
+1. **Camera cadence with the final ROI.** Set Camera 1 to the intended ROI,
+   synchronous DAQ triggering, and a conservative trigger period. Set the
+   camera exposure field equal to that period because the current Luminos
+   Fusion estimate reads that field. Verify that the runner accepts the rate,
+   `frames_requested` equals the written-frame count (within one terminal
+   frame), and the dropped-frame report is empty. Repeat with both cameras
+   active if Camera 2 will be collected.
+2. **Calibration coverage.** Acquire a blocked grid, then attenuated grid, wide
+   enough to surround every soma spiral and its parking point. The target runner
+   now rejects extrapolation. Inspect every detected grid point and the held-out
+   residual before applying the calibration.
+3. **Feedback wiring and axis identity.** Include finite AI channels for both
+   feedback signals. The calibration archive now contains their raw samples and
+   correlations with independently varying X and Y commands. Both axes must be
+   present, non-flat, and strongly correlated with distinct commands. In the
+   20260731 test, `Dev2/ai2` tracked X while `Dev2/ai1` was flat; resolve the Y
+   connection before proceeding.
+4. **Blocked motion at provisional limits.** With the beam mechanically blocked,
+   run one target at 1000 V/s and 6.0e6 V/s^2. Confirm command bounds, smooth
+   outbound/return motion, arrival at the parking point, and agreement of both
+   feedback traces. Repeat for a target near each edge of the calibrated region.
+5. **Replace provisional motion limits.** Confirm that the desired 5--10 ms
+   pulses reach the requested radius. Change the manufacturer-derived caps only
+   through a feedback-based characterization, checking tracking
+   error, lag, overshoot, ringing, terminal return, and driver heating. Record
+   the accepted velocity and acceleration in a hardware-validation artifact
+   before changing the package caps.
+6. **Single attenuated spiral.** At validated motion limits and low Pockels
+   voltage, run one pulse. The runner requires illumination to reach at least
+   95% of the requested radius. Confirm the camera signal is centered on the
+   target and that feedback returns to the dark parking point.
+7. **Multi-pulse attenuated timing.** Run 10 pulses with the intended end-to-start
+   dark interval. Confirm every pulse in the camera data, pulse-to-frame mapping,
+   no dropped frames, full parking between pulses, and no cumulative phase drift.
+8. **Multiple target positions.** Repeat the attenuated test at the center and
+   extremes of the FOV. Targeting error must remain inside the chosen tolerance
+   without calibration extrapolation.
+
+Do not create an unrestricted hardware-validation record until all eight checks
+pass. Camera 2 must use a synchronized trigger if its frames need pulse-level
+assignment; free-running or trigger-off data can only provide coarse monitoring.
+
+### Automated blocked galvo-dynamics characterization
+
+The dedicated runner tests smooth, finite single-axis sine bursts from low to
+high acceleration demand. It forces the 2P modulator waveform to zero, removes
+unrelated active AO/DO outputs, preserves finite AI feedback channels and DAQ
+synchronization, analyzes every condition immediately, and stops before the next
+condition if tracking fails. It never turns on calibration or stimulation light.
+
+Prerequisites:
+
+- mechanically block the laser;
+- use the synchronized multi-DAQ Luminos branch with an unchanged master clock;
+- add finite AI channels `Dev2/ai1` and `Dev2/ai2` to the active waveform;
+- configure a camera ROI/trigger period that passes the camera-rate guard;
+- verify that the galvo drivers use the expected position-output connections.
+
+First run only the lowest-stress X/Y pair to identify wiring:
+
+```matlab
+result = run_galvo_dynamics_characterization(luminosApp, ...
+    "AmplitudesV", 0.05, ...
+    "FrequenciesHz", 25, ...
+    "OutputDirectory", "D:\GalvoValidation\wiring_test", ...
+    "ConfirmMechanicalBeamBlock", true, ...
+    "ConfirmFeedbackWiring", true);
+```
+
+After both axes pass, run the bounded GVS002 sweep:
+
+```matlab
+result = run_galvo_dynamics_characterization(luminosApp, ...
+    "AmplitudesV", [0.05 0.10 0.16 0.22], ...
+    "FrequenciesHz", [25 50 100 200 400 600 800 1000], ...
+    "Cycles", 20, "RampCycles", 2, ...
+    "OutputDirectory", "D:\GalvoValidation\full_sweep", ...
+    "ConfirmMechanicalBeamBlock", true, ...
+    "ConfirmFeedbackWiring", true);
+```
+
+Amplitude is hard-limited to 0.25 V and frequency to 1 kHz. Conditions are
+interleaved X then Y at each stress level. Each Luminos acquisition contains its
+own `galvo_dynamics_record.mat`; the output directory contains a resumable-style
+aggregate `galvo_dynamics_characterization.mat`. Default acceptance requires
+absolute correlation at least 0.98, feedback gain within 15% of 0.625, normalized
+RMS error at most 5%, lag at most 600 microseconds, and terminal return error at
+most 5%. The automatically reported highest passing condition is a measured test
+point, not yet the production limit; apply a margin and complete the repeated-duty
+and thermal tests before updating the hardware profile.
 
 On completion or error, cleanup commands `2P mod = 0 V`, restores the previous
 Luminos waveform and camera frame settings, and resets active DAQ tasks after an

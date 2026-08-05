@@ -18,6 +18,12 @@ if plan.pockels_voltage>0 && ~options.ConfirmLiveOutput
         "Positive Pockels output requires explicit live-light confirmation.");
 end
 profile=adaptive_optopatch.virtual_upright_2p_profile();
+motionValidation=adaptive_optopatch.validate_provisional_2p_motion_limits( ...
+    plan.maximum_velocity_v_per_s,plan.maximum_acceleration_v_per_s2);
+if ~motionValidation.passed
+    error("adaptive_optopatch:UnvalidatedGalvoMotionLimits","%s", ...
+        strjoin(motionValidation.issues,newline));
+end
 % The VU archive exposes one combined DAQ object; use an unfiltered lookup.
 daq=app.getDevice("DAQ");
 if numel(daq)~=1
@@ -100,12 +106,15 @@ if ~isfile(fullfile(folder,"output_data.mat"))
         "Luminos did not create output_data.mat in %s.",folder);
 end
 calibration_plan=plan; %#ok<NASGU>
+galvo_feedback=adaptive_optopatch.capture_galvo_feedback(daq,plan); %#ok<NASGU>
 calibration_run_record=struct("schema_version","0.1.0", ...
     "created_at",string(datetime("now","TimeZone","local")), ...
     "camera_serial","001125","camera_roi",options.CameraRoi, ...
-    "daq_synchronization",sync,"waveform_summary",waveformSummary); %#ok<NASGU>
+    "daq_synchronization",sync,"waveform_summary",waveformSummary, ...
+    "galvo_feedback_summary",galvo_feedback.summary, ...
+    "galvo_feedback_passed",galvo_feedback.passed); %#ok<NASGU>
 save(fullfile(folder,"galvo_calibration_plan.mat"), ...
-    "calibration_plan","calibration_run_record","-v7.3");
+    "calibration_plan","calibration_run_record","galvo_feedback","-v7.3");
 result=adaptive_optopatch.analyze_galvo_calibration_acquisition(folder,plan);
 calibration_result=result; %#ok<NASGU>
 save(fullfile(folder,"galvo_calibration_result.mat"), ...

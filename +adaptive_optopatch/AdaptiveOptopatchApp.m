@@ -74,7 +74,8 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 "PulseDurationMs",representativePulseMs);
             manifest=adaptive_optopatch.build_manifest( ...
                 reference,targets,protocol,"Mode",string(app.Mode.Value), ...
-                "OutputPrefix",string(protocol.protocol_id));
+                "OutputPrefix",string(protocol.protocol_id), ...
+                "CurrentObisPowerW",app.plannedObisPowerW());
             session=app.buildSessionState();
             legacyTimingFields=["screen_repeats","pulse_count","pulse_duration_ms", ...
                 "dark_interval_min_ms","dark_interval_max_ms", ...
@@ -96,9 +97,11 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             end
             plan=struct("schema_version","1.0.0", ...
                 "built_at",string(datetime("now","TimeZone","local")), ...
+                "software",adaptive_optopatch.software_provenance(), ...
                 "reference",reference,"targets",targets,"fov_state",fovState, ...
                 "protocol",protocol,"resolved_protocols",{resolvedProtocols}, ...
-                "manifest",manifest,"session",session);
+                "manifest",manifest,"session",session, ...
+                "advisories",manifest.advisories);
         end
 
         function protocol=loadPulseProtocol(app,path)
@@ -133,7 +136,8 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 preflight=adaptive_optopatch.preflight_trial( ...
                     plan.targets,plan.manifest.trials(k,:), ...
                     "RequireConfirmedLiveProtocol",false, ...
-                    "LiveProtocolConfirmed",true);
+                    "LiveProtocolConfirmed",true, ...
+                    "Advisories",plan.manifest.advisories);
                 issues=[issues;preflight.issues(:)]; %#ok<AGROW>
             end
             mode=string(app.Mode.Value);
@@ -194,7 +198,12 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             app.ValidatedPlan=plan;
             app.PlanState="VALIDATED";
             app.updateStateDisplay();
-            app.setStatus("Validation passed. The current experiment is ready to freeze and run.");
+            if isempty(plan.advisories)
+                app.setStatus("Validation passed. The current experiment is ready to freeze and run.");
+            else
+                messages=reshape(string({plan.advisories.message}),[],1);
+                app.setStatus(["Validation passed with nonblocking advisories:";messages]);
+            end
         end
 
         function plan=previewCurrentPlan(app)
@@ -302,7 +311,8 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             plan=struct("schema_version","1.0.0","built_at","frozen", ...
                 "reference",reference,"targets",targets,"protocol",protocol, ...
                 "resolved_protocols",{resolvedProtocols}, ...
-                "fov_state",fovState,"manifest",manifest,"session",session);
+                "fov_state",fovState,"manifest",manifest,"session",session, ...
+                "advisories",manifest_advisories(manifest));
             app.ActiveRunPlan=plan;
             app.ActiveRunFolder=folder;
             app.ValidatedPlan=plan;
@@ -348,6 +358,9 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             end
             app.ReferenceImage=image;
             app.LoadInfo=info;
+            app.CurrentFovState=struct([]);
+            app.CellIds=strings(0,1);
+            app.NextCellIndex=1;
             imagesc(app.Axes,image); axis(app.Axes,"image"); app.Axes.YDir="reverse";
             colormap(app.Axes,"gray"); app.applyContrast();
             app.restorePolygons(roiPositions);
@@ -356,6 +369,14 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
     end
 
     methods (Access=protected)
+        function value=currentPulseDurationMs(app)
+            value=5;
+            if isempty(app.PulseProtocol), return; end
+            protocol=adaptive_optopatch.normalize_protocol(app.PulseProtocol);
+            durations=protocol.events.duration_s(~protocol.events.is_null);
+            if ~isempty(durations), value=1000*durations(1); end
+        end
+
         function planChanged(app)
             if app.UnifiedReady && app.PlanState~="RUNNING", app.markDirty(); end
         end
@@ -441,8 +462,8 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             runtime=uigridlayout(root,[1 2]);
             runtime.Layout.Row=3; runtime.Layout.Column=[1 3];
             runtime.ColumnWidth={920,"1x"}; runtime.Padding=[4 4 4 4];
-            controls=uigridlayout(runtime,[5 8]);
-            controls.RowHeight={30,45,30,30,38};
+            controls=uigridlayout(runtime,[6 8]);
+            controls.RowHeight={30,45,30,30,38,30};
             controls.ColumnWidth={105,90,115,100,105,100,115,"1x"};
             app.StateLabel=uilabel(controls,"Text","● Modified — validation required", ...
                 "FontWeight","bold","FontColor",[0.75 0.25 0]);
@@ -510,6 +531,9 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             resumeButton=uibutton(controls,"Text","Resume run…", ...
                 "ButtonPushedFcn",@(~,~)app.chooseResume());
             resumeButton.Layout.Row=5; resumeButton.Layout.Column=[7 8];
+            reviewButton=uibutton(controls,"Text","Review completed Blue ramp…", ...
+                "ButtonPushedFcn",@(~,~)app.invoke(@()app.chooseRampReview()));
+            reviewButton.Layout.Row=6; reviewButton.Layout.Column=[1 3];
             app.WaveformAxes=uiaxes(runtime);
             title(app.WaveformAxes,"Waveform / DMD preview");
 
@@ -727,6 +751,24 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             if strlength(root)==0, root=string(pwd); end
         end
 
+        function chooseRampReview(app)
+            if isempty(app.PulseProtocol) || ...
+                    string(app.PulseProtocol.protocol_type)~="single_cell_blue_ramp"
+                error("adaptive_optopatch:RampProtocolRequired", ...
+                    "Load the single-cell Blue ramp protocol used for the acquisition first.");
+            end
+            folder=uigetdir(app.defaultRunRoot(),"Select completed ramp acquisition");
+            if isequal(folder,0), return; end
+            adaptive_optopatch.RampReviewApp(string(folder),app.PulseProtocol, ...
+                app.currentFovState(),"DecisionAppliedFcn",@(state)app.acceptRampReview(state));
+        end
+
+        function acceptRampReview(app,state)
+            app.CurrentFovState=state;
+            app.updateQc();
+            app.setStatus("Stored ramp calibration decision in the active FOV. Save the FOV to persist it.");
+        end
+
         function value=effectiveTwoPhotonVoltage(app)
             value=app.ModulatorVoltage.Value;
             if string(app.ReleaseLevel.Value)=="blocked_test", value=0; end
@@ -749,6 +791,14 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 "maximum_acceleration_v_per_s2",app.MaximumAcceleration.Value, ...
                 "allow_calibration_extrapolation",app.AllowCalibrationExtrapolation.Value, ...
                 "allow_camera_rate_override",app.AllowCameraRateOverride.Value);
+        end
+
+        function value=plannedObisPowerW(app)
+            if app.ObisOverride.Value
+                value=app.ObisPowerMw.Value/1000;
+            else
+                value=app.currentObisPowerW();
+            end
         end
 
         function controls=frozenRunControls(~,plan)
@@ -789,6 +839,11 @@ if ~isfield(saved,variable)
         "%s does not contain %s.",filename,variable);
 end
 value=saved.(variable);
+end
+
+function value=manifest_advisories(manifest)
+value=struct([]);
+if isfield(manifest,"advisories"), value=manifest.advisories; end
 end
 
 function save_frozen_protocol_archive(path,protocols,trialIds)

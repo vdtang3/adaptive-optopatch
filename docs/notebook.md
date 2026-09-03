@@ -17,9 +17,9 @@ stored voltage into every pulse and resolve all target IDs before freezing.
 Continuous 1P targeting uses the existing ALP `Write_Stack('slave')` path and
 the Virtual Upright `DMD Trigger` line (`Dev1/port0/line4`). The deterministic
 DAQ waveform advances the stack at optical pulse offsets, so the next mask is
-present throughout the existing dark interval. This timing decision depends on
-the ALP starting with stack entry 1 and advancing on one rising edge; it must be
-verified on the physical rig before experimental use.
+present throughout the existing dark interval. The earlier assumption that the
+ALP begins by displaying stack entry 1 was removed by the explicit initialization
+edge documented below.
 
 ## 2026-09-02 — Local Luminos simulation boundary
 
@@ -111,3 +111,32 @@ paired-pulse recovery, and explicit custom events while sharing the canonical
 validation and serialization API. Generated MAT artifacts are written beneath
 an ignored `generated` directory so source and experiment inputs remain
 separate.
+
+## 2026-09-03 — Calibration is advisory provenance and Blue stacks initialize explicitly
+
+Adaptive Optopatch treats experimental calibration state as advisory provenance
+rather than a rigid configuration lock. Safety- and execution-critical
+mismatches remain hard errors, while scientifically plausible changes to ROI
+geometry, mask padding, stimulation amplitude, or calibration conditions
+generate visible warnings but remain under operator control. Each new Blue
+calibration decision stores the chosen voltage together with the pulse duration,
+Blue-mask adjustment and area, canonical ROI polygon, OBIS setpoint when known,
+source acquisition, timestamp, and notes. Older FOV files remain loadable when
+some or all of these fields are absent. Round-robin generation still defaults to
+cells the operator marked `good`, but after a protocol is frozen its explicit
+per-pulse voltage is the source of truth as long as it remains within physical
+hardware limits.
+
+An externally triggered Blue ALP stack is now armed with
+`Write_Stack('slave')` and advanced by exactly one DAQ trigger per physical
+pulse. The first edge occurs at acquisition time zero while mod488 is dark,
+selecting pattern 1 during the protocol pre-delay. Each later edge occurs at the
+previous optical pulse's offset and uses the existing dark interval for target
+switching. No configurable DMD settle interval was introduced. Frozen waveform
+metadata records every trigger time together with its associated pulse ID,
+target cell ID, and DMD pattern index.
+
+The Orange recording mask has an explicit deployment action. It always rebuilds
+the union of current `recording_enabled` canonical ROIs at the current Orange
+expansion, requires the specifically named and calibrated `DMD_Orange`, and
+programs it through Luminos without modifying canonical ROI geometry.

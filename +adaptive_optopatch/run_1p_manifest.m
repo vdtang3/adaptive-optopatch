@@ -100,7 +100,8 @@ for k=1:n
     try
         row=run.trials(k,:);
         preflight=adaptive_optopatch.preflight_trial(targets,row, ...
-            "RequireConfirmedLiveProtocol",false,"LiveProtocolConfirmed",true);
+            "RequireConfirmedLiveProtocol",false,"LiveProtocolConfirmed",true, ...
+            "Advisories",row_advisories(row));
         run.trials.preflight_report{k}=preflight;
         if ~preflight.passed
             error("adaptive_optopatch:PreflightFailed","%s", ...
@@ -229,6 +230,7 @@ save_checkpoint();
         record.expected_frame_map=make_frame_map(waveformSummary.pulses);
         record.realized_pulses=join_pulse_provenance( ...
             waveformSummary.pulses,record.expected_frame_map);
+        record.advisories=row_advisories(row);
     end
 
     function map=make_frame_map(pulses)
@@ -258,6 +260,13 @@ save_checkpoint();
         hardware.dmd.Write_Static();
     end
 
+end
+
+function value=row_advisories(row)
+value=struct([]);
+if ismember("advisories",string(row.Properties.VariableNames))
+    value=row.advisories{1};
+end
 end
 
 function original=capture_original_state(hardware)

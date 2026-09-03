@@ -1133,10 +1133,19 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             frozenFov=adaptive_optopatch.load_fov_state( ...
                 fullfile(app.ActiveRunFolder,"fov_state.mat"));
             savedManifest=load(fullfile(app.ActiveRunFolder,"trial_manifest.mat"),"manifest");
+            savedTargets=load(fullfile(app.ActiveRunFolder,"pattern_bundle.mat"),"targets");
             testCase.verifyEqual(frozenProtocol.events.target_cell_id, ...
                 savedManifest.manifest.trials.pulse_schedule{1}.events.target_cell_id);
             testCase.verifyEqual(frozenProtocol.events.command_voltage_v,1.3);
             testCase.verifyEqual(string({frozenFov.cells.cell_id}),"cell_001");
+            testCase.verifyTrue(isfield(savedManifest.manifest,"advisories"));
+            testCase.verifyTrue(isfield(savedManifest.manifest,"software"));
+            testCase.verifyEqual(savedTargets.targets.parameters.orange_expansion_pixels, ...
+                frozenFov.orange_expansion_pixels);
+            testCase.verifyEqual(savedTargets.targets.parameters.blue_mask_adjustment_pixels, ...
+                frozenFov.blue_mask_adjustment_pixels);
+            testCase.verifyEqual(savedTargets.targets.orange_combined_mask, ...
+                any(savedTargets.targets.orange_camera_masks,3));
             testCase.verifyFalse(app.ControlsLocked);
         end
 
@@ -1323,12 +1332,30 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             [~,configured,summary]=adaptive_optopatch.build_luminos_1p_waveform_config( ...
                 globalProps,wfm,resolved,adaptive_optopatch.virtual_upright_1p_profile(), ...
                 "DmdSequencePlan",plan);
-            trigger=find(string({configured.do.name})=="AdaptiveOptopatch DMD advance",1);
+            trigger=find(string({configured.do.name})=="AdaptiveOptopatch DMD trigger",1);
             testCase.verifyNotEmpty(trigger);
             testCase.verifyEqual(configured.do(trigger).params{1}, ...
-                resolved.events.offset_s(1:end-1));
-            testCase.verifyEqual(summary.dmd_sequence.advance_onset_s, ...
-                resolved.events.offset_s(1:end-1));
+                [0;resolved.events.offset_s(1:end-1)]);
+            testCase.verifyEqual(summary.dmd_sequence.dmd_trigger_s, ...
+                [0;resolved.events.offset_s(1:end-1)]);
+            testCase.verifyEqual(summary.dmd_sequence.trigger_associated_pulse_id, ...
+                resolved.events.pulse_id);
+            testCase.verifyEqual(summary.dmd_sequence.stack_pattern_number, ...
+                (1:height(resolved.events))');
+            testCase.verifyLessThan(plan.initialization_trigger_s, ...
+                resolved.events.onset_s(1));
+            triggerWaveform=adaptive_optopatch.luminos_event_waveform( ...
+                [0 1/globalProps.rate],configured.do(trigger).params{:});
+            testCase.verifyEqual(triggerWaveform(1),1);
+            noPreDelay=resolved;
+            shift=noPreDelay.events.onset_s(1);
+            noPreDelay.events.onset_s=noPreDelay.events.onset_s-shift;
+            noPreDelay.acquisition_duration_s=noPreDelay.acquisition_duration_s-shift;
+            noPrePlan=adaptive_optopatch.build_dmd_sequence_plan(noPreDelay,targets);
+            testCase.verifyError(@()adaptive_optopatch.build_luminos_1p_waveform_config( ...
+                globalProps,wfm,noPreDelay,adaptive_optopatch.virtual_upright_1p_profile(), ...
+                "DmdSequencePlan",noPrePlan), ...
+                "adaptive_optopatch:DmdInitializationNotDark");
         end
 
         function validatesPulseIdentityTargetsAndPhysicalVoltage(testCase)
@@ -1387,6 +1414,110 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyEqual(realized.command_voltage_v,protocol.events.command_voltage_v);
             testCase.verifyEqual(realized.dmd_pattern_index, ...
                 manifest.trials.pulse_schedule{1}.events.dmd_pattern_index);
+            sequence=saved.adaptive_optopatch_record.waveform_summary.dmd_sequence;
+            testCase.verifyEqual(sequence.dmd_trigger_s, ...
+                [0;protocol.events.offset_s(1:end-1)]);
+            testCase.verifyEqual(numel(sequence.dmd_trigger_s),height(protocol.events));
+        end
+
+        function calibrationDriftIsAdvisoryButUnsafeStatesStillError(testCase)
+            [fovState,~]=test_fov_state();
+            fovState=adaptive_optopatch.update_cell_calibration(fovState,"cell_001", ...
+                "CommandVoltageV",0.8,"PulseDurationMs",10,"ObisPowerW",0.01);
+            frozen=adaptive_optopatch.generate_round_robin_protocol(fovState, ...
+                "PulsesPerCell",1,"PulseDurationMs",8);
+            fovState.cells(1).selected_blue_voltage_v=0.9;
+            fovState.cells(1).canonical_roi_polygon= ...
+                fovState.cells(1).canonical_roi_polygon+[0.25 0];
+            fovState.reference.cells=fovState.cells;
+            fovState.blue_mask_adjustment_pixels=0;
+            targets=adaptive_optopatch.build_target_bundle(fovState.reference, ...
+                "SpiralRadiusUm",2,"ParkingClearancePixels",1, ...
+                "PulseDurationMs",8,"OrangeExpansionPixels",7, ...
+                "BlueMaskAdjustmentPixels",0);
+            manifest=adaptive_optopatch.build_manifest(fovState.reference,targets, ...
+                frozen,"Mode","1p_dmd","CurrentObisPowerW",0.02);
+            codes=string({manifest.advisories.code});
+            testCase.verifyTrue(all(ismember(["blue_mask_adjustment_changed", ...
+                "pulse_duration_changed","roi_geometry_changed", ...
+                "obis_setpoint_changed","selected_voltage_changed", ...
+                "frozen_protocol_voltage_differs"],codes)));
+            testCase.verifyFalse(any(contains(codes,"orange")));
+            testCase.verifyEqual(manifest.trials.pulse_schedule{1}.events.command_voltage_v,0.8);
+
+            disabledReference=fovState.reference;
+            disabledReference.cells(1).stimulation_enabled=false;
+            disabledTargets=adaptive_optopatch.build_target_bundle(disabledReference, ...
+                "SpiralRadiusUm",2,"ParkingClearancePixels",1);
+            testCase.verifyError(@()adaptive_optopatch.build_manifest( ...
+                disabledReference,disabledTargets,frozen,"Mode","1p_dmd"), ...
+                "adaptive_optopatch:StimulationDisabledCell");
+            invalid=frozen; invalid.events.command_voltage_v(:)=0;
+            testCase.verifyError(@()adaptive_optopatch.build_manifest( ...
+                fovState.reference,targets,invalid,"Mode","1p_dmd"), ...
+                "adaptive_optopatch:InvalidTargetVoltage");
+            unsafe=frozen; unsafe.events.command_voltage_v(:)=5.1;
+            testCase.verifyError(@()adaptive_optopatch.build_manifest( ...
+                fovState.reference,targets,unsafe,"Mode","1p_dmd"), ...
+                "adaptive_optopatch:ModulatorVoltageOutOfRange");
+        end
+
+        function programsCurrentCombinedOrangeMask(testCase)
+            [fovState,~]=test_fov_state();
+            fovState.cells(2).recording_enabled=false;
+            fovState.reference.cells=fovState.cells;
+            targets=adaptive_optopatch.build_target_bundle(fovState.reference, ...
+                "SpiralRadiusUm",2,"ParkingClearancePixels",1, ...
+                "OrangeExpansionPixels",4);
+            sim=adaptive_optopatch.testing.make_simulated_luminos();
+            configuration=adaptive_optopatch.prepare_luminos_orange_mask( ...
+                sim,targets,"DryRun",false);
+            dmd=sim.getDevice("DMD","name","DMD_Orange");
+            testCase.verifyTrue(configuration.loaded);
+            testCase.verifyEqual(configuration.recording_cell_ids,["cell_001","cell_003"]);
+            testCase.verifyEqual(configuration.orange_expansion_pixels,4);
+            testCase.verifyEqual(dmd.Target,targets.orange_combined_mask);
+            testCase.verifyEqual(dmd.StaticWriteCount,1);
+        end
+
+        function preservesStableIdsAcrossEditDeleteAddAndReload(testCase)
+            root=tempname; mkdir(root);
+            cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
+            [app,~]=launch_simulated_adaptive_optopatch_gui("Visible","off","RunRoot",root);
+            appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
+            [~,polygons]=test_fov_state();
+            app.setReferenceData(ones(70,90),unified_test_info(root),polygons);
+            app.setCellCalibration("cell_003",1.1,"good",true);
+            firstPath=fullfile(root,"first_fov.mat"); app.saveCurrentFov(firstPath);
+            app.loadFov(firstPath);
+            moved=polygons{3}+[1 0]; app.setCanonicalRoi("cell_003",moved);
+            app.deleteCell("cell_002");
+            newId=app.addCanonicalRoi([40 30;49 30;49 39;40 39]);
+            testCase.verifyEqual(newId,"cell_004");
+            secondPath=fullfile(root,"second_fov.mat"); app.saveCurrentFov(secondPath);
+            loaded=adaptive_optopatch.load_fov_state(secondPath);
+            testCase.verifyEqual(string({loaded.cells.cell_id}), ...
+                ["cell_001","cell_003","cell_004"]);
+            testCase.verifyEqual(loaded.cells(2).selected_blue_voltage_v,1.1);
+            testCase.verifyEqual(loaded.canonical_roi_polygons{2},moved);
+            testCase.verifyEqual(loaded.next_cell_index,5);
+        end
+
+        function rampReviewStoresManualDecisionWithoutSpikeDetector(testCase)
+            [fovState,~]=test_fov_state();
+            protocol=adaptive_optopatch.generate_single_cell_ramp_protocol( ...
+                "cell_001",[0.6 0.9],"RepeatsPerVoltage",2);
+            t=(0:0.001:protocol.acquisition_duration_s)';
+            traces=struct("tvec",t,"frame_rate_hz",1000, ...
+                "corrected_traces",sin(2*pi*5*t)*(1:3));
+            review=adaptive_optopatch.RampReviewApp("simulated_ramp",protocol, ...
+                fovState,"Visible","off","TraceResult",traces);
+            cleanup=onCleanup(@()delete(review)); %#ok<NASGU>
+            updated=review.applyDecision(0.9,"good","manual review");
+            calibration=updated.cells(1).blue_calibration;
+            testCase.verifyEqual(updated.cells(1).selected_blue_voltage_v,0.9);
+            testCase.verifyEqual(calibration.pulse_duration_ms,10);
+            testCase.verifyEqual(calibration.calibration_acquisition,"simulated_ramp");
         end
     end
 end

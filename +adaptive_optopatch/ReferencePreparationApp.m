@@ -33,6 +33,7 @@ classdef ReferencePreparationApp < handle
         RoisVisible = true
         CellIds string = strings(0,1)
         CurrentFovState = struct([])
+        NextCellIndex double = 1
     end
 
     methods
@@ -59,6 +60,7 @@ classdef ReferencePreparationApp < handle
             if ~isempty(app.CurrentFovState)
                 fovState=merge_cell_state(fovState,app.CurrentFovState);
             end
+            fovState.next_cell_index=max(double(fovState.next_cell_index),app.NextCellIndex);
             adaptive_optopatch.save_fov_state(path,fovState);
             app.CurrentFovState=fovState;
         end
@@ -95,6 +97,7 @@ classdef ReferencePreparationApp < handle
             imagesc(app.Axes,app.ReferenceImage); axis(app.Axes,"image"); app.Axes.YDir="reverse";
             colormap(app.Axes,"gray"); app.applyContrast();
             app.CellIds=string({fovState.cells.cell_id})';
+            app.NextCellIndex=double(fovState.next_cell_index);
             positions=fovState.canonical_roi_polygons;
             if isempty(positions)
                 positions=masks_to_polygons(fovState.canonical_roi_masks);
@@ -117,10 +120,63 @@ classdef ReferencePreparationApp < handle
                 stimulationEnabled (1,1) logical = true
             end
             fovState=app.currentFovState();
+            pulseDurationMs=app.currentPulseDurationMs();
+            obisPowerW=app.currentObisPowerW();
+            ids=string({fovState.cells.cell_id}); index=find(ids==cellId,1);
+            replaceSnapshot=true;
+            if isfield(fovState.cells,"blue_calibration")
+                replaceSnapshot=isempty(fovState.cells(index).blue_calibration);
+            end
             fovState=adaptive_optopatch.update_cell_calibration(fovState,cellId, ...
                 "CommandVoltageV",commandVoltageV,"Status",status, ...
-                "StimulationEnabled",stimulationEnabled,"RecordingEnabled",true);
+                "StimulationEnabled",stimulationEnabled,"RecordingEnabled",true, ...
+                "PulseDurationMs",pulseDurationMs,"ObisPowerW",obisPowerW, ...
+                "ReplaceCalibrationSnapshot",replaceSnapshot);
             app.CurrentFovState=fovState;
+            app.updateQc();
+        end
+
+        function configuration=sendOrangeRecordingMask(app)
+            [~,targets]=app.buildSpatialArtifacts();
+            configuration=adaptive_optopatch.prepare_luminos_orange_mask( ...
+                app.LuminosApp,targets,"DryRun",false);
+            app.setStatus(sprintf(['Sent Orange recording mask to %s: %d cells, ' ...
+                'expansion %d px. Canonical ROIs were unchanged.'], ...
+                configuration.dmd_name,configuration.recording_cell_count, ...
+                configuration.orange_expansion_pixels));
+        end
+
+        function cellId=addCanonicalRoi(app,position)
+            arguments
+                app
+                position (:,2) double
+            end
+            if isempty(app.ReferenceImage) || size(position,1)<3
+                error("adaptive_optopatch:InvalidCanonicalRoi", ...
+                    "Load a reference image and provide at least three polygon vertices.");
+            end
+            cellId=compose("cell_%03d",app.NextCellIndex);
+            colors=lines(max(7,numel(app.RoiObjects)+1)); index=numel(app.RoiObjects)+1;
+            roi=drawpolygon(app.Axes,"Position",position, ...
+                "Color",colors(mod(index-1,size(colors,1))+1,:), ...
+                "Label",char(cellId),"LabelVisible","hover");
+            addlistener(roi,"ROIMoved",@(~,~)app.updateQc());
+            app.RoiObjects{end+1}=roi; app.CellIds(end+1,1)=cellId;
+            app.NextCellIndex=app.NextCellIndex+1; app.updateQc();
+        end
+
+        function deleteCell(app,cellId)
+            index=find(app.CellIds==string(cellId),1);
+            if isempty(index), error("adaptive_optopatch:UnknownCellId","Unknown cell ID: %s",cellId); end
+            if isvalid(app.RoiObjects{index}), delete(app.RoiObjects{index}); end
+            app.RoiObjects(index)=[]; app.CellIds(index)=[];
+            app.renumberRois(); app.updateQc();
+        end
+
+        function setCanonicalRoi(app,cellId,position)
+            index=find(app.CellIds==string(cellId),1);
+            if isempty(index), error("adaptive_optopatch:UnknownCellId","Unknown cell ID: %s",cellId); end
+            app.RoiObjects{index}.Position=double(position);
             app.updateQc();
         end
     end
@@ -132,8 +188,8 @@ classdef ReferencePreparationApp < handle
             root = uigridlayout(app.Figure,[2 3]);
             root.RowHeight = {"1x",145}; root.ColumnWidth = {245,"1x",390};
 
-            controls = uigridlayout(root,[23 2]); controls.Layout.Row = 1; controls.Layout.Column = 1;
-            controls.RowHeight = repmat({28},1,23); controls.ColumnWidth = {"1x",90};
+            controls = uigridlayout(root,[24 2]); controls.Layout.Row = 1; controls.Layout.Column = 1;
+            controls.RowHeight = repmat({28},1,24); controls.ColumnWidth = {"1x",90};
             b = uibutton(controls,"Text","Load Luminos snapshot…", ...
                 "ButtonPushedFcn",@(~,~)app.chooseSnapshot()); b.Layout.Column = [1 2];
             b = uibutton(controls,"Text","Load saved FOV…", ...
@@ -188,6 +244,8 @@ classdef ReferencePreparationApp < handle
             app.ToggleRoisButton = uibutton(controls,"Text","Hide ROI polygons", ...
                 "ButtonPushedFcn",@(~,~)app.toggleRois());
             app.ToggleRoisButton.Layout.Column = [1 2];
+            b=uibutton(controls,"Text","Send Orange recording mask", ...
+                "ButtonPushedFcn",@(~,~)app.invokeOrangeMask()); b.Layout.Column=[1 2];
             b = uibutton(controls,"Text","Save planning bundle…", ...
                 "ButtonPushedFcn",@(~,~)app.savePlanningBundle(),"FontWeight","bold"); b.Layout.Column = [1 2];
 
@@ -231,6 +289,7 @@ classdef ReferencePreparationApp < handle
                 [image,info] = adaptive_optopatch.read_reference_snapshot(snapshotPath);
                 app.ReferenceImage=image; app.LoadInfo=info; app.clearRois();
                 app.CurrentFovState=struct([]);
+                app.NextCellIndex=1;
                 imagesc(app.Axes,image); axis(app.Axes,"image"); app.Axes.YDir="reverse";
                 colormap(app.Axes,"gray"); app.applyContrast();
                 title(app.Axes,sprintf("%s — %s snapshot", ...
@@ -290,13 +349,14 @@ classdef ReferencePreparationApp < handle
             app.RoisVisible=true;
             app.updateRoiVisibility();
             colors=lines(max(7,numel(app.RoiObjects)+1)); idx=numel(app.RoiObjects)+1;
-            newCellId=next_cell_id(app.CellIds);
+            newCellId=compose("cell_%03d",app.NextCellIndex);
             try
                 roi=drawpolygon(app.Axes,"Color",colors(mod(idx-1,size(colors,1))+1,:), ...
                     "Label",char(newCellId),"LabelVisible","hover");
                 if isempty(roi.Position) || size(roi.Position,1)<3, delete(roi); return; end
                 addlistener(roi,"ROIMoved",@(~,~)app.updateQc());
-                app.RoiObjects{end+1}=roi; app.CellIds(end+1,1)=newCellId; app.updateQc();
+                app.RoiObjects{end+1}=roi; app.CellIds(end+1,1)=newCellId;
+                app.NextCellIndex=app.NextCellIndex+1; app.updateQc();
                 app.RoiList.Value=string(app.RoiList.Items(end)); app.highlightSelection();
             catch exception
                 app.showError(exception);
@@ -682,6 +742,14 @@ classdef ReferencePreparationApp < handle
             end
         end
 
+        function invokeOrangeMask(app)
+            try
+                app.sendOrangeRecordingMask();
+            catch exception
+                app.showError(exception);
+            end
+        end
+
         function excludeSelectedCell(app)
             cellId=app.selectedCellId();
             if strlength(cellId)==0
@@ -709,6 +777,23 @@ classdef ReferencePreparationApp < handle
                 "BlueMaskAdjustmentPixels",app.DmdErosion.Value);
             if ~isempty(app.CurrentFovState)
                 fovState=merge_cell_state(fovState,app.CurrentFovState);
+            end
+            fovState.next_cell_index=max(double(fovState.next_cell_index),app.NextCellIndex);
+        end
+
+
+        function value=currentPulseDurationMs(app)
+            value=app.PulseDuration.Value;
+        end
+
+        function value=currentObisPowerW(app)
+            value=NaN;
+            if isempty(app.LuminosApp), return; end
+            try
+                laser=app.LuminosApp.getDevice("Laser_Device","name","488", ...
+                    "displayWarning",false);
+                if ~isempty(laser), value=double(laser.SetPower); end
+            catch
             end
         end
 
@@ -759,7 +844,8 @@ if isempty(previous) || ~isfield(previous,"cells"), return; end
 oldIds=string({previous.cells.cell_id});
 stateFields=["recording_enabled","stimulation_enabled", ...
     "selected_blue_voltage_v","calibration_status", ...
-    "calibration_notes","calibration_acquisition"];
+    "calibration_notes","calibration_acquisition", ...
+    "blue_calibration","blue_calibration_history"];
 for k=1:numel(reference.cells)
     index=find(oldIds==string(reference.cells(k).cell_id),1);
     if isempty(index), continue; end
@@ -780,16 +866,6 @@ for k=1:size(masks,3)
     boundary=boundaries{index};
     polygons{k}=[boundary(:,2) boundary(:,1)];
 end
-end
-
-function id=next_cell_id(ids)
-numbers=zeros(0,1);
-for value=reshape(string(ids),1,[])
-    token=regexp(value,'^cell_(\d+)$','tokens','once');
-    if ~isempty(token), numbers(end+1,1)=str2double(token{1}); end %#ok<AGROW>
-end
-if isempty(numbers), number=1; else, number=max(numbers)+1; end
-id=compose("cell_%03d",number);
 end
 
 function [calibration,warningMessage]=persisted_scanner_calibration()

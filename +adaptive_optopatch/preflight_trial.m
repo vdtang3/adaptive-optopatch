@@ -5,12 +5,16 @@ arguments
     trialRow (1,:) table
     options.RequireConfirmedLiveProtocol (1,1) logical = true
     options.LiveProtocolConfirmed (1,1) logical = false
+    options.Advisories = struct([])
 end
 if height(trialRow)~=1
     error("adaptive_optopatch:SingleTrialRequired","Provide exactly one trial row.");
 end
 issues=strings(0,1);
 warnings=strings(0,1);
+if ~isempty(options.Advisories) && isfield(options.Advisories,"message")
+    warnings=[warnings;reshape(string({options.Advisories.message}),[],1)];
+end
 required=["stimulation_mode","is_null","target_index","pulse_schedule"];
 if ~all(ismember(required,string(trialRow.Properties.VariableNames)))
     issues(end+1)="Trial row is missing required fields.";

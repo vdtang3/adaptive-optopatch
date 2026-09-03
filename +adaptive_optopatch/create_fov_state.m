@@ -23,6 +23,7 @@ fovState=struct("schema_version","1.0.0", ...
     "canonical_roi_polygons",{roiPolygons(:)}, ...
     "orange_expansion_pixels",options.OrangeExpansionPixels, ...
     "blue_mask_adjustment_pixels",options.BlueMaskAdjustmentPixels, ...
+    "next_cell_index",next_cell_index(reference.cells), ...
     "cells",reference.cells);
 end
 
@@ -30,7 +31,8 @@ function reference=ensure_cell_state(reference,roiPolygons)
 for k=1:numel(reference.cells)
     defaults=struct("recording_enabled",true,"stimulation_enabled",true, ...
         "selected_blue_voltage_v",NaN,"calibration_status","uncalibrated", ...
-        "calibration_notes","","calibration_acquisition","");
+        "calibration_notes","","calibration_acquisition","", ...
+        "blue_calibration",struct([]),"blue_calibration_history",struct([]));
     names=fieldnames(defaults);
     for j=1:numel(names)
         if ~isfield(reference.cells,names{j})
@@ -43,4 +45,13 @@ for k=1:numel(reference.cells)
         reference.cells(k).canonical_roi_polygon=zeros(0,2);
     end
 end
+end
+
+function value=next_cell_index(cells)
+numbers=zeros(numel(cells),1);
+for k=1:numel(cells)
+    token=regexp(char(string(cells(k).cell_id)),'^cell_(\d+)$','tokens','once');
+    if ~isempty(token), numbers(k)=str2double(token{1}); end
+end
+value=max([numbers;0])+1;
 end

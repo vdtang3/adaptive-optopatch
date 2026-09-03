@@ -13,9 +13,9 @@ if options.DarkIntervalMs(2)<options.DarkIntervalMs(1)
     error("adaptive_optopatch:InvalidDarkInterval","DarkIntervalMs must be [minimum maximum].");
 end
 cells=fovState.cells;
-enabled=arrayfun(@(c)logical(c.stimulation_enabled),cells(:));
-good=string({cells.calibration_status})'=="good";
-voltage=arrayfun(@(c)double(c.selected_blue_voltage_v),cells(:));
+enabled=arrayfun(@(c)cell_flag(c,"stimulation_enabled",true),cells(:));
+good=arrayfun(@(c)cell_string(c,"calibration_status","uncalibrated")=="good",cells(:));
+voltage=arrayfun(@(c)cell_number(c,"selected_blue_voltage_v",NaN),cells(:));
 eligible=enabled & good & isfinite(voltage) & voltage>0;
 if ~any(eligible)
     error("adaptive_optopatch:NoCalibratedTargets", ...
@@ -51,4 +51,16 @@ protocol=struct("schema_version","2.0.0", ...
     "eligible_cell_ids",string({cells(indices).cell_id}), ...
     "acquisition_duration_s",max(onsetS+durationS)+options.PostDelayMs/1000);
 protocol=adaptive_optopatch.normalize_protocol(protocol);
+end
+
+function value=cell_flag(record,name,fallback)
+if isfield(record,name), value=logical(record.(name)); else, value=fallback; end
+end
+
+function value=cell_string(record,name,fallback)
+if isfield(record,name), value=string(record.(name)); else, value=string(fallback); end
+end
+
+function value=cell_number(record,name,fallback)
+if isfield(record,name), value=double(record.(name)); else, value=fallback; end
 end

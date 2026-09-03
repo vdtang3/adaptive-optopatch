@@ -47,6 +47,9 @@ dmd=device("DMD",profile1p.dmd.name);
 dmd.tform=affinetform2d([1.01 0 2;0 1.01 3;0 0 1]);
 dmd.refimage=zeros(32,32,"uint16");
 dmd.trigger_channel=profile1p.dmd.trigger_port;
+orangeDmd=device("DMD",profile1p.orange_dmd.name);
+orangeDmd.tform=affinetform2d([1.02 0 1;0 1.02 2;0 0 1]);
+orangeDmd.refimage=zeros(32,32,"uint16");
 laser=device("Laser_Device",profile1p.laser.name);
 laser.Mode="ANALOG";
 laser.SetPower=options.LaserPowerMw/1000;
@@ -70,7 +73,7 @@ else
     calibration=options.GalvoCalibration;
 end
 scanner.tform=calibration.calibration.tform;
-devices=[daq camera dmd laser mod488 shutter dmdTrigger scanner mod2p];
+devices=[daq camera dmd orangeDmd laser mod488 shutter dmdTrigger scanner mod2p];
 if strlength(options.MissingDevice)>0
     keep=arrayfun(@(d)d.name~=options.MissingDevice && ...
         d.DeviceType~=options.MissingDevice,devices);

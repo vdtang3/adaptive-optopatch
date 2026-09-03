@@ -25,17 +25,22 @@ for k=2:options.PulseCount
     onsetMs(k)=onsetMs(k-1)+durationMs(k-1)+darkMs(k-1);
 end
 offsetMs=onsetMs+durationMs;
-eventId=(1:options.PulseCount)';
+pulseId=(1:options.PulseCount)';
 conditionId=repmat("pulse",options.PulseCount,1);
+targetCellId=repmat("",options.PulseCount,1);
+isNull=false(options.PulseCount,1);
+commandVoltage=nan(options.PulseCount,1);
 amplitudeFraction=ones(options.PulseCount,1);
-events=table(eventId,conditionId,onsetMs/1000,durationMs/1000, ...
-    amplitudeFraction,eventId,offsetMs/1000, ...
-    repmat(options.ModulatorVoltage,options.PulseCount,1), ...
-    'VariableNames',{'event_id','condition_id','onset_s','duration_s', ...
-    'amplitude_fraction','pulse_index','offset_s','modulator_voltage'});
+if options.ModulatorVoltage>0
+    commandVoltage(:)=options.ModulatorVoltage;
+end
+events=table(pulseId,conditionId,onsetMs/1000,durationMs/1000, ...
+    targetCellId,isNull,commandVoltage,amplitudeFraction,offsetMs/1000, ...
+    'VariableNames',{'pulse_id','condition_id','onset_s','duration_s', ...
+    'target_cell_id','is_null','command_voltage_v','amplitude_fraction','offset_s'});
 
 protocol=struct;
-protocol.schema_version="1.0.0";
+protocol.schema_version="2.0.0";
 protocol.protocol_id="connectivity_screen_seed_"+options.RandomSeed;
 protocol.protocol_type="connectivity_screen";
 protocol.created_at=string(datetime("now","TimeZone","local"));
@@ -47,6 +52,10 @@ protocol.realized_dark_intervals_ms=darkMs;
 protocol.pre_delay_ms=options.PreDelayMs;
 protocol.post_delay_ms=options.PostDelayMs;
 protocol.modulator_voltage=options.ModulatorVoltage;
+% Retain the generator's configured physical level as the fallback used by
+% non-GUI callers. A finite per-pulse command or explicit runner override
+% still takes precedence.
+protocol.hardware_command_voltage=options.ModulatorVoltage;
 protocol.interval_semantics="pulse_end_to_next_pulse_start";
 protocol.events=events;
 protocol.acquisition_duration_s=(offsetMs(end)+options.PostDelayMs)/1000;

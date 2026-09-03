@@ -1,0 +1,37 @@
+function plan=build_dmd_sequence_plan(protocol,targets)
+%BUILD_DMD_SEQUENCE_PLAN Map each pulse to the mask displayed for that pulse.
+arguments
+    protocol (1,1) struct
+    targets (1,1) struct
+end
+protocol=adaptive_optopatch.normalize_protocol(protocol); events=protocol.events;
+required=["target_cell_id","dmd_pattern_index"];
+if ~all(ismember(required,string(events.Properties.VariableNames)))
+    error("adaptive_optopatch:UnresolvedDmdSequence", ...
+        "Resolved target IDs and DMD pattern indices are required.");
+end
+n=height(events); stack=false([size(targets.blank_dmd_mask),n]);
+for k=1:n
+    index=double(events.dmd_pattern_index(k));
+    if events.is_null(k)
+        if index~=0, error("adaptive_optopatch:NullDmdPattern","Null pulses must use blank pattern index zero."); end
+    elseif index<1 || index>size(targets.dmd_camera_masks,3) || fix(index)~=index
+        error("adaptive_optopatch:DmdPatternIndexMismatch", ...
+            "Pulse %s has invalid DMD pattern index %g.",string(events.pulse_id(k)),index);
+    else
+        stack(:,:,k)=targets.dmd_camera_masks(:,:,index);
+        if string(targets.targets(index).cell_id)~=events.target_cell_id(k)
+            error("adaptive_optopatch:DmdPatternTargetMismatch", ...
+                "Pulse %s target does not match its DMD pattern.",string(events.pulse_id(k)));
+        end
+    end
+end
+activationS=[0;events.offset_s(1:end-1)];
+plan=struct("schema_version","1.0.0","camera_pattern_stack",stack, ...
+    "pattern_count",n,"pulse_id",events.pulse_id, ...
+    "target_cell_id",events.target_cell_id, ...
+    "dmd_pattern_index",events.dmd_pattern_index, ...
+    "pattern_activation_s",activationS, ...
+    "advance_onset_s",events.offset_s(1:end-1), ...
+    "no_artificial_settle_interval",true);
+end

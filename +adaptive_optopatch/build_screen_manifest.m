@@ -56,6 +56,18 @@ for repeatIndex = 1:options.Repeats
             "PostDelayMs",options.PostDelayMs, ...
             "ModulatorVoltage",trialVoltage, ...
             "RandomSeed",options.RandomSeed+trial);
+        if isNull
+            pulseProtocol.events.is_null(:)=true;
+            pulseProtocol.events.target_cell_id(:)="";
+            pulseProtocol.events.command_voltage_v(:)=0;
+            pulseProtocol.events.amplitude_fraction(:)=0;
+            pulseProtocol.events.dmd_pattern_index=zeros(height(pulseProtocol.events),1);
+        else
+            pulseProtocol.events.target_cell_id(:)=block(b);
+            pulseProtocol.events.dmd_pattern_index= ...
+                repmat(patternIndex,height(pulseProtocol.events),1);
+        end
+        pulseProtocol=adaptive_optopatch.normalize_protocol(pulseProtocol);
         pulseSchedule={pulseProtocol};
         acquisitionDurationS=pulseProtocol.acquisition_duration_s;
         row = table(trial, repeatIndex, options.Mode, block(b), isNull, ...

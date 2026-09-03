@@ -35,6 +35,12 @@ for k=1:n
         "EventDarkIntervalMs",options.EventDarkIntervalMs, ...
         "PreDelayMs",options.PreDelayMs,"PostDelayMs",options.PostDelayMs, ...
         "RandomSeed",options.RandomSeed+k);
+    nonNull=~pulse_schedule{k}.events.is_null;
+    pulse_schedule{k}.events.target_cell_id(nonNull)=target_cell_id(k);
+    pulse_schedule{k}.events.dmd_pattern_index=zeros(height(pulse_schedule{k}.events),1);
+    pulse_schedule{k}.events.dmd_pattern_index(nonNull)= ...
+        targets.targets(sourceIndices(k)).dmd_mask_index;
+    pulse_schedule{k}=adaptive_optopatch.normalize_protocol(pulse_schedule{k});
     acquisition_duration_s(k)=pulse_schedule{k}.acquisition_duration_s;
 end
 stimulation_mode=repmat(options.Mode,n,1);

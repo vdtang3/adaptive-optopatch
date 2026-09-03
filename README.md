@@ -1,8 +1,9 @@
 # Adaptive Optopatch
 
-MATLAB package for planning and running one-neuron-per-acquisition Optopatch
-experiments alongside Luminos. It keeps neuron definitions in voltage-camera
-coordinates and supports two interchangeable stimulation backends:
+MATLAB package for planning and running Optopatch experiments alongside
+Luminos. A persistent FOV stores canonical cell ROIs, stable IDs, recording and
+stimulation eligibility, and per-cell Blue-light calibrations. It supports two
+interchangeable stimulation backends:
 
 - `1p_dmd`: logical soma masks transformed by Luminos through `DMD_Blue`.
 - `2p_spiral`: soma centers and radii passed to the Luminos scanning device.
@@ -26,6 +27,8 @@ Then use one window:
 ```text
 Load Camera 1 snapshot
 → annotate soma ROIs
+→ save/reload the persistent FOV
+→ tune Orange and Blue masks
 → choose 1P DMD or 2P spiral
 → load pulse_protocol.mat
 → configure mod488/Pockels voltage and hardware limits
@@ -75,11 +78,20 @@ adaptive_optopatch.save_protocol("stf_50_100hz.mat", protocol);
 ```
 
 Editable generators for randomized connectivity, regular-rate, STF,
-paired-pulse, and custom schedules are in `pulse-protocols/`. Canonical event rows contain
-`event_id`, `condition_id`, `onset_s`, `duration_s`, and
-`amplitude_fraction`. The fraction is relative experimental intensity—not a
-hardware voltage. The GUI multiplies it by the configured mod488 or Pockels
-voltage while constructing the final waveform.
+paired-pulse, single-cell Blue ramps, calibrated round robin, and custom
+schedules are in `pulse-protocols/`. Protocol schema 2 uses one row per
+physical pulse. Canonical columns are `pulse_id`, `condition_id`, `onset_s`,
+`duration_s`, `target_cell_id`, `is_null`, `command_voltage_v`, and
+`amplitude_fraction`. A finite physical command takes precedence; otherwise
+the relative amplitude is multiplied by the configured GUI hardware voltage.
+Train metadata such as `train_id`, `pulse_in_train`, `repeat_index`, and
+`frequency_hz` groups ordinary pulse rows without nesting pulse times.
+
+For the EPSP workflow, use `create_single_cell_ramp_protocol.m` to acquire one
+static-target calibration movie, store the operator-selected voltage in the
+FOV, then use `create_round_robin_protocol.m`. The latter reads calibrated,
+stimulation-enabled cells directly from `fov_state.mat` and produces one
+resolved, randomized, continuous multi-target acquisition.
 
 ### 2. Open Adaptive Optopatch
 
@@ -87,8 +99,9 @@ Any meaningful ROI or parameter change marks the plan as
 `Modified — validation required`. Successful validation marks the exact current
 plan `Ready to run`. The first run action automatically creates an
 `adaptive_optopatch_run_*` directory containing `reference_model.mat`,
-`pattern_bundle.mat`, `pulse_protocol.mat`, `trial_manifest.mat`, and
-`planning_session.mat` before acquisition starts. Execution and resume use
+`pattern_bundle.mat`, `fov_state.mat`, `pulse_protocol.mat`,
+`trial_manifest.mat`, and `planning_session.mat` before acquisition starts.
+Execution and resume use
 those frozen values, not controls that may subsequently be edited. Planning
 controls are disabled while the backend is running. `Save plan…` remains
 available for optional planning-only work, and `Resume run…` loads an existing
@@ -339,8 +352,11 @@ After a preview is generated, **Hide target preview** and **Hide ROI polygons**
 independently reveal the raw reference image. These controls only change what is
 shown; they do not delete ROIs or alter the target and planning-bundle data.
 
-The DMD erosion value is signed: positive values shrink the soma mask, zero
-leaves it unchanged, and negative values expand it by the absolute pixel value.
+The Blue adjustment is signed: positive values expand the soma mask, zero
+leaves it unchanged, and negative values shrink it by the absolute pixel value.
+Orange expansion is a separate nonnegative value. The combined Orange mask
+contains every recording-enabled cell, including cells excluded from Blue
+stimulation.
 GUI-generated screens contain no null acquisitions; null rows remain available
 through the programmatic manifest API when needed for specialized controls.
 
@@ -385,7 +401,7 @@ reference = adaptive_optopatch.create_reference_model( ...
 
 targets = adaptive_optopatch.build_target_bundle(reference, ...
     "SpiralRadiusUm", 6, "SpiralDensityPointsPerVolt", 10, ...
-    "DmdErosionPixels", 1);
+    "OrangeExpansionPixels", 2, "BlueMaskAdjustmentPixels", -1);
 
 manifest = adaptive_optopatch.build_screen_manifest(reference, targets, ...
     "Mode", "2p_spiral", "Repeats", 5, "NullFraction", 0.1, ...

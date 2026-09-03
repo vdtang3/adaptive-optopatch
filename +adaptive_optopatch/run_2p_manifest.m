@@ -177,7 +177,7 @@ run.finished_at=string(datetime("now","TimeZone","local")); save_checkpoint();
         end
     end
     function record=build_record(row,summary,waveforms,folder)
-        pulses=adaptive_optopatch.flatten_pulse_schedule(row.pulse_schedule{1});
+        pulses=adaptive_optopatch.flatten_pulse_schedule(protocol);
         frameRate=cameraFramePlan(hardware.voltage_camera_index).frame_rate_hz;
         if ~isfinite(frameRate)
             frameRate=double(hardware.voltage_camera.calculate_framerate());
@@ -193,9 +193,11 @@ run.finished_at=string(datetime("now","TimeZone","local")); save_checkpoint();
             "galvo_feedback_passed",galvo_feedback.passed, ...
             "waveform_file",string(fullfile(folder,"adaptive_optopatch_2p_waveforms.mat")), ...
             "parking_v",waveforms.parking_v, ...
-            "expected_frame_map",table(pulses.pulse_index,pulses.onset_s, ...
+            "pulse_schedule",protocol, ...
+            "realized_pulses",pulses, ...
+            "expected_frame_map",table(pulses.pulse_id,pulses.onset_s, ...
             floor(pulses.onset_s*frameRate)+1, ...
-            'VariableNames',{'pulse_index','onset_s','expected_frame'}));
+            'VariableNames',{'pulse_id','onset_s','expected_frame'}));
     end
     function save_checkpoint()
         run.updated_at=string(datetime("now","TimeZone","local"));
@@ -261,6 +263,8 @@ function protocol=override_protocol_voltage(protocol,voltage)
 if ~isfinite(voltage), return; end
 protocol=adaptive_optopatch.normalize_protocol(protocol);
 protocol.hardware_command_voltage=voltage;
+protocol.events.command_voltage_v(~protocol.events.is_null)=voltage;
+protocol.events.command_voltage_v(protocol.events.is_null)=0;
 end
 function original=capture_state(hardware)
 original=struct("global_props",hardware.daq.global_props, ...

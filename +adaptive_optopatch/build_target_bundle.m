@@ -4,7 +4,8 @@ arguments
     reference (1,1) struct
     options.SpiralRadiusUm (1,1) double {mustBePositive} = 6
     options.SpiralDensityPointsPerVolt (1,1) double {mustBePositive} = 10
-    options.DmdErosionPixels (1,1) double {mustBeInteger} = 1
+    options.OrangeExpansionPixels (1,1) double {mustBeNonnegative,mustBeInteger} = 2
+    options.BlueMaskAdjustmentPixels (1,1) double {mustBeInteger} = -1
     options.EdgeMarginPixels (1,1) double {mustBeNonnegative} = 2
     options.ParkingClearancePixels (1,1) double {mustBeNonnegative} = 3
     options.ParkingMaximumDistanceSpiralDiameters (1,1) double {mustBePositive} = 2
@@ -14,9 +15,9 @@ arguments
 end
 
 nCells = numel(reference.cells);
-dmdMasks = false([reference.image_size, nCells]);
+blueMasks = false([reference.image_size, nCells]);
+orangeMasks = false([reference.image_size, nCells]);
 targetRows = struct([]);
-allRois = any(reference.roi_masks,3);
 spiralRadiusPixels=options.SpiralRadiusUm/reference.microns_per_pixel;
 if isfield(reference.cells,"image_centroid_xy")
     centers=reshape([reference.cells.image_centroid_xy],2,[])';
@@ -40,21 +41,33 @@ cameraPixelScale=camera_pixel_scale(reference);
 scannerRadiusPixels=spiralRadiusPixels*max(cameraPixelScale);
 
 for i = 1:nCells
-    mask = reference.roi_masks(:,:,i);
-    if options.DmdErosionPixels > 0
-        mask = imerode(mask, strel("disk", options.DmdErosionPixels, 0));
-        if ~any(mask,"all")
-            mask = reference.roi_masks(:,:,i);
-        end
-    elseif options.DmdErosionPixels < 0
-        mask = imdilate(mask,strel("disk",abs(options.DmdErosionPixels),0));
+    canonicalMask=reference.roi_masks(:,:,i);
+    orangeMask=canonicalMask;
+    if options.OrangeExpansionPixels>0
+        orangeMask=imdilate(orangeMask,strel("disk",options.OrangeExpansionPixels,0));
     end
-    otherRois = allRois & ~reference.roi_masks(:,:,i);
+    mask=canonicalMask;
+    if options.BlueMaskAdjustmentPixels < 0
+        mask = imerode(mask, strel("disk", abs(options.BlueMaskAdjustmentPixels), 0));
+        if ~any(mask,"all")
+            mask = canonicalMask;
+        end
+    elseif options.BlueMaskAdjustmentPixels > 0
+        mask = imdilate(mask,strel("disk",options.BlueMaskAdjustmentPixels,0));
+    end
+    otherIndex=setdiff(1:nCells,i);
+    if isempty(otherIndex), otherRois=false(reference.image_size);
+    else, otherRois=any(reference.roi_masks(:,:,otherIndex),3); end
     overlapPixels = nnz(mask & otherRois);
     edgeFlag = reference.cells(i).edge_distance_pixels < options.EdgeMarginPixels;
-    dmdMasks(:,:,i) = mask;
+    blueMasks(:,:,i) = mask;
+    orangeMasks(:,:,i)=orangeMask;
     targetRecord = struct( ...
         "cell_id", reference.cells(i).cell_id, ...
+        "recording_enabled",cell_flag(reference.cells(i),"recording_enabled",true), ...
+        "stimulation_enabled",cell_flag(reference.cells(i),"stimulation_enabled",true), ...
+        "selected_blue_voltage_v",cell_number(reference.cells(i),"selected_blue_voltage_v",NaN), ...
+        "calibration_status",cell_string(reference.cells(i),"calibration_status","uncalibrated"), ...
         "camera_centroid_xy",cameraCenters(i,:), ...
         "image_centroid_xy",centers(i,:), ...
         "dmd_mask_index", i, ...
@@ -79,6 +92,8 @@ for i = 1:nCells
             scannerRadiusPixels,options.SpiralDensityPointsPerVolt, ...
             options.PulseDurationMs,"ScannerSampleRateHz",options.ScannerSampleRateHz), ...
         "edge_flag", edgeFlag, ...
+        "blue_qc_pass",overlapPixels==0 && ~edgeFlag, ...
+        "spiral_qc_pass",~edgeFlag && parking(i).parking_qc_pass, ...
         "qc_pass", overlapPixels == 0 && ~edgeFlag && parking(i).parking_qc_pass);
     if i == 1
         targetRows = targetRecord;
@@ -88,12 +103,16 @@ for i = 1:nCells
 end
 
 targets = struct;
-targets.schema_version = "0.2.0";
+targets.schema_version = "1.0.0";
 targets.fov_id = reference.fov_id;
 targets.coordinate_space = "voltage_camera_full_sensor_pixels";
 targets.preview_coordinate_space="snapshot_intrinsic_pixels";
 targets.blank_dmd_mask = false(reference.image_size);
-targets.dmd_camera_masks = dmdMasks;
+targets.blue_camera_masks = blueMasks;
+targets.dmd_camera_masks = blueMasks;
+targets.orange_camera_masks=orangeMasks;
+recordingEnabled=arrayfun(@(cell)cell_flag(cell,"recording_enabled",true),reference.cells);
+targets.orange_combined_mask=any(orangeMasks(:,:,recordingEnabled),3);
 targets.targets = targetRows;
 targets.parameters = struct( ...
     "spiral_radius_um", options.SpiralRadiusUm, ...
@@ -105,8 +124,21 @@ targets.parameters = struct( ...
         options.ParkingMaximumDistanceSpiralDiameters, ...
     "parking_intensity_averaging_radius_pixels", ...
         options.ParkingIntensityAveragingRadiusPixels, ...
-    "dmd_erosion_pixels", options.DmdErosionPixels, ...
+    "orange_expansion_pixels",options.OrangeExpansionPixels, ...
+    "blue_mask_adjustment_pixels",options.BlueMaskAdjustmentPixels, ...
     "edge_margin_pixels", options.EdgeMarginPixels);
+end
+
+function value=cell_flag(cellRecord,name,default)
+if isfield(cellRecord,name), value=logical(cellRecord.(name)); else, value=default; end
+end
+
+function value=cell_number(cellRecord,name,default)
+if isfield(cellRecord,name), value=double(cellRecord.(name)); else, value=default; end
+end
+
+function value=cell_string(cellRecord,name,default)
+if isfield(cellRecord,name), value=string(cellRecord.(name)); else, value=string(default); end
 end
 
 function cameraXY=image_to_camera_coordinates(reference,imageXY)

@@ -12,6 +12,7 @@ classdef ReferencePreparationApp < handle
         MicronsPerPixel
         SpiralRadius
         SpiralDensity
+        OrangeExpansion
         DmdErosion
         Repeats
         PulseCount
@@ -30,6 +31,8 @@ classdef ReferencePreparationApp < handle
         ScannerWarning = ""
         TargetsVisible = true
         RoisVisible = true
+        CellIds string = strings(0,1)
+        CurrentFovState = struct([])
     end
 
     methods
@@ -45,6 +48,81 @@ classdef ReferencePreparationApp < handle
         function delete(app)
             if ~isempty(app.Figure) && isvalid(app.Figure), delete(app.Figure); end
         end
+
+        function fovState=saveCurrentFov(app,path)
+            [reference,~]=app.buildSpatialArtifacts();
+            positions=cellfun(@(roi)double(roi.Position),app.RoiObjects, ...
+                "UniformOutput",false);
+            fovState=adaptive_optopatch.create_fov_state(reference,positions, ...
+                "OrangeExpansionPixels",app.OrangeExpansion.Value, ...
+                "BlueMaskAdjustmentPixels",app.DmdErosion.Value);
+            if ~isempty(app.CurrentFovState)
+                fovState=merge_cell_state(fovState,app.CurrentFovState);
+            end
+            adaptive_optopatch.save_fov_state(path,fovState);
+            app.CurrentFovState=fovState;
+        end
+
+        function fovState=loadFov(app,path)
+            fovState=adaptive_optopatch.load_fov_state(path);
+            app.setFovState(fovState);
+        end
+
+        function setFovState(app,fovState)
+            reference=fovState.reference;
+            app.ReferenceImage=single(reference.reference_image);
+            metadata=struct("rig_name",reference.rig_name, ...
+                "voltage_camera",reference.voltage_camera);
+            if isfield(reference,"stimulation_dmd"), metadata.stimulation_dmd=reference.stimulation_dmd; end
+            if isfield(reference,"scanner"), metadata.scanner=reference.scanner; end
+            sourceSnapshot=""; if isfield(reference,"source_snapshot"), sourceSnapshot=string(reference.source_snapshot); end
+            sourceExperiment="";
+            if isfield(reference,"source_experiment")
+                sourceExperiment=string(reference.source_experiment);
+            end
+            cameraName="Camera 1";
+            if isfield(reference.voltage_camera,"name")
+                cameraName=string(reference.voltage_camera.name);
+            end
+            cameraBin=1;
+            if isfield(reference.voltage_camera,"bin")
+                cameraBin=double(reference.voltage_camera.bin);
+            end
+            app.LoadInfo=struct("metadata",metadata,"snapshot_path",sourceSnapshot, ...
+                "snapshot_directory",sourceExperiment, ...
+                "snapshot_name",string(reference.fov_id),"image_size",reference.image_size, ...
+                "camera_name",cameraName,"camera_bin",cameraBin,"timestamp",[]);
+            imagesc(app.Axes,app.ReferenceImage); axis(app.Axes,"image"); app.Axes.YDir="reverse";
+            colormap(app.Axes,"gray"); app.applyContrast();
+            app.CellIds=string({fovState.cells.cell_id})';
+            positions=fovState.canonical_roi_polygons;
+            if isempty(positions)
+                positions=masks_to_polygons(fovState.canonical_roi_masks);
+            end
+            app.restorePolygons(positions);
+            app.OrangeExpansion.Value=fovState.orange_expansion_pixels;
+            app.DmdErosion.Value=fovState.blue_mask_adjustment_pixels;
+            app.CurrentFovState=fovState;
+            app.setStatus(sprintf("Loaded persistent FOV %s with %d stable cells.", ...
+                fovState.fov_id,numel(fovState.cells)));
+            app.planChanged();
+        end
+
+        function setCellCalibration(app,cellId,commandVoltageV,status,stimulationEnabled)
+            arguments
+                app
+                cellId (1,1) string
+                commandVoltageV (1,1) double = NaN
+                status (1,1) string = "good"
+                stimulationEnabled (1,1) logical = true
+            end
+            fovState=app.currentFovState();
+            fovState=adaptive_optopatch.update_cell_calibration(fovState,cellId, ...
+                "CommandVoltageV",commandVoltageV,"Status",status, ...
+                "StimulationEnabled",stimulationEnabled,"RecordingEnabled",true);
+            app.CurrentFovState=fovState;
+            app.updateQc();
+        end
     end
 
     methods (Access=protected)
@@ -54,10 +132,14 @@ classdef ReferencePreparationApp < handle
             root = uigridlayout(app.Figure,[2 3]);
             root.RowHeight = {"1x",145}; root.ColumnWidth = {245,"1x",390};
 
-            controls = uigridlayout(root,[20 2]); controls.Layout.Row = 1; controls.Layout.Column = 1;
-            controls.RowHeight = repmat({28},1,20); controls.ColumnWidth = {"1x",90};
+            controls = uigridlayout(root,[23 2]); controls.Layout.Row = 1; controls.Layout.Column = 1;
+            controls.RowHeight = repmat({28},1,23); controls.ColumnWidth = {"1x",90};
             b = uibutton(controls,"Text","Load Luminos snapshot…", ...
                 "ButtonPushedFcn",@(~,~)app.chooseSnapshot()); b.Layout.Column = [1 2];
+            b = uibutton(controls,"Text","Load saved FOV…", ...
+                "ButtonPushedFcn",@(~,~)app.chooseFov()); b.Layout.Column = [1 2];
+            b = uibutton(controls,"Text","Save FOV…", ...
+                "ButtonPushedFcn",@(~,~)app.chooseSaveFov()); b.Layout.Column = [1 2];
             b = uibutton(controls,"Text","Add polygon soma", ...
                 "ButtonPushedFcn",@(~,~)app.addRoi()); b.Layout.Column = [1 2];
             b = uibutton(controls,"Text","Delete selected", ...
@@ -72,10 +154,13 @@ classdef ReferencePreparationApp < handle
             app.SpiralRadius = uieditfield(controls,"numeric","Value",6,"Limits",[eps Inf]);
             uilabel(controls,"Text","Spiral density (points/V)");
             app.SpiralDensity = uieditfield(controls,"numeric","Value",10,"Limits",[eps Inf]);
-            uilabel(controls,"Text","DMD erosion (+ shrink)");
-            app.DmdErosion = uieditfield(controls,"numeric","Value",1, ...
+            uilabel(controls,"Text","Orange expansion (px)");
+            app.OrangeExpansion=uieditfield(controls,"numeric","Value",2, ...
+                "Limits",[0 Inf],"RoundFractionalValues","on");
+            uilabel(controls,"Text","Blue adjustment (px)");
+            app.DmdErosion = uieditfield(controls,"numeric","Value",-1, ...
                 "Limits",[-Inf Inf],"RoundFractionalValues","on", ...
-                "Tooltip","Positive shrinks the mask; negative expands it.");
+                "Tooltip","Positive expands; negative shrinks the Blue mask.");
             uilabel(controls,"Text","Screen repeats");
             app.Repeats = uieditfield(controls,"numeric","Value",1,"Limits",[1 Inf],"RoundFractionalValues","on");
             uilabel(controls,"Text","Pulses / neuron");
@@ -110,19 +195,23 @@ classdef ReferencePreparationApp < handle
             title(app.Axes,"Load a Luminos camera snapshot to begin"); axis(app.Axes,"image");
             colormap(app.Axes,"gray"); app.Axes.YDir = "reverse";
 
-            side = uigridlayout(root,[3 1]); side.Layout.Row=1; side.Layout.Column=3;
-            side.RowHeight={26,150,"1x"};
+            side = uigridlayout(root,[5 1]); side.Layout.Row=1; side.Layout.Column=3;
+            side.RowHeight={26,120,"1x",30,30};
             uilabel(side,"Text","Somata (select here, drag vertices in image)","FontWeight","bold");
             app.RoiList = uilistbox(side,"Items",strings(1,0), ...
                 "ValueChangedFcn",@(~,~)app.highlightSelection());
             app.QcTable = uitable(side,"ColumnName", ...
-                ["Cell","Area px","X","Y","Edge px","QC"]);
+                ["Cell","Area px","X","Y","Edge px","QC","Record","Stim","Blue V","Calibration"]);
+            uibutton(side,"Text","Set selected Blue calibration…", ...
+                "ButtonPushedFcn",@(~,~)app.chooseCellCalibration());
+            uibutton(side,"Text","Exclude selected from stimulation", ...
+                "ButtonPushedFcn",@(~,~)app.excludeSelectedCell());
 
             app.Status = uitextarea(root,"Editable","off", ...
                 "Value",["Ready. In Luminos, click Snap for Camera 1."; ...
                          "Then load its MAT file from the Luminos Snaps folder."]);
             app.Status.Layout.Row=2; app.Status.Layout.Column=[1 3];
-            watched={app.Mode,app.MicronsPerPixel,app.SpiralRadius, ...
+            watched={app.Mode,app.MicronsPerPixel,app.SpiralRadius,app.OrangeExpansion, ...
                 app.SpiralDensity,app.DmdErosion,app.Repeats,app.PulseCount, ...
                 app.PulseDuration,app.DarkIntervalMin,app.DarkIntervalMax, ...
                 app.ModulatorVoltage,app.PreDelay,app.PostDelay};
@@ -141,6 +230,7 @@ classdef ReferencePreparationApp < handle
             try
                 [image,info] = adaptive_optopatch.read_reference_snapshot(snapshotPath);
                 app.ReferenceImage=image; app.LoadInfo=info; app.clearRois();
+                app.CurrentFovState=struct([]);
                 imagesc(app.Axes,image); axis(app.Axes,"image"); app.Axes.YDir="reverse";
                 colormap(app.Axes,"gray"); app.applyContrast();
                 title(app.Axes,sprintf("%s — %s snapshot", ...
@@ -151,6 +241,38 @@ classdef ReferencePreparationApp < handle
                     info.snapshot_path,info.camera_name, ...
                     info.image_size(2),info.image_size(1),info.camera_bin));
                 app.restoreLatestPlanning(info.snapshot_directory);
+            catch exception
+                app.showError(exception);
+            end
+        end
+
+        function chooseFov(app)
+            if ~isempty(app.RoiObjects)
+                choice=uiconfirm(app.Figure, ...
+                    "Loading a saved FOV replaces the currently displayed ROIs. Continue?", ...
+                    "Load saved FOV","Options",["Load FOV","Cancel"], ...
+                    "DefaultOption","Cancel","CancelOption","Cancel");
+                if choice~="Load FOV", return; end
+            end
+            [file,folder]=uigetfile({"*.mat","FOV state MAT (*.mat)"}, ...
+                "Load persistent Adaptive Optopatch FOV",pwd);
+            if isequal(file,0), return; end
+            try
+                app.loadFov(string(fullfile(folder,file)));
+            catch exception
+                app.showError(exception);
+            end
+        end
+
+        function chooseSaveFov(app)
+            if isempty(app.LoadInfo), app.setStatus("Load a snapshot before saving an FOV."); return; end
+            suggested=string(app.LoadInfo.snapshot_name)+"_fov_state.mat";
+            [file,folder]=uiputfile({"*.mat","FOV state MAT (*.mat)"}, ...
+                "Save persistent Adaptive Optopatch FOV",suggested);
+            if isequal(file,0), return; end
+            try
+                app.saveCurrentFov(string(fullfile(folder,file)));
+                app.setStatus("Saved persistent FOV: "+string(fullfile(folder,file)));
             catch exception
                 app.showError(exception);
             end
@@ -168,12 +290,13 @@ classdef ReferencePreparationApp < handle
             app.RoisVisible=true;
             app.updateRoiVisibility();
             colors=lines(max(7,numel(app.RoiObjects)+1)); idx=numel(app.RoiObjects)+1;
+            newCellId=next_cell_id(app.CellIds);
             try
                 roi=drawpolygon(app.Axes,"Color",colors(mod(idx-1,size(colors,1))+1,:), ...
-                    "Label",sprintf("%d",idx),"LabelVisible","hover");
+                    "Label",char(newCellId),"LabelVisible","hover");
                 if isempty(roi.Position) || size(roi.Position,1)<3, delete(roi); return; end
                 addlistener(roi,"ROIMoved",@(~,~)app.updateQc());
-                app.RoiObjects{end+1}=roi; app.updateQc();
+                app.RoiObjects{end+1}=roi; app.CellIds(end+1,1)=newCellId; app.updateQc();
                 app.RoiList.Value=string(app.RoiList.Items(end)); app.highlightSelection();
             catch exception
                 app.showError(exception);
@@ -185,20 +308,20 @@ classdef ReferencePreparationApp < handle
             idx=find(strcmp(app.RoiList.Items,app.RoiList.Value),1);
             if isempty(idx), return; end
             if isvalid(app.RoiObjects{idx}), delete(app.RoiObjects{idx}); end
-            app.RoiObjects(idx)=[]; app.renumberRois(); app.updateQc();
+            app.RoiObjects(idx)=[]; app.CellIds(idx)=[]; app.renumberRois(); app.updateQc();
         end
 
         function clearRois(app)
             for k=1:numel(app.RoiObjects)
                 if isvalid(app.RoiObjects{k}), delete(app.RoiObjects{k}); end
             end
-            app.RoiObjects={}; app.RoiList.Items=strings(1,0); app.QcTable.Data=cell(0,6);
+            app.RoiObjects={}; app.CellIds=strings(0,1); app.RoiList.Items=strings(1,0); app.QcTable.Data=cell(0,10);
             app.RoisVisible=true; app.updateRoiVisibility();
             app.deletePreview();
         end
 
         function renumberRois(app)
-            for k=1:numel(app.RoiObjects), app.RoiObjects{k}.Label=sprintf("%d",k); end
+            for k=1:numel(app.RoiObjects), app.RoiObjects{k}.Label=char(app.CellIds(k)); end
         end
 
         function highlightSelection(app)
@@ -218,7 +341,9 @@ classdef ReferencePreparationApp < handle
         end
 
         function updateQc(app)
-            n=numel(app.RoiObjects); items=compose("cell_%03d",1:n); data=cell(n,6);
+            n=numel(app.RoiObjects);
+            if numel(app.CellIds)~=n, app.CellIds=compose("cell_%03d",(1:n)'); end
+            items=app.CellIds; data=cell(n,10);
             if n==0
                 app.RoiList.Items=strings(1,0); app.QcTable.Data=data;
                 app.planChanged(); return
@@ -235,8 +360,11 @@ classdef ReferencePreparationApp < handle
                 pass=area>0 && edge>=2 && ~any(overlap & masks(:,:,k),"all");
                 % Older MATLAB releases do not accept string scalars inside
                 % a uitable cell-array Data value; use character vectors.
+                state=cell_state_for_id(app.CurrentFovState,items(k));
                 data(k,:)={char(items(k)),area,round(cx,1),round(cy,1),edge, ...
-                    ternary(pass,'PASS','CHECK')};
+                    ternary(pass,'PASS','CHECK'),state.recording_enabled, ...
+                    state.stimulation_enabled,state.selected_blue_voltage_v, ...
+                    char(state.calibration_status)};
             end
             previous=string(app.RoiList.Value); app.RoiList.Items=reshape(items,1,[]);
             if ~isempty(previous) && any(strcmp(items,previous)), app.RoiList.Value=previous; end
@@ -269,7 +397,12 @@ classdef ReferencePreparationApp < handle
             fovId=string(matlab.lang.makeValidName(char(app.LoadInfo.snapshot_name)));
             reference=adaptive_optopatch.create_reference_model(app.ReferenceImage,masks, ...
                 app.LoadInfo.metadata,"MicronsPerPixel",app.MicronsPerPixel.Value, ...
-                "FovId",string(fovId),"SourceExperiment",app.LoadInfo.snapshot_directory);
+                "FovId",string(fovId),"SourceExperiment",app.LoadInfo.snapshot_directory, ...
+                "CellIds",app.CellIds,"RoiPolygons", ...
+                cellfun(@(roi)double(roi.Position),app.RoiObjects,"UniformOutput",false));
+            if ~isempty(app.CurrentFovState)
+                reference=merge_reference_cell_state(reference,app.CurrentFovState);
+            end
             reference.source_snapshot=app.LoadInfo.snapshot_path;
             if ~isempty(app.LuminosApp)
                 reference.luminos_settings_snapshot= ...
@@ -301,7 +434,8 @@ classdef ReferencePreparationApp < handle
                 "SpiralDensityPointsPerVolt",app.SpiralDensity.Value, ...
                 "PulseDurationMs",options.PulseDurationMs, ...
                 "ScannerSampleRateHz",scannerSampleRate, ...
-                "DmdErosionPixels",app.DmdErosion.Value);
+                "OrangeExpansionPixels",app.OrangeExpansion.Value, ...
+                "BlueMaskAdjustmentPixels",app.DmdErosion.Value);
         end
 
         function session=buildSessionState(app)
@@ -320,7 +454,8 @@ classdef ReferencePreparationApp < handle
                 "microns_per_pixel",app.MicronsPerPixel.Value, ...
                 "spiral_radius_um",app.SpiralRadius.Value, ...
                 "spiral_density_points_per_volt",app.SpiralDensity.Value, ...
-                "dmd_erosion_pixels",app.DmdErosion.Value, ...
+                "orange_expansion_pixels",app.OrangeExpansion.Value, ...
+                "blue_mask_adjustment_pixels",app.DmdErosion.Value, ...
                 "screen_repeats",app.Repeats.Value, ...
                 "pulse_count",app.PulseCount.Value, ...
                 "pulse_duration_ms",app.PulseDuration.Value, ...
@@ -356,14 +491,17 @@ classdef ReferencePreparationApp < handle
         end
 
         function restorePolygons(app,positions)
+            savedIds=app.CellIds;
             app.clearRois();
+            if numel(savedIds)==numel(positions), app.CellIds=savedIds;
+            else, app.CellIds=compose("cell_%03d",(1:numel(positions))'); end
             colors=lines(max(7,numel(positions)));
             for k=1:numel(positions)
                 p=positions{k};
                 if isempty(p) || size(p,2)~=2, continue; end
                 roi=drawpolygon(app.Axes,"Position",p, ...
                     "Color",colors(mod(k-1,size(colors,1))+1,:), ...
-                    "Label",sprintf("%d",k),"LabelVisible","hover");
+                    "Label",char(app.CellIds(k)),"LabelVisible","hover");
                 addlistener(roi,"ROIMoved",@(~,~)app.updateQc());
                 app.RoiObjects{end+1}=roi;
             end
@@ -378,7 +516,12 @@ classdef ReferencePreparationApp < handle
             set_if_present(app.MicronsPerPixel,p,"microns_per_pixel");
             set_if_present(app.SpiralRadius,p,"spiral_radius_um");
             set_if_present(app.SpiralDensity,p,"spiral_density_points_per_volt");
-            set_if_present(app.DmdErosion,p,"dmd_erosion_pixels");
+            set_if_present(app.OrangeExpansion,p,"orange_expansion_pixels");
+            if isfield(p,"blue_mask_adjustment_pixels")
+                app.DmdErosion.Value=p.blue_mask_adjustment_pixels;
+            elseif isfield(p,"dmd_erosion_pixels")
+                app.DmdErosion.Value=-p.dmd_erosion_pixels;
+            end
             set_if_present(app.Repeats,p,"screen_repeats");
             set_if_present(app.PulseCount,p,"pulse_count");
             set_if_present(app.PulseDuration,p,"pulse_duration_ms");
@@ -409,9 +552,15 @@ classdef ReferencePreparationApp < handle
                         plot(app.Axes,[c(1) park(1)],[c(2) park(2)],"m--", ...
                             "LineWidth",1,"Tag","TargetPreview");
                     else
-                        boundaries=bwboundaries(targets.dmd_camera_masks(:,:,k));
+                        boundaries=bwboundaries(targets.orange_camera_masks(:,:,k));
                         for j=1:numel(boundaries)
-                            p=boundaries{j}; plot(app.Axes,p(:,2),p(:,1),"y-","LineWidth",1.5,"Tag","TargetPreview");
+                            p=boundaries{j}; plot(app.Axes,p(:,2),p(:,1),"-", ...
+                                "Color",[1 0.45 0],"LineWidth",1.5,"Tag","TargetPreview");
+                        end
+                        boundaries=bwboundaries(targets.blue_camera_masks(:,:,k));
+                        for j=1:numel(boundaries)
+                            p=boundaries{j}; plot(app.Axes,p(:,2),p(:,1),"c-", ...
+                                "LineWidth",1.5,"Tag","TargetPreview");
                         end
                     end
                 end
@@ -447,7 +596,8 @@ classdef ReferencePreparationApp < handle
                     end
                     app.Status.Value=lines;
                 else
-                    app.setStatus("Target preview updated. Yellow = eroded 1P DMD mask.");
+                    app.setStatus(["Target preview updated. ROI polygons are canonical; " ...
+                        "orange = expanded recording illumination; cyan = signed-adjusted Blue stimulation masks."]);
                 end
             catch exception
                 app.showError(exception);
@@ -514,6 +664,54 @@ classdef ReferencePreparationApp < handle
             end
         end
 
+        function chooseCellCalibration(app)
+            cellId=app.selectedCellId();
+            if strlength(cellId)==0
+                app.setStatus("Select a cell before storing a Blue calibration."); return
+            end
+            answer=inputdlg({"Chosen Blue command voltage (V):", ...
+                "Status (good, unreliable, multispike, off_target, excluded):"}, ...
+                "Blue calibration for "+cellId,[1 55],{"1","good"});
+            if isempty(answer), return; end
+            voltage=str2double(answer{1}); status=string(strip(answer{2}));
+            try
+                app.setCellCalibration(cellId,voltage,status,status=="good");
+                app.setStatus("Stored Blue calibration for "+cellId+". Save the FOV to persist it.");
+            catch exception
+                app.showError(exception);
+            end
+        end
+
+        function excludeSelectedCell(app)
+            cellId=app.selectedCellId();
+            if strlength(cellId)==0
+                app.setStatus("Select a cell before excluding it from stimulation."); return
+            end
+            try
+                app.setCellCalibration(cellId,NaN,"excluded",false);
+                app.setStatus(cellId+" remains recording-enabled but is excluded from stimulation. Save the FOV to persist it.");
+            catch exception
+                app.showError(exception);
+            end
+        end
+
+        function value=selectedCellId(app)
+            value="";
+            if ~isempty(app.RoiList.Value), value=string(app.RoiList.Value); end
+        end
+
+        function fovState=currentFovState(app)
+            [reference,~]=app.buildSpatialArtifacts();
+            positions=cellfun(@(roi)double(roi.Position),app.RoiObjects, ...
+                "UniformOutput",false);
+            fovState=adaptive_optopatch.create_fov_state(reference,positions, ...
+                "OrangeExpansionPixels",app.OrangeExpansion.Value, ...
+                "BlueMaskAdjustmentPixels",app.DmdErosion.Value);
+            if ~isempty(app.CurrentFovState)
+                fovState=merge_cell_state(fovState,app.CurrentFovState);
+            end
+        end
+
         function setStatus(app,message), app.Status.Value=reshape(splitlines(string(message)),[],1); end
         function showError(app,exception)
             app.setStatus("ERROR: "+string(exception.message));
@@ -538,6 +736,60 @@ function set_if_present(control,parameters,name)
 if isfield(parameters,name)
     control.Value=parameters.(name);
 end
+end
+
+function cellState=cell_state_for_id(fovState,cellId)
+cellState=struct("recording_enabled",true,"stimulation_enabled",true, ...
+    "selected_blue_voltage_v",NaN,"calibration_status","uncalibrated");
+if isempty(fovState) || ~isfield(fovState,"cells"), return; end
+ids=string({fovState.cells.cell_id}); index=find(ids==cellId,1);
+if isempty(index), return; end
+for name=string(fieldnames(cellState))'
+    if isfield(fovState.cells,name), cellState.(name)=fovState.cells(index).(name); end
+end
+end
+
+function fovState=merge_cell_state(fovState,previous)
+fovState.reference=merge_reference_cell_state(fovState.reference,previous);
+fovState.cells=fovState.reference.cells;
+end
+
+function reference=merge_reference_cell_state(reference,previous)
+if isempty(previous) || ~isfield(previous,"cells"), return; end
+oldIds=string({previous.cells.cell_id});
+stateFields=["recording_enabled","stimulation_enabled", ...
+    "selected_blue_voltage_v","calibration_status", ...
+    "calibration_notes","calibration_acquisition"];
+for k=1:numel(reference.cells)
+    index=find(oldIds==string(reference.cells(k).cell_id),1);
+    if isempty(index), continue; end
+    for name=stateFields
+        if isfield(previous.cells,name)
+            reference.cells(k).(name)=previous.cells(index).(name);
+        end
+    end
+end
+end
+
+function polygons=masks_to_polygons(masks)
+polygons=cell(size(masks,3),1);
+for k=1:size(masks,3)
+    boundaries=bwboundaries(logical(masks(:,:,k)));
+    if isempty(boundaries), polygons{k}=zeros(0,2); continue; end
+    [~,index]=max(cellfun(@(p)size(p,1),boundaries));
+    boundary=boundaries{index};
+    polygons{k}=[boundary(:,2) boundary(:,1)];
+end
+end
+
+function id=next_cell_id(ids)
+numbers=zeros(0,1);
+for value=reshape(string(ids),1,[])
+    token=regexp(value,'^cell_(\d+)$','tokens','once');
+    if ~isempty(token), numbers(end+1,1)=str2double(token{1}); end %#ok<AGROW>
+end
+if isempty(numbers), number=1; else, number=max(numbers)+1; end
+id=compose("cell_%03d",number);
 end
 
 function [calibration,warningMessage]=persisted_scanner_calibration()

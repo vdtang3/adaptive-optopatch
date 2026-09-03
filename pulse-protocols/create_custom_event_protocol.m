@@ -8,11 +8,15 @@ condition_id=["full";"half";"full";"null"];
 onset_s=[0.1;0.6;1.1;1.6];
 duration_s=[0.005;0.010;0.005;0.005];
 amplitude_fraction=[1;0.5;1;0];
-event_id=(1:numel(onset_s))';
-events=table(event_id,condition_id,onset_s,duration_s,amplitude_fraction);
+pulse_id=(1:numel(onset_s))';
+target_cell_id=repmat("",numel(onset_s),1);
+is_null=amplitude_fraction==0;
+command_voltage_v=nan(numel(onset_s),1); command_voltage_v(is_null)=0;
+events=table(pulse_id,condition_id,onset_s,duration_s,target_cell_id, ...
+    is_null,command_voltage_v,amplitude_fraction);
 
 protocol=struct;
-protocol.schema_version="1.0.0";
+protocol.schema_version="2.0.0";
 protocol.protocol_id=protocol_id;
 protocol.protocol_type="custom_events";
 protocol.created_at=string(datetime("now","TimeZone","local"));

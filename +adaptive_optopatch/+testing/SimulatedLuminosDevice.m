@@ -39,6 +39,10 @@ classdef SimulatedLuminosDevice < handle
         roi_meta struct = struct("trans_center",[0 0])
         ResetCount double = 0
         StaticWriteCount double = 0
+        pattern_stack logical = false(0,0,0)
+        StackWriteCount double = 0
+        StackMode string = ""
+        trigger_channel string = ""
     end
 
     methods
@@ -80,8 +84,9 @@ classdef SimulatedLuminosDevice < handle
             device.StaticWriteCount=device.StaticWriteCount+1;
         end
 
-        function setPatterningROI(device,mask,varargin)
+        function transformed=setPatterningROI(device,mask,varargin)
             device.Target=logical(mask);
+            transformed=logical(mask);
             writeNow=false;
             for k=1:2:numel(varargin)
                 if strcmpi(string(varargin{k}),"write_when_complete")
@@ -89,6 +94,14 @@ classdef SimulatedLuminosDevice < handle
                 end
             end
             if writeNow, device.Write_Static(); end
+        end
+
+        function Write_Stack(device,mode)
+            device.StackWriteCount=device.StackWriteCount+1;
+            device.StackMode=string(mode);
+            if ~isempty(device.pattern_stack)
+                device.Target=device.pattern_stack(:,:,1);
+            end
         end
 
         function sync=Resolve_Buffered_Sync(device,varargin) %#ok<INUSD>

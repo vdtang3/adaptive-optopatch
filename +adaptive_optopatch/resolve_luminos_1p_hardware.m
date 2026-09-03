@@ -21,6 +21,7 @@ hardware.dmd=require_device(app,"DMD",profile.dmd.name);
 hardware.laser=require_device(app,"Laser_Device",profile.laser.name);
 hardware.modulator=require_device(app,"NI_DAQ_Modulator",profile.modulator.name);
 hardware.shutter=require_device(app,"NI_DAQ_Shutter",profile.shutter.name);
+hardware.dmd_trigger=require_device(app,"NI_DAQ_Shutter",profile.dmd.trigger_alias);
 hardware.cameras=app.getDevice("Camera");
 
 if string(hardware.modulator.port)~=string(profile.modulator.port)
@@ -33,6 +34,11 @@ if string(hardware.shutter.port)~=string(profile.shutter.port)
         "shutter488 is on %s; the profile requires %s.", ...
         string(hardware.shutter.port),string(profile.shutter.port));
 end
+if string(hardware.dmd_trigger.port)~=string(profile.dmd.trigger_port)
+    error("adaptive_optopatch:UnexpectedDmdTriggerPort", ...
+        "DMD Trigger is on %s; the profile requires %s.", ...
+        string(hardware.dmd_trigger.port),string(profile.dmd.trigger_port));
+end
 serials=strings(numel(hardware.cameras),1);
 for k=1:numel(hardware.cameras)
     serials(k)=strip(erase(string(hardware.cameras(k).cam_id),"S/N: "));
@@ -44,6 +50,14 @@ if isempty(cameraIndex)
 end
 hardware.voltage_camera_index=cameraIndex;
 hardware.voltage_camera=hardware.cameras(cameraIndex);
+
+if isempty(hardware.dmd.trigger_channel)
+    hardware.dmd.trigger_channel=profile.dmd.trigger_port;
+elseif ~same_terminal(hardware.daq,hardware.dmd.trigger_channel,profile.dmd.trigger_port)
+    error("adaptive_optopatch:UnexpectedDmdTriggerPort", ...
+        "DMD_Blue trigger is %s; the profile requires %s.", ...
+        string(hardware.dmd.trigger_channel),profile.dmd.trigger_port);
+end
 
 if options.RequireCalibratedDmd
     if isempty(hardware.dmd.tform) || is_identity_transform(hardware.dmd.tform)
@@ -112,6 +126,14 @@ end
 if ~hardware.daq_sync.passed
     error("adaptive_optopatch:MultiDaqSyncNotReady","%s", ...
         strjoin(hardware.daq_sync.issues,newline));
+end
+end
+
+function tf=same_terminal(daq,a,b)
+if ismethod(daq,"Same_Terminal")
+    tf=logical(daq.Same_Terminal(a,b));
+else
+    tf=strcmpi(strip(string(a)),strip(string(b)));
 end
 end
 

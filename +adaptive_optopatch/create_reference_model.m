@@ -8,6 +8,7 @@ arguments
     options.FovId (1,1) string = "fov"
     options.CellIds string = strings(0,1)
     options.SourceExperiment (1,1) string = ""
+    options.RoiPolygons cell = {}
 end
 
 roiMasks = logical(roiMasks);
@@ -58,7 +59,18 @@ for i = 1:nCells
         "bounding_box", stats.BoundingBox, ...
         "edge_distance_pixels", edgeDistance, ...
         "accepted", true, ...
+        "recording_enabled",true, ...
+        "stimulation_enabled",true, ...
+        "selected_blue_voltage_v",NaN, ...
+        "calibration_status","uncalibrated", ...
+        "calibration_notes","", ...
+        "calibration_acquisition","", ...
         "qc_notes", "");
+    if ~isempty(options.RoiPolygons)
+        cellRecord.canonical_roi_polygon=double(options.RoiPolygons{i});
+    else
+        cellRecord.canonical_roi_polygon=zeros(0,2);
+    end
     if i == 1
         cells = cellRecord;
     else
@@ -67,7 +79,7 @@ for i = 1:nCells
 end
 
 reference = struct;
-reference.schema_version = "0.2.0";
+reference.schema_version = "1.0.0";
 reference.created_at = string(datetime("now", "TimeZone", "local"));
 reference.fov_id = options.FovId;
 reference.source_experiment = options.SourceExperiment;

@@ -1,101 +1,42 @@
-function pulses = flatten_pulse_schedule(protocol,options)
-%FLATTEN_PULSE_SCHEDULE Convert screen or STF schedules to individual pulses.
+function pulses=flatten_pulse_schedule(protocol,options)
+%FLATTEN_PULSE_SCHEDULE Resolve the already-flat physical pulse table.
 arguments
     protocol (1,1) struct
     options.ConfiguredVoltage (1,1) double = NaN
 end
-protocol=adaptive_optopatch.normalize_protocol(protocol);
-if isempty(protocol.events)
-    error("adaptive_optopatch:EmptyPulseSchedule", ...
-        "The protocol contains no events.");
+report=adaptive_optopatch.validate_protocol(protocol);
+if ~report.passed
+    error("adaptive_optopatch:InvalidProtocol","%s",strjoin(report.issues,newline));
 end
-
-if isfield(protocol,"protocol_type") && ...
-        string(protocol.protocol_type)=="stf_mixed_conditions"
-    events=protocol.events;
-    required=["is_null","amplitude_fraction","pulse_times_s"];
-    if ~all(ismember(required,string(events.Properties.VariableNames)))
-        error("adaptive_optopatch:InvalidStfProtocol", ...
-            "The STF protocol is missing pulse timing or condition information.");
-    end
-    onset=[]; offset=[]; voltage=[]; eventIndex=[]; pulseInEvent=[]; isNull=[];
-    for e=1:height(events)
-        times=double(events.pulse_times_s{e}(:));
-        if ismember("pulse_duration_s",string(events.Properties.VariableNames))
-            duration=double(events.pulse_duration_s(e));
-        elseif isfield(protocol,"conditions") && ...
-                ismember("condition_index",string(events.Properties.VariableNames))
-            duration=double(protocol.conditions.pulse_duration_ms( ...
-                events.condition_index(e)))/1000;
-        else
-            error("adaptive_optopatch:InvalidStfProtocol", ...
-                "Train events require pulse_duration_s.");
-        end
-        values=repmat(resolve_voltage(protocol,events,e, ...
-            options.ConfiguredVoltage),numel(times),1);
-        if events.is_null(e), values(:)=0; end
-        onset=[onset;times]; %#ok<AGROW>
-        offset=[offset;times+duration]; %#ok<AGROW>
-        voltage=[voltage;values]; %#ok<AGROW>
-        eventIndex=[eventIndex;repmat(e,numel(times),1)]; %#ok<AGROW>
-        pulseInEvent=[pulseInEvent;(1:numel(times))']; %#ok<AGROW>
-        isNull=[isNull;repmat(logical(events.is_null(e)),numel(times),1)]; %#ok<AGROW>
-    end
-else
-    events=protocol.events;
-    required=["onset_s","duration_s","amplitude_fraction"];
-    if ~all(ismember(required,string(events.Properties.VariableNames)))
-        error("adaptive_optopatch:InvalidScreenProtocol", ...
-            "The protocol is missing canonical onset, duration, or amplitude columns.");
-    end
-    onset=double(events.onset_s(:));
-    offset=onset+double(events.duration_s(:));
-    voltage=zeros(height(events),1);
-    for e=1:height(events)
-        voltage(e)=resolve_voltage(protocol,events,e,options.ConfiguredVoltage);
-    end
-    eventIndex=(1:height(events))';
-    pulseInEvent=ones(height(events),1);
-    isNull=false(height(events),1);
+protocol=report.protocol; events=protocol.events;
+if isempty(events)
+    error("adaptive_optopatch:EmptyPulseSchedule","The protocol contains no pulses.");
 end
-
-[onset,order]=sort(onset);
-offset=offset(order); voltage=voltage(order);
-eventIndex=eventIndex(order); pulseInEvent=pulseInEvent(order);
-isNull=isNull(order);
-if any(~isfinite(onset) | ~isfinite(offset) | ~isfinite(voltage)) || ...
-        any(offset<=onset)
-    error("adaptive_optopatch:InvalidPulseTimes", ...
-        "All pulse times and commands must be finite and have positive duration.");
-end
-if numel(onset)>1 && any(onset(2:end)<offset(1:end-1))
-    error("adaptive_optopatch:OverlappingPulses", ...
-        "The flattened pulse schedule contains overlaps.");
-end
-if any(onset<0) || any(offset>double(protocol.acquisition_duration_s)+1e-9)
-    error("adaptive_optopatch:PulseOutsideAcquisition", ...
-        "A pulse lies outside the planned acquisition duration.");
-end
-
-pulse_index=(1:numel(onset))';
-pulses=table(pulse_index,eventIndex,pulseInEvent,isNull,onset,offset, ...
-    offset-onset,voltage, ...
-    'VariableNames',{'pulse_index','event_index','pulse_in_event','is_null', ...
-    'onset_s','offset_s','duration_s','modulator_voltage'});
-end
-
-function voltage=resolve_voltage(protocol,events,index,configured)
+configured=options.ConfiguredVoltage;
 if ~isfinite(configured) && isfield(protocol,"hardware_command_voltage")
     configured=double(protocol.hardware_command_voltage);
 end
-if isfinite(configured)
-    voltage=double(events.amplitude_fraction(index))*configured;
-elseif ismember("modulator_voltage",string(events.Properties.VariableNames))
-    voltage=double(events.modulator_voltage(index));
-elseif isfield(protocol,"legacy_voltage_scale_v") && protocol.legacy_voltage_scale_v>0
-    voltage=double(events.amplitude_fraction(index))*protocol.legacy_voltage_scale_v;
-else
-    error("adaptive_optopatch:HardwareAmplitudeRequired", ...
-        "A configured physical modulator/Pockels voltage is required.");
+command=zeros(height(events),1);
+for k=1:height(events)
+    if events.is_null(k)
+        command(k)=0;
+    elseif isfinite(events.command_voltage_v(k))
+        command(k)=events.command_voltage_v(k);
+    elseif isfinite(configured) && isfinite(events.amplitude_fraction(k))
+        command(k)=configured*events.amplitude_fraction(k);
+    else
+        error("adaptive_optopatch:HardwareAmplitudeRequired", ...
+            "Pulse %s has no resolvable physical command voltage.",string(events.pulse_id(k)));
+    end
+end
+[~,order]=sort(events.onset_s);
+pulses=events(order,:);
+pulses.command_voltage_v=command(order);
+pulses.modulator_voltage=pulses.command_voltage_v;
+pulses.pulse_index=(1:height(pulses))';
+if any(pulses.onset_s<0) || ...
+        any(pulses.offset_s>double(protocol.acquisition_duration_s)+1e-9)
+    error("adaptive_optopatch:PulseOutsideAcquisition", ...
+        "A pulse lies outside the planned acquisition duration.");
 end
 end

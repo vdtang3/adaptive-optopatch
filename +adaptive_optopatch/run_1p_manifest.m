@@ -110,9 +110,18 @@ for k=1:n
         run.trials.settings_snapshot{k}= ...
             adaptive_optopatch.snapshot_luminos_settings(app);
 
-        config=adaptive_optopatch.prepare_luminos_target(app,targets,row, ...
-            "DryRun",false,"DmdName",profile.dmd.name, ...
-            "WriteDmdImmediately",true);
+        protocol=adaptive_optopatch.normalize_protocol(row.pulse_schedule{1});
+        pulseTargets=unique(protocol.events.target_cell_id(~protocol.events.is_null),"stable");
+        dmdSequencePlan=struct([]);
+        if numel(pulseTargets)>1
+            dmdSequencePlan=adaptive_optopatch.build_dmd_sequence_plan(protocol,targets);
+            config=adaptive_optopatch.prepare_luminos_dmd_sequence( ...
+                hardware.dmd,dmdSequencePlan,"DryRun",false);
+        else
+            config=adaptive_optopatch.prepare_luminos_target(app,targets,row, ...
+                "DryRun",false,"DmdName",profile.dmd.name, ...
+                "WriteDmdImmediately",true);
+        end
         run.trials.target_configuration{k}=config;
         run.trials.acquisition_status(k)="configured";
 
@@ -121,7 +130,8 @@ for k=1:n
         [globalProps,wfmData,waveformSummary]= ...
             adaptive_optopatch.build_luminos_1p_waveform_config( ...
             original.global_props,original.wfm_data,row.pulse_schedule{1},profile, ...
-            "ModulatorVoltageOverride",voltageOverride);
+            "ModulatorVoltageOverride",voltageOverride, ...
+            "DmdSequencePlan",dmdSequencePlan);
         hardware.daq.global_props=globalProps;
         hardware.daq.wfm_data=wfmData;
         hardware.daq.waveforms_built=false;
@@ -202,7 +212,7 @@ save_checkpoint();
 
     function record=build_trial_record(row,waveformSummary,config,folder)
         record=struct;
-        record.schema_version="0.1.0";
+        record.schema_version="1.0.0";
         record.simulation=simulation;
         record.backend=string(class(app));
         record.created_at=string(datetime("now","TimeZone","local"));
@@ -217,6 +227,8 @@ save_checkpoint();
         record.daq_synchronization= ...
             adaptive_optopatch.capture_luminos_daq_sync(hardware.daq);
         record.expected_frame_map=make_frame_map(waveformSummary.pulses);
+        record.realized_pulses=join_pulse_provenance( ...
+            waveformSummary.pulses,record.expected_frame_map);
     end
 
     function map=make_frame_map(pulses)
@@ -225,9 +237,15 @@ save_checkpoint();
             frameRate=double(hardware.voltage_camera.calculate_framerate());
         end
         expected_frame=floor(pulses.onset_s*frameRate)+1;
-        map=table(pulses.pulse_index,pulses.onset_s,expected_frame, ...
+        map=table(pulses.pulse_id,pulses.onset_s,expected_frame, ...
             repmat(frameRate,height(pulses),1), ...
-            'VariableNames',{'pulse_index','onset_s','expected_frame','expected_frame_rate_hz'});
+            'VariableNames',{'pulse_id','onset_s','expected_frame','expected_frame_rate_hz'});
+    end
+
+    function realized=join_pulse_provenance(pulses,frameMap)
+        realized=pulses;
+        realized.expected_camera_frame=frameMap.expected_frame;
+        realized.expected_camera_frame_rate_hz=frameMap.expected_frame_rate_hz;
     end
 
     function save_checkpoint()

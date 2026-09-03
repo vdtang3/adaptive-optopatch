@@ -1,5 +1,26 @@
 # Engineering notebook
 
+## 2026-09-03 — Persistent FOV and pulse-resolved EPSP acquisition
+
+The acquisition model now joins two explicit sources of truth: a persistent
+FOV containing canonical ROIs/stable cell identities/calibration decisions,
+and protocol schema 2 containing one row per physical pulse. Orange recording
+illumination and Blue stimulation masks are deterministic derivations of the
+canonical ROI. Recording and stimulation eligibility are independent so an
+excluded presynaptic candidate remains illuminated and recorded.
+
+Single-cell ramp protocols use explicit physical voltage blocks; the small
+ramp-review helper aggregates operator-reviewed spike outcomes without adding
+an EPSP detector. Calibrated round-robin protocols copy each eligible cell's
+stored voltage into every pulse and resolve all target IDs before freezing.
+
+Continuous 1P targeting uses the existing ALP `Write_Stack('slave')` path and
+the Virtual Upright `DMD Trigger` line (`Dev1/port0/line4`). The deterministic
+DAQ waveform advances the stack at optical pulse offsets, so the next mask is
+present throughout the existing dark interval. This timing decision depends on
+the ALP starting with stack entry 1 and advancing on one rising edge; it must be
+verified on the physical rig before experimental use.
+
 ## 2026-09-02 — Local Luminos simulation boundary
 
 Adaptive Optopatch now supports local runner development through a deliberately
@@ -52,17 +73,9 @@ its existing checkpoint, matching the already-resumable 1P behavior.
 ## 2026-09-02 — Pulse protocols become independent design artifacts
 
 Pulse timing was removed from the unified acquisition GUI and made a canonical,
-versioned input artifact. The common event schema is `event_id`, `condition_id`,
-`onset_s`, `duration_s`, and `amplitude_fraction`. STF train rows may additionally
-carry their pulse times and train metadata. Absolute mod488 and Pockels voltages
-remain hardware settings; final waveform realization multiplies the canonical
-relative amplitude by the frozen GUI voltage.
-
-`normalize_protocol` preserves supported legacy timing aliases and converts
-legacy voltage patterns to fractions relative to their largest positive
-voltage. The old voltage is retained only as a backward-compatible realization
-fallback. New GUI plans use `build_manifest`, which accepts an already validated
-protocol and never regenerates timing from controls.
+versioned input artifact. This original schema was superseded on 2026-09-03 by
+the pulse-level schema 2 described above; nested `pulse_times_s` train rows are
+intentionally rejected rather than migrated silently.
 
 Every frozen run now includes `pulse_protocol.mat` alongside the spatial target,
 manifest, session, and checkpoint artifacts. Resume requires this archived copy,

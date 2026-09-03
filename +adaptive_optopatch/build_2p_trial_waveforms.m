@@ -38,8 +38,9 @@ requestedTotal=ceil(protocol.acquisition_duration_s*fs);
 % Grow only the final acquisition tail when needed. Pulse timing and every
 % end-to-start dark interval remain exactly as requested.
 finalOff=ceil(pulses.offset_s(end)*fs);
-finalEvent=pulses.event_index(end);
-finalEventFirst=find(pulses.event_index==finalEvent,1,"first");
+groups=pulse_groups(pulses);
+finalEvent=groups(end);
+finalEventFirst=find(groups==finalEvent,1,"first");
 finalEventOn=max(1,ceil(pulses.onset_s(finalEventFirst)*fs)+1);
 finalEventSamples=finalOff-finalEventOn+1;
 finalRemainder=mod(finalEventSamples,cycle.cycle_samples);
@@ -60,9 +61,9 @@ for k=1:height(pulses)
     % onset and the final sample strictly before offset.
     on=max(1,ceil(pulses.onset_s(k)*fs)+1);
     off=min(nTotal,ceil(pulses.offset_s(k)*fs));
-    continuingEvent=k>1 && pulses.event_index(k)==pulses.event_index(k-1);
+    continuingEvent=k>1 && groups(k)==groups(k-1);
     lastInEvent=k==height(pulses) || ...
-        pulses.event_index(k)~=pulses.event_index(k+1);
+        groups(k)~=groups(k+1);
     if continuingEvent
         if on<cursor
             error("adaptive_optopatch:OverlappingTrainPulses", ...
@@ -164,6 +165,7 @@ for k=1:height(pulses)
     perPulse(k).center_return_sample=finishEnd*(lastInEvent);
     perPulse(k).parking_arrival_sample=parkEnd;
 end
+
 report=adaptive_optopatch.evaluate_galvo_waveform(x,y,fs, ...
     "CommandBoundsVolts",options.CommandBoundsV, ...
     "MaximumVelocityVPerS",options.MaximumVelocityVPerS, ...
@@ -180,4 +182,14 @@ waveforms=struct("schema_version","0.1.0","sample_rate_hz",fs, ...
     "requested_acquisition_duration_s",requestedTotal/fs, ...
     "actual_acquisition_duration_s",nTotal/fs, ...
     "automatic_extension_s",(nTotal-requestedTotal)/fs);
+end
+
+function groups=pulse_groups(pulses)
+if ismember("train_id",string(pulses.Properties.VariableNames))
+    groups=double(pulses.train_id);
+    missing=~isfinite(groups);
+    groups(missing)=max([groups(~missing);0])+(1:sum(missing))';
+else
+    groups=(1:height(pulses))';
+end
 end

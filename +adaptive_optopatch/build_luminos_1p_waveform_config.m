@@ -7,6 +7,7 @@ arguments
     protocol (1,1) struct
     profile (1,1) struct = adaptive_optopatch.virtual_upright_1p_profile()
     options.ModulatorVoltageOverride (1,1) double = NaN
+    options.DmdSequencePlan = struct([])
 end
 required=["rate","clock_source","trigger_source","daq_master"];
 if ~all(isfield(activeGlobalProps,required))
@@ -41,6 +42,23 @@ record=struct("name",char(profile.modulator.name), ...
         pulses.modulator_voltage,double(profile.modulator.dark_v)}}, ...
     "operation","Multiplication","concatTime",[]);
 wfmData.ao=append_compatible(wfmData.ao,record);
+if ~isempty(options.DmdSequencePlan)
+    wfmData.do=remove_output(wfmData.do,"AdaptiveOptopatch DMD advance", ...
+        profile.dmd.trigger_port);
+    advanceOnset=double(options.DmdSequencePlan.advance_onset_s(:));
+    triggerWidth=max(3/rate,20e-6);
+    advanceOffset=advanceOnset+triggerWidth;
+    if ~isempty(advanceOffset) && advanceOffset(end)>globalProps.total_time
+        error("adaptive_optopatch:DmdAdvanceOutsideAcquisition", ...
+            "The final DMD advance trigger exceeds the acquisition duration.");
+    end
+    triggerRecord=struct("name","AdaptiveOptopatch DMD advance", ...
+        "port",char(profile.dmd.trigger_port), ...
+        "wavefile","adaptive_optopatch.luminos_event_waveform", ...
+        "params",{{advanceOnset,advanceOffset,ones(size(advanceOnset)),0}}, ...
+        "operation","Multiplication","concatTime",[]);
+    wfmData.do=append_compatible(wfmData.do,triggerRecord);
+end
 
 sampleCount=round(rate*globalProps.total_time);
 onsetSample=floor(pulses.onset_s*rate)+1;
@@ -56,6 +74,10 @@ summary=struct("schema_version","0.2.0", ...
     "onset_sample",onsetSample, ...
     "offset_sample",offsetSample, ...
     "pulses",pulses);
+if ~isempty(options.DmdSequencePlan)
+    summary.dmd_sequence=rmfield(options.DmdSequencePlan,"camera_pattern_stack");
+    summary.dmd_trigger_port=string(profile.dmd.trigger_port);
+end
 summary.clock_source=reshape(string(globalProps.clock_source),1,[]);
 summary.trigger_source=reshape(string(globalProps.trigger_source),1,[]);
 summary.expected_clock_bridge=reshape(string(profile.daq.clock_bridge),1,[]);

@@ -8,6 +8,7 @@ arguments
     options.CreateSubfolder (1,1) logical = false
     options.SubfolderPrefix (1,1) string = "adaptive_optopatch"
     options.SessionState = []
+    options.FovState = []
 end
 
 if options.CreateSubfolder
@@ -33,7 +34,8 @@ paths = struct( ...
     "reference", fullfile(outputDirectory,"reference_model.mat"), ...
     "targets", fullfile(outputDirectory,"pattern_bundle.mat"), ...
     "manifest", fullfile(outputDirectory,"trial_manifest.mat"), ...
-    "session", fullfile(outputDirectory,"planning_session.mat"));
+    "session", fullfile(outputDirectory,"planning_session.mat"), ...
+    "fov_state",fullfile(outputDirectory,"fov_state.mat"));
 save(paths.reference,"reference","-v7.3");
 save(paths.targets,"targets","-v7.3");
 save(paths.manifest,"manifest");
@@ -42,5 +44,11 @@ if ~isempty(options.SessionState)
     save(paths.session,"planning_session","-v7.3");
 else
     paths.session="";
+end
+if ~isempty(options.FovState)
+    fov_state=options.FovState;
+    save(paths.fov_state,"fov_state","-v7.3");
+else
+    paths.fov_state="";
 end
 end

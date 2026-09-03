@@ -46,6 +46,7 @@ camera.maximum_frame_rate_hz=max(options.CameraFrameRateHz/0.85, ...
 dmd=device("DMD",profile1p.dmd.name);
 dmd.tform=affinetform2d([1.01 0 2;0 1.01 3;0 0 1]);
 dmd.refimage=zeros(32,32,"uint16");
+dmd.trigger_channel=profile1p.dmd.trigger_port;
 laser=device("Laser_Device",profile1p.laser.name);
 laser.Mode="ANALOG";
 laser.SetPower=options.LaserPowerMw/1000;
@@ -54,6 +55,8 @@ mod488=device("NI_DAQ_Modulator",profile1p.modulator.name);
 mod488.port=options.Modulator488Port;
 shutter=device("NI_DAQ_Shutter",profile1p.shutter.name);
 shutter.port=profile1p.shutter.port;
+dmdTrigger=device("NI_DAQ_Shutter",profile1p.dmd.trigger_alias);
+dmdTrigger.port=profile1p.dmd.trigger_port;
 scanner=device("Scanning_Device",profile2p.scanner.name);
 scanner.galvox_physport=profile2p.scanner.x_port;
 scanner.galvoy_physport=profile2p.scanner.y_port;
@@ -67,7 +70,7 @@ else
     calibration=options.GalvoCalibration;
 end
 scanner.tform=calibration.calibration.tform;
-devices=[daq camera dmd laser mod488 shutter scanner mod2p];
+devices=[daq camera dmd laser mod488 shutter dmdTrigger scanner mod2p];
 if strlength(options.MissingDevice)>0
     keep=arrayfun(@(d)d.name~=options.MissingDevice && ...
         d.DeviceType~=options.MissingDevice,devices);

@@ -5,17 +5,9 @@ if ~report.passed
     error("adaptive_optopatch:InvalidProtocol","%s",strjoin(report.issues,newline));
 end
 protocol=report.protocol; events=protocol.events;
-light=events.amplitude_fraction>0;
+light=~events.is_null;
 totalLightOn=sum(events.duration_s(light));
-names=string(events.Properties.VariableNames);
-if all(ismember(["pulse_times_s","pulse_duration_s"],names))
-    totalLightOn=0;
-    for k=find(light(:))'
-        totalLightOn=totalLightOn+ ...
-            numel(events.pulse_times_s{k})*events.pulse_duration_s(k);
-    end
-end
-summary=struct("schema_version","1.0.0", ...
+summary=struct("schema_version","2.0.0", ...
     "protocol_type",string(protocol.protocol_type), ...
     "protocol_id",string(protocol.protocol_id), ...
     "event_count",height(events),"light_event_count",sum(light), ...

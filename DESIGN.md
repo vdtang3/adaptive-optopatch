@@ -60,6 +60,7 @@ The automated 1P runner uses the following declarations from
 | Spatial targeting | `DMD_Blue` (`ALP_DMD`) | Luminos DMD API |
 | Light source | `488` (`OBIS_Laser`) | `COM9`, maximum `0.055 W` |
 | Millisecond gating | `mod488` | `Dev1/ao2`, `0-5 V` |
+| ALP stack advance | `DMD Trigger` | `Dev1/port0/line4`, rising edge |
 | Acquisition shutter | `shutter488` | `Dev1/port0/line0` |
 | Voltage timing clock | Camera 1 HSYNC | `Dev1/PFI0`, `200 kHz` |
 
@@ -70,6 +71,14 @@ cycled for each pulse. Live preflight requires OBIS `ANALOG` or `MIXED` mode,
 an enabled key/interlock, a nonidentity `DMD_Blue` transform with calibration
 reference, and the Camera 1 HSYNC waveform clock. The runner preserves the
 active Luminos timing configuration and replaces only the `mod488` output.
+
+For a continuous multi-target acquisition, Adaptive Optopatch transforms and
+preloads one ALP slave-stack entry per pulse. Entry 1 is displayed before the
+DAQ starts. A camera-clocked digital pulse on `Dev1/port0/line4` occurs at each
+preceding optical pulse offset, advancing the next mask immediately into the
+natural dark interval. No software callback or artificial DMD settle interval
+is inserted. The physical rig still requires confirmation that ALP slave mode
+starts on entry 1 and advances exactly once on the configured rising edge.
 
 ## Connectivity-screen protocol
 
@@ -123,7 +132,12 @@ The first-pass fast analysis uses:
 The analysis ranks directed candidate pairs for manual review; it does not
 automatically commit pair selection.
 
-## STF protocol model
+## Canonical pulse and STF protocol model
+
+Protocol schema 2 has one physical pulse per table row. Target identity and
+physical/relative amplitude are stored on that row. Trains and paired pulses
+are represented by shared `train_id` plus `pulse_in_train`, not a nested time
+vector.
 
 An STF acquisition targets one presynaptic neuron and contains a randomized,
 intermixed event list. Conditions can include:

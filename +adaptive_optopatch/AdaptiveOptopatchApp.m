@@ -65,8 +65,9 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 error("adaptive_optopatch:ProtocolModeIncompatible", ...
                     "%s",strjoin(compatibility.issues,newline));
             end
-            lightDurations=protocol.events.duration_s( ...
-                protocol.events.amplitude_fraction>0);
+            protocol=adaptive_optopatch.resolve_protocol_commands( ...
+                protocol,app.ModulatorVoltage.Value);
+            lightDurations=protocol.events.duration_s(~protocol.events.is_null);
             if isempty(lightDurations), representativePulseMs=5;
             else, representativePulseMs=1000*min(lightDurations); end
             [reference,targets]=app.buildSpatialArtifacts( ...
@@ -87,9 +88,16 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             session.pulse_protocol_id=string(protocol.protocol_id);
             session.pulse_protocol_summary=app.PulseProtocolSummary;
             session.run_controls=app.captureRunControls();
-            plan=struct("schema_version","0.1.0", ...
+            fovState=app.currentFovState();
+            reference=fovState.reference;
+            resolvedProtocols=manifest.trials.pulse_schedule;
+            if height(manifest.trials)==1
+                protocol=resolvedProtocols{1};
+            end
+            plan=struct("schema_version","1.0.0", ...
                 "built_at",string(datetime("now","TimeZone","local")), ...
-                "reference",reference,"targets",targets,"protocol",protocol, ...
+                "reference",reference,"targets",targets,"fov_state",fovState, ...
+                "protocol",protocol,"resolved_protocols",{resolvedProtocols}, ...
                 "manifest",manifest,"session",session);
         end
 
@@ -135,11 +143,19 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 end
                 if isempty(issues)
                     hardware=adaptive_optopatch.resolve_luminos_1p_hardware(app.LuminosApp);
+                    sequencePlan=struct([]);
+                    resolved=plan.manifest.trials.pulse_schedule{1};
+                    pulseTargets=unique(resolved.events.target_cell_id(~resolved.events.is_null));
+                    if numel(pulseTargets)>1
+                        sequencePlan=adaptive_optopatch.build_dmd_sequence_plan( ...
+                            resolved,plan.targets);
+                    end
                     adaptive_optopatch.build_luminos_1p_waveform_config( ...
                         hardware.daq.global_props,hardware.daq.wfm_data, ...
-                        plan.manifest.trials.pulse_schedule{1}, ...
+                        resolved, ...
                         adaptive_optopatch.virtual_upright_1p_profile(), ...
-                        "ModulatorVoltageOverride",app.ModulatorVoltage.Value);
+                        "ModulatorVoltageOverride",app.ModulatorVoltage.Value, ...
+                        "DmdSequencePlan",sequencePlan);
                 end
             else
                 bundleReport=adaptive_optopatch.validate_2p_planning_bundle(plan.targets);
@@ -186,6 +202,7 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             plan=app.buildCurrentPlan();
             cla(app.WaveformAxes);
             if string(app.Mode.Value)=="2p_spiral"
+                yyaxis(app.WaveformAxes,"left");
                 hardware=adaptive_optopatch.resolve_luminos_2p_hardware(app.LuminosApp);
                 row=plan.manifest.trials(find(~plan.manifest.trials.is_null,1),:);
                 target=plan.targets.targets(row.target_index);
@@ -207,17 +224,33 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 legend(app.WaveformAxes,["X","Y","Pockels"],"Location","best");
                 xlabel(app.WaveformAxes,"Time (s)"); ylabel(app.WaveformAxes,"Command (V)");
             else
+                resolved=plan.manifest.trials.pulse_schedule{1};
                 pulses=adaptive_optopatch.flatten_pulse_schedule( ...
-                    plan.protocol,"ConfiguredVoltage",app.ModulatorVoltage.Value);
+                    resolved,"ConfiguredVoltage",app.ModulatorVoltage.Value);
                 time=reshape([pulses.onset_s pulses.onset_s ...
                     pulses.offset_s pulses.offset_s]',[],1);
                 command=reshape([zeros(height(pulses),1) pulses.modulator_voltage ...
                     pulses.modulator_voltage zeros(height(pulses),1)]',[],1);
+                targetIds=unique(pulses.target_cell_id(~pulses.is_null),"stable");
+                counts=arrayfun(@(id)sum(pulses.target_cell_id==id & ~pulses.is_null),targetIds);
+                yyaxis(app.WaveformAxes,"left");
                 plot(app.WaveformAxes,time,command,"b-");
-                xlabel(app.WaveformAxes,"Time (s)"); ylabel(app.WaveformAxes,"mod488 (V)");
+                ylabel(app.WaveformAxes,"mod488 (V)");
+                yyaxis(app.WaveformAxes,"right");
+                targetNumber=zeros(height(pulses),1);
+                for k=1:numel(targetIds)
+                    targetNumber(pulses.target_cell_id==targetIds(k))=k;
+                end
+                stairs(app.WaveformAxes,pulses.onset_s,targetNumber,"k.", ...
+                    "MarkerSize",8);
+                app.WaveformAxes.YTick=1:numel(targetIds);
+                app.WaveformAxes.YTickLabel=cellstr(targetIds);
+                ylabel(app.WaveformAxes,"Target cell");
+                xlabel(app.WaveformAxes,"Time (s)");
                 title(app.WaveformAxes,sprintf( ...
-                    '%d DMD targets; %d realized light pulses', ...
-                    size(plan.targets.dmd_camera_masks,3),height(pulses)));
+                    '%d targets; %d pulses; %.3f s | %s', ...
+                    numel(targetIds),sum(~pulses.is_null),resolved.acquisition_duration_s, ...
+                    strjoin(targetIds+":"+counts,", ")));
             end
         end
 
@@ -235,9 +268,10 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 plan.reference,plan.targets,plan.manifest, ...
                 "CreateSubfolder",true, ...
                 "SubfolderPrefix","adaptive_optopatch_run", ...
-                "SessionState",plan.session);
+                "SessionState",plan.session,"FovState",plan.fov_state);
             paths.protocol=fullfile(paths.output_directory,"pulse_protocol.mat");
-            adaptive_optopatch.save_protocol(paths.protocol,plan.protocol);
+            save_frozen_protocol_archive(paths.protocol,plan.resolved_protocols, ...
+                plan.manifest.trials.trial_id);
             app.ActiveRunPlan=plan;
             app.ActiveRunFolder=paths.output_directory;
             app.refreshTrialTable(plan.manifest.trials);
@@ -262,11 +296,13 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             targets=load_required(folder,"pattern_bundle.mat","targets");
             manifest=load_required(folder,"trial_manifest.mat","manifest");
             session=load_required(folder,"planning_session.mat","planning_session");
-            protocol=adaptive_optopatch.load_protocol( ...
+            [protocol,resolvedProtocols]=load_frozen_protocol_archive( ...
                 fullfile(folder,"pulse_protocol.mat"));
-            plan=struct("schema_version","0.1.0","built_at","frozen", ...
+            fovState=load_required(folder,"fov_state.mat","fov_state");
+            plan=struct("schema_version","1.0.0","built_at","frozen", ...
                 "reference",reference,"targets",targets,"protocol",protocol, ...
-                "manifest",manifest,"session",session);
+                "resolved_protocols",{resolvedProtocols}, ...
+                "fov_state",fovState,"manifest",manifest,"session",session);
             app.ActiveRunPlan=plan;
             app.ActiveRunFolder=folder;
             app.ValidatedPlan=plan;
@@ -283,6 +319,8 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 "microns_per_pixel",app.MicronsPerPixel, ...
                 "spiral_radius_um",app.SpiralRadius, ...
                 "spiral_density_points_per_volt",app.SpiralDensity, ...
+                "orange_expansion_pixels",app.OrangeExpansion, ...
+                "blue_mask_adjustment_pixels",app.DmdErosion, ...
                 "dmd_erosion_pixels",app.DmdErosion, ...
                 "modulator_voltage",app.ModulatorVoltage, ...
                 "release_level",app.ReleaseLevel,"maximum_velocity",app.MaximumVelocity, ...
@@ -367,8 +405,8 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 "adaptive_optopatch.testing.SimulatedLuminosApp");
             % Keep the protocol and trial regions stable while allowing the
             % camera/planning region to use additional window height.
-            root.RowHeight={"1x",36,250,165,70};
-            if ~simulation, root.RowHeight={"1x",0,250,165,70}; end
+            root.RowHeight={"1x",36,250,130,70};
+            if ~simulation, root.RowHeight={"1x",0,250,130,70}; end
             banner=uilabel(root,"Text","SIMULATION — NO HARDWARE OUTPUT", ...
                 "HorizontalAlignment","center","FontWeight","bold", ...
                 "FontSize",16,"FontColor",[1 1 1], ...
@@ -384,10 +422,10 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
 
             planningControls=app.Mode.Parent;
             heights=planningControls.RowHeight;
-            heights(:)=repmat({24},size(heights));
-            heights(10:16)=repmat({0},1,7);
+            heights(:)=repmat({21},size(heights));
+            heights(13:19)=repmat({0},1,7);
             planningControls.RowHeight=heights;
-            planningControls.RowSpacing=3;
+            planningControls.RowSpacing=2;
             planningControls.Padding=[4 4 4 4];
             hiddenControls={app.Repeats,app.PulseCount,app.PulseDuration, ...
                 app.DarkIntervalMin,app.DarkIntervalMax,app.PreDelay.Parent};
@@ -751,4 +789,52 @@ if ~isfield(saved,variable)
         "%s does not contain %s.",filename,variable);
 end
 value=saved.(variable);
+end
+
+function save_frozen_protocol_archive(path,protocols,trialIds)
+if numel(protocols)==1
+    assert_resolved_protocol(protocols{1},1);
+    adaptive_optopatch.save_protocol(path,protocols{1});
+    return
+end
+for k=1:numel(protocols)
+    protocols{k}=assert_resolved_protocol(protocols{k},k);
+end
+protocol_set=struct("schema_version","1.0.0", ...
+    "archive_type","resolved_acquisition_protocol_set", ...
+    "acquisition_count",numel(protocols),"trial_id",trialIds(:), ...
+    "protocols",{protocols(:)}); %#ok<NASGU>
+save(path,"protocol_set","-v7.3");
+end
+
+function protocol=assert_resolved_protocol(protocol,index)
+report=adaptive_optopatch.validate_protocol(protocol);
+if report.passed
+    unresolved=~report.protocol.events.is_null & ...
+        strlength(report.protocol.events.target_cell_id)==0;
+    if any(unresolved)
+        report.issues(end+1)="Every non-null pulse must have a resolved target cell.";
+        report.passed=false;
+    end
+end
+if ~report.passed
+    error("adaptive_optopatch:UnresolvedFrozenProtocol", ...
+        "Acquisition %d is not fully resolved: %s",index,strjoin(report.issues," "));
+end
+protocol=report.protocol;
+end
+
+function [protocol,protocols]=load_frozen_protocol_archive(path)
+saved=load(path);
+if isfield(saved,"protocol")
+    protocol=adaptive_optopatch.load_protocol(path);
+    protocols={protocol};
+elseif isfield(saved,"protocol_set") && ...
+        string(saved.protocol_set.archive_type)=="resolved_acquisition_protocol_set"
+    protocols=saved.protocol_set.protocols;
+    protocol=protocols{1};
+else
+    error("adaptive_optopatch:InvalidFrozenProtocolArchive", ...
+        "Frozen pulse_protocol.mat has no resolved protocol archive.");
+end
 end

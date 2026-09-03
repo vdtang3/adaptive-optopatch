@@ -4,9 +4,10 @@ arguments
     targets (1,1) struct
 end
 issues=strings(0,1);
-if ~isfield(targets,"schema_version") || string(targets.schema_version)~="0.2.0"
+if ~isfield(targets,"schema_version") || ...
+        ~ismember(string(targets.schema_version),["0.2.0","1.0.0"])
     issues(end+1)=["This bundle predates the full-sensor camera-coordinate " + ...
-        "fix (required target schema 0.2.0)."];
+        "fix (required target schema 0.2.0 or newer)."];
 end
 if ~isfield(targets,"coordinate_space") || ...
         string(targets.coordinate_space)~="voltage_camera_full_sensor_pixels"

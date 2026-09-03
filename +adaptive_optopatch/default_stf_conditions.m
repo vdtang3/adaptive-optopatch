@@ -12,7 +12,8 @@ pulses_per_train=[1;options.PulsesPerTrain;options.PulsesPerTrain];
 pulse_duration_ms=repmat(options.PulseDurationMs,3,1);
 repeats=repmat(options.RepeatsPerCondition,3,1);
 modulator_voltage=repmat(options.ModulatorVoltage,3,1);
+amplitude_fraction=ones(3,1);
 is_null=false(3,1);
 conditions=table(condition_id,frequency_hz,pulses_per_train, ...
-    pulse_duration_ms,repeats,modulator_voltage,is_null);
+    pulse_duration_ms,repeats,amplitude_fraction,modulator_voltage,is_null);
 end

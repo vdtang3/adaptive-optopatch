@@ -68,11 +68,20 @@ classdef OnePhotonRunnerApp < handle
         end
 
         function buildUI(gui,visible)
-            gui.Figure=uifigure("Name","Adaptive Optopatch — Automated 1P Runner", ...
+            simulation=isa(gui.LuminosApp, ...
+                "adaptive_optopatch.testing.SimulatedLuminosApp");
+            title="Adaptive Optopatch — Automated 1P Runner";
+            if simulation, title=title+" [SIMULATION]"; end
+            gui.Figure=uifigure("Name",title, ...
                 "Position",[160 100 1050 690],"Visible",visible, ...
                 "CloseRequestFcn",@(~,~)delete(gui));
-            root=uigridlayout(gui.Figure,[3 1]);
-            root.RowHeight={105,"1x",125};
+            root=uigridlayout(gui.Figure,[4 1]);
+            root.RowHeight={42,105,"1x",125};
+            if ~simulation, root.RowHeight={0,105,"1x",125}; end
+            banner=uilabel(root,"Text","SIMULATION — NO HARDWARE OUTPUT", ...
+                "HorizontalAlignment","center","FontWeight","bold", ...
+                "FontSize",16,"FontColor",[1 1 1],"BackgroundColor",[0.75 0.05 0.05], ...
+                "Visible",matlab.lang.OnOffSwitchState(simulation));
             controls=uigridlayout(root,[2 7]);
             controls.ColumnWidth={145,90,145,90,150,"1x",120};
             gui.PowerOverride=uicheckbox(controls,"Text","Override OBIS power", ...
@@ -85,6 +94,7 @@ classdef OnePhotonRunnerApp < handle
                 "Limits",[0 5],"Tooltip","Raw mod488 command on Dev1/ao2.");
             gui.ArmLive=uicheckbox(controls,"Text","ARM live 488 output", ...
                 "Value",false,"FontWeight","bold");
+            if simulation, gui.ArmLive.Text="ARM simulated 488 output"; end
             validate=uibutton(controls,"Text","Validate hardware", ...
                 "ButtonPushedFcn",@(~,~)gui.validateHardware());
             validate.Layout.Column=7;
@@ -144,8 +154,12 @@ classdef OnePhotonRunnerApp < handle
         function runTrials(gui,count)
             if gui.Busy, return; end
             if ~gui.ArmLive.Value
+                armText="ARM live 488 output";
+                if isa(gui.LuminosApp,"adaptive_optopatch.testing.SimulatedLuminosApp")
+                    armText="ARM simulated 488 output";
+                end
                 uialert(gui.Figure, ...
-                    "Check 'ARM live 488 output' after reviewing the mask, OBIS power, and pulse voltage.", ...
+                    "Check '"+armText+"' after reviewing the mask, OBIS power, and pulse voltage.", ...
                     "Live output is not armed","Icon","warning");
                 return
             end
@@ -155,7 +169,11 @@ classdef OnePhotonRunnerApp < handle
             if gui.PowerOverride.Value, powerW=gui.PowerMw.Value/1000; end
             if gui.VoltageOverride.Value, voltage=gui.VoltageV.Value; end
             try
-                gui.setStatus("Running live 1P manifest. Use Luminos for emergency abort.");
+                if isa(gui.LuminosApp,"adaptive_optopatch.testing.SimulatedLuminosApp")
+                    gui.setStatus("Running simulated 1P manifest. No hardware output is possible.");
+                else
+                    gui.setStatus("Running live 1P manifest. Use Luminos for emergency abort.");
+                end
                 run=adaptive_optopatch.run_1p_manifest( ...
                     gui.Manifest,gui.Targets,gui.LuminosApp, ...
                     "OutputDirectory",gui.BundleFolder, ...

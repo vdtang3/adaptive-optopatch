@@ -67,7 +67,9 @@ if strlength(options.OutputDirectory)>0
     end
 end
 
+simulation=isa(app,"adaptive_optopatch.testing.SimulatedLuminosApp");
 run=struct("schema_version","0.4.0","mode","live_1p_dmd", ...
+    "simulation",simulation,"backend",string(class(app)), ...
     "hardware_profile",profile, ...
     "started_at",string(datetime("now","TimeZone","local")), ...
     "initial_settings_snapshot",adaptive_optopatch.snapshot_luminos_settings(app), ...
@@ -137,10 +139,10 @@ for k=1:n
         save_checkpoint();
         bins=arrayfun(@(camera)camera.bin,hardware.cameras);
         if strlength(options.OutputRoot)>0
-            Waveform_Camera_Sync_Acquisition(app,bins, ...
+            adaptive_optopatch.execute_waveform_camera_sync(app,bins, ...
                 "tag",char(row.output_tag),"fullpath",char(options.OutputRoot));
         else
-            Waveform_Camera_Sync_Acquisition(app,bins, ...
+            adaptive_optopatch.execute_waveform_camera_sync(app,bins, ...
                 "tag",char(row.output_tag));
         end
         wait_for_acquisition(globalProps.total_time+options.TimeoutMarginS);
@@ -201,6 +203,8 @@ save_checkpoint();
     function record=build_trial_record(row,waveformSummary,config,folder)
         record=struct;
         record.schema_version="0.1.0";
+        record.simulation=simulation;
+        record.backend=string(class(app));
         record.created_at=string(datetime("now","TimeZone","local"));
         record.hardware_profile=profile;
         record.trial=row;

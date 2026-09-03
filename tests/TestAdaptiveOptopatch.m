@@ -548,6 +548,27 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyEqual(info.snapshot_directory,string(folder));
         end
 
+        function readsLegacyLuminosCameraSnapshot(testCase)
+            folder=tempname; mkdir(folder); cleanup=onCleanup(@()rmdir(folder,"s")); %#ok<NASGU>
+            expected=uint16([1 2 3;4 5 6]);
+            snap=struct; %#ok<NASGU>
+            snap.img=expected;
+            snap.name="orca fusion";
+            snap.ref2d=imref2d(size(expected),[10 16],[20 24]);
+            snap.tform=affine2d([1 0 0;0 1 0;2 3 1]);
+            snapshotPath=fullfile(folder,"legacy_snapshot.mat");
+            save(snapshotPath,"snap");
+
+            [image,info]=adaptive_optopatch.read_reference_snapshot(snapshotPath);
+
+            testCase.verifyEqual(image,single(expected));
+            testCase.verifyEqual(info.camera_bin,2,"AbsTol",1e-12);
+            testCase.verifyClass(info.timestamp,"datetime");
+            testCase.verifyEqual(info.metadata.stimulation_dmd.name,"DMD_Blue");
+            testCase.verifyEqual( ...
+                info.metadata.stimulation_dmd.tform.T,snap.tform.T);
+        end
+
 
         function mapsSnapshotRoisIntoFullCameraCoordinates(testCase)
             image=zeros(20,30,"single");
@@ -828,5 +849,350 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyClass(gui,"adaptive_optopatch.OnePhotonRunnerApp");
             testCase.verifyTrue(isvalid(gui.Figure));
         end
+
+        function constructsAndResolvesSimulatedLuminos(testCase)
+            outputRoot=tempname;
+            sim=adaptive_optopatch.testing.make_simulated_luminos( ...
+                "SimulationOutputRoot",outputRoot,"CameraFrameRateHz",1000, ...
+                "LaserPowerMw",20);
+            testCase.verifyClass(sim, ...
+                "adaptive_optopatch.testing.SimulatedLuminosApp");
+            testCase.verifyTrue(sim.IsSimulation);
+            onePhoton=adaptive_optopatch.resolve_luminos_1p_hardware(sim);
+            testCase.verifyEqual(onePhoton.voltage_camera.cam_id,"S/N: 001125");
+            testCase.verifyEqual(onePhoton.dmd.name,"DMD_Blue");
+            testCase.verifyEqual(onePhoton.laser.name,"488");
+            testCase.verifyEqual(onePhoton.modulator.name,"mod488");
+            testCase.verifyEqual(onePhoton.shutter.name,"shutter488");
+            testCase.verifyTrue(onePhoton.daq_sync.passed);
+            twoPhoton=adaptive_optopatch.resolve_luminos_2p_hardware(sim);
+            testCase.verifyEqual(twoPhoton.calibration.calibration_id, ...
+                "SIMULATED_VU_CALIBRATION");
+            testCase.verifyTrue(twoPhoton.calibration.simulation);
+        end
+
+        function constructsSimulatorThroughLuminosStyleEntryPoint(testCase)
+            sim=simulatedLuminosApp("CameraFrameRateHz",900,"LaserPowerMw",15);
+            testCase.verifyClass(sim, ...
+                "adaptive_optopatch.testing.SimulatedLuminosApp");
+            hardware=adaptive_optopatch.resolve_luminos_1p_hardware(sim);
+            testCase.verifyEqual(hardware.laser_power_w,0.015,"AbsTol",1e-12);
+            testCase.verifyEqual(hardware.voltage_camera.daqtrig_period_ms, ...
+                1000/900,"AbsTol",1e-12);
+        end
+
+        function launchesRealRunnerGuisInSimulationMode(testCase)
+            root=tempname; mkdir(root);
+            cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
+            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1);
+
+            onePhotonFolder=fullfile(root,"one_photon"); mkdir(onePhotonFolder);
+            targets=struct("schema_version","test"); %#ok<NASGU>
+            trials=table(1,"1p_dmd","cell_001",false,1,{protocol}, ...
+                protocol.acquisition_duration_s,"gui_1p","planned","", ...
+                'VariableNames',{'trial_id','stimulation_mode','target_cell_id', ...
+                'is_null','target_index','pulse_schedule','acquisition_duration_s', ...
+                'output_tag','acquisition_status','experiment_directory'});
+            manifest=struct("trials",trials); %#ok<NASGU>
+            save(fullfile(onePhotonFolder,"pattern_bundle.mat"),"targets");
+            save(fullfile(onePhotonFolder,"trial_manifest.mat"),"manifest");
+            [gui1,sim1]=launch_simulated_runner_gui(onePhotonFolder,"Visible","off");
+            cleanup1=onCleanup(@()delete(gui1)); %#ok<NASGU>
+            testCase.verifyClass(gui1,"adaptive_optopatch.OnePhotonRunnerApp");
+            testCase.verifyTrue(sim1.IsSimulation);
+            testCase.verifyTrue(contains(gui1.Figure.Name,"[SIMULATION]"));
+            testCase.verifyNotEmpty(findall(gui1.Figure, ...
+                "Text","SIMULATION — NO HARDWARE OUTPUT"));
+
+            twoPhotonFolder=fullfile(root,"two_photon"); mkdir(twoPhotonFolder);
+            target=struct("spiral_center_xy",[1024 1024], ...
+                "spiral_radius_pixels",10,"parking_point_xy",[1080 1024], ...
+                "spiral_preview_center_xy",[1024 1024], ...
+                "parking_preview_point_xy",[1080 1024]);
+            targets=struct("schema_version","0.2.0", ... %#ok<NASGU>
+                "coordinate_space","voltage_camera_full_sensor_pixels", ...
+                "targets",target);
+            trials.stimulation_mode(:)="2p_spiral";
+            manifest=struct("trials",trials); %#ok<NASGU>
+            save(fullfile(twoPhotonFolder,"pattern_bundle.mat"),"targets");
+            save(fullfile(twoPhotonFolder,"trial_manifest.mat"),"manifest");
+            [gui2,sim2]=launch_simulated_2p_test_runner_gui( ...
+                twoPhotonFolder,"Visible","off");
+            cleanup2=onCleanup(@()delete(gui2)); %#ok<NASGU>
+            testCase.verifyClass(gui2,"adaptive_optopatch.TwoPhotonTestRunnerApp");
+            testCase.verifyTrue(sim2.IsSimulation);
+            testCase.verifyTrue(contains(gui2.Figure.Name,"[SIMULATION]"));
+            testCase.verifyNotEmpty(findall(gui2.Figure, ...
+                "Text","SIMULATION — NO HARDWARE OUTPUT"));
+        end
+
+        function runsSimulatedOnePhotonManifest(testCase)
+            outputRoot=tempname;
+            cleanup=onCleanup(@()remove_if_present(outputRoot)); %#ok<NASGU>
+            sim=adaptive_optopatch.testing.make_simulated_luminos( ...
+                "SimulationOutputRoot",outputRoot);
+            protocol=adaptive_optopatch.generate_screen_protocol( ...
+                "PulseCount",1,"PreDelayMs",10,"PostDelayMs",10);
+            target=struct("qc_pass",true);
+            targets=struct("targets",target,"dmd_camera_masks",true(8,9,1));
+            trials=table(1,"1p_dmd","cell_001",false,1,{protocol}, ...
+                protocol.acquisition_duration_s,"sim_1p","planned","", ...
+                'VariableNames',{'trial_id','stimulation_mode','target_cell_id', ...
+                'is_null','target_index','pulse_schedule','acquisition_duration_s', ...
+                'output_tag','acquisition_status','experiment_directory'});
+            run=adaptive_optopatch.run_1p_manifest( ...
+                struct("trials",trials),targets,sim, ...
+                "ConfirmLiveOutput",true,"ShutterSettleTimeS",0);
+            testCase.verifyTrue(run.simulation);
+            testCase.verifyEqual(run.trials.acquisition_status,"completed");
+            folder=run.trials.experiment_directory;
+            testCase.verifyTrue(startsWith(string(folder),string(outputRoot)));
+            saved=load(fullfile(folder,"output_data.mat"));
+            testCase.verifyTrue(saved.simulation);
+            testCase.verifyTrue(saved.adaptive_optopatch_record.simulation);
+            testCase.verifyEqual(numel(sim.AcquisitionHistory),1);
+        end
+
+        function runsSimulatedBlockedTwoPhotonManifest(testCase)
+            outputRoot=tempname;
+            cleanup=onCleanup(@()remove_if_present(outputRoot)); %#ok<NASGU>
+            sim=adaptive_optopatch.testing.make_simulated_luminos( ...
+                "SimulationOutputRoot",outputRoot);
+            protocol=adaptive_optopatch.generate_screen_protocol( ...
+                "PulseCount",1,"PulseDurationMs",5, ...
+                "PreDelayMs",100,"PostDelayMs",100);
+            target=struct("qc_pass",true,"spiral_center_xy",[1024 1024], ...
+                "spiral_radius_pixels",10,"spiral_density_points_per_volt",20, ...
+                "parking_point_xy",[1080 1024], ...
+                "spiral_preview_center_xy",[1024 1024], ...
+                "parking_preview_point_xy",[1080 1024]);
+            targets=struct("schema_version","0.2.0", ...
+                "coordinate_space","voltage_camera_full_sensor_pixels", ...
+                "targets",target);
+            trials=table(1,"2p_spiral","cell_001",false,1,{protocol}, ...
+                protocol.acquisition_duration_s,"sim_2p","planned","", ...
+                'VariableNames',{'trial_id','stimulation_mode','target_cell_id', ...
+                'is_null','target_index','pulse_schedule','acquisition_duration_s', ...
+                'output_tag','acquisition_status','experiment_directory'});
+            run=adaptive_optopatch.run_2p_manifest( ...
+                struct("trials",trials),targets,sim, ...
+                "ReleaseLevel","blocked_test","ConfirmTrajectoryTest",true);
+            testCase.verifyTrue(run.simulation);
+            testCase.verifyEqual(run.trials.acquisition_status,"completed");
+            folder=run.trials.experiment_directory;
+            saved=load(fullfile(folder,"output_data.mat"));
+            feedback=load(fullfile(folder,"adaptive_optopatch_2p_waveforms.mat"), ...
+                "galvo_feedback");
+            testCase.verifyTrue(saved.simulation);
+            testCase.verifyTrue(saved.adaptive_optopatch_record.simulation);
+            testCase.verifyTrue(feedback.galvo_feedback.simulated);
+            testCase.verifyTrue(feedback.galvo_feedback.passed);
+        end
+
+        function buildsSwitchesAndInvalidatesUnifiedPlan(testCase)
+            root=tempname; mkdir(root);
+            cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
+            [app,sim]=launch_simulated_adaptive_optopatch_gui( ...
+                "Visible","off","RunRoot",root); %#ok<ASGLU>
+            appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
+            app.setReferenceData(ones(80,100),unified_test_info(root), ...
+                {[40 30;60 30;60 50;40 50]});
+            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1);
+            app.setPulseProtocol(protocol);
+            twoPhoton=app.buildCurrentPlan();
+            testCase.verifyEqual(unique( ...
+                string(twoPhoton.manifest.trials.stimulation_mode)),"2p_spiral");
+            app.setPlanParameter("mode","1p_dmd");
+            app.setPlanParameter("arm_output",true);
+            onePhoton=app.buildCurrentPlan();
+            testCase.verifyEqual(unique( ...
+                string(onePhoton.manifest.trials.stimulation_mode)),"1p_dmd");
+            testCase.verifyEqual(app.PlanState,"DIRTY");
+            report=app.validateCurrentPlan();
+            testCase.verifyTrue(report.passed);
+            testCase.verifyEqual(app.PlanState,"VALIDATED");
+            changed=adaptive_optopatch.generate_screen_protocol("PulseCount",2);
+            changedPath=fullfile(root,"changed_protocol.mat");
+            adaptive_optopatch.save_protocol(changedPath,changed);
+            app.loadPulseProtocol(changedPath);
+            testCase.verifyEqual(app.PlanState,"DIRTY");
+            testCase.verifyEqual(app.PulseProtocolPath,string(changedPath));
+        end
+
+        function generatesCanonicalConnectivityAndStfProtocols(testCase)
+            required=["event_id","condition_id","onset_s", ...
+                "duration_s","amplitude_fraction"];
+            screen=adaptive_optopatch.generate_screen_protocol("PulseCount",3);
+            testCase.verifyEqual(screen.schema_version,"1.0.0");
+            testCase.verifyTrue(all(ismember(required, ...
+                string(screen.events.Properties.VariableNames))));
+            testCase.verifyEqual(screen.events.amplitude_fraction,ones(3,1));
+            conditions=adaptive_optopatch.default_stf_conditions( ...
+                "RepeatsPerCondition",1,"PulsesPerTrain",3);
+            stf=adaptive_optopatch.generate_stf_protocol(conditions);
+            testCase.verifyTrue(all(ismember(required, ...
+                string(stf.events.Properties.VariableNames))));
+            testCase.verifyTrue(adaptive_optopatch.validate_protocol(stf).passed);
+        end
+
+        function savesAndLoadsCanonicalProtocolExactly(testCase)
+            folder=tempname; mkdir(folder);
+            cleanup=onCleanup(@()remove_if_present(folder)); %#ok<NASGU>
+            protocol=adaptive_optopatch.generate_screen_protocol( ...
+                "PulseCount",4,"RandomSeed",42);
+            protocol.protocol_id="round_trip_test";
+            path=fullfile(folder,"pulse_protocol.mat");
+            adaptive_optopatch.save_protocol(path,protocol);
+            loaded=adaptive_optopatch.load_protocol(path);
+            testCase.verifyEqual(loaded, ...
+                adaptive_optopatch.normalize_protocol(protocol));
+        end
+
+        function rejectsInvalidAndNormalizesLegacyProtocols(testCase)
+            invalid=adaptive_optopatch.generate_screen_protocol("PulseCount",2);
+            invalid.events.onset_s(2)=invalid.events.onset_s(1);
+            report=adaptive_optopatch.validate_protocol(invalid);
+            testCase.verifyFalse(report.passed);
+            legacyEvents=table([0.1;0.3],[0.11;0.31],[1;2], ...
+                'VariableNames',{'onset_s','offset_s','modulator_voltage'});
+            legacy=struct("protocol_type","legacy_test","events",legacyEvents, ...
+                "acquisition_duration_s",0.4);
+            normalized=adaptive_optopatch.normalize_protocol(legacy);
+            testCase.verifyEqual(normalized.schema_version,"1.0.0");
+            testCase.verifyEqual(normalized.events.amplitude_fraction,[0.5;1]);
+            testCase.verifyEqual(normalized.legacy_voltage_scale_v,2);
+        end
+
+        function mapsRelativeAmplitudeToPhysicalHardwareVoltage(testCase)
+            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",2);
+            protocol.events.amplitude_fraction=[0.25;1];
+            canonicalOnly=protocol;
+            canonicalOnly.events=removevars(canonicalOnly.events,"modulator_voltage");
+            canonicalOnly=rmfield(canonicalOnly,"modulator_voltage");
+            testCase.verifyTrue(adaptive_optopatch.validate_protocol(canonicalOnly).passed);
+            originalTiming=protocol.events(:,["onset_s","duration_s"]);
+            globalProps=struct("rate",200000,"total_time",1, ...
+                "clock_source","Internal Dev1","trigger_source","Dev1/PFI9", ...
+                "completion_trigger","None","daq_master",true);
+            wfm=struct("ao",[],"do",[],"ai",[],"di",[],"ctri",[], ...
+                "ao_camera_triggered",[],"do_camera_triggered",[]);
+            [~,~,summary]=adaptive_optopatch.build_luminos_1p_waveform_config( ...
+                globalProps,wfm,protocol, ...
+                adaptive_optopatch.virtual_upright_1p_profile(), ...
+                "ModulatorVoltageOverride",4);
+            testCase.verifyEqual(summary.pulses.modulator_voltage,[1;4]);
+            testCase.verifyEqual(protocol.events(:,["onset_s","duration_s"]), ...
+                originalTiming);
+            p1=adaptive_optopatch.flatten_pulse_schedule( ...
+                protocol,"ConfiguredVoltage",2);
+            testCase.verifyEqual(p1.modulator_voltage,[0.5;2]);
+            target=struct("spiral_center_xy",[100 90], ...
+                "spiral_radius_pixels",10, ...
+                "spiral_density_points_per_volt",20, ...
+                "parking_point_xy",[130 90]);
+            tform=affinetform2d([100 0 50;0 100 40;0 0 1]);
+            waveforms=adaptive_optopatch.build_2p_trial_waveforms( ...
+                protocol,target,tform,"ModulatorVoltage",2, ...
+                "MaximumVelocityVPerS",500, ...
+                "MaximumAccelerationVPerS2",1e6, ...
+                "MinimumIlluminatedRadiusFraction",0.5);
+            testCase.verifyTrue(any(abs(waveforms.pockels_v-0.5)<1e-12));
+            testCase.verifyEqual(max(waveforms.pockels_v),2);
+            testCase.verifyTrue(adaptive_optopatch.validate_protocol_for_mode( ...
+                protocol,"1p_dmd").passed);
+            testCase.verifyTrue(adaptive_optopatch.validate_protocol_for_mode( ...
+                protocol,"2p_spiral").passed);
+        end
+
+        function unifiedOnePhotonRunFreezesAllArtifacts(testCase)
+            root=tempname; mkdir(root);
+            cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
+            [app,sim]=launch_simulated_adaptive_optopatch_gui( ...
+                "Visible","off","RunRoot",root); %#ok<ASGLU>
+            appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
+            app.setReferenceData(ones(80,100),unified_test_info(root), ...
+                {[40 30;60 30;60 50;40 50]});
+            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1);
+            app.setPulseProtocol(protocol);
+            app.setPlanParameter("mode","1p_dmd");
+            app.setPlanParameter("arm_output",true);
+            run=app.runNext();
+            testCase.verifyEqual(run.trials.acquisition_status,"completed");
+            testCase.verifyTrue(run.simulation);
+            for filename=["reference_model.mat","pattern_bundle.mat", ...
+                    "pulse_protocol.mat","trial_manifest.mat", ...
+                    "planning_session.mat","run_checkpoint.mat"]
+                testCase.verifyTrue(isfile(fullfile(app.ActiveRunFolder,filename)), ...
+                    "Missing frozen run artifact "+filename);
+            end
+            testCase.verifyFalse(app.ControlsLocked);
+        end
+
+        function unifiedTwoPhotonPreviewAndRunComplete(testCase)
+            root=tempname; mkdir(root);
+            cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
+            [app,sim]=launch_simulated_adaptive_optopatch_gui( ...
+                "Visible","off","RunRoot",root); %#ok<ASGLU>
+            appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
+            image=ones(80,100); image(10:15,10:15)=0;
+            app.setReferenceData(image,unified_test_info(root), ...
+                {[40 30;60 30;60 50;40 50]});
+            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1);
+            app.setPulseProtocol(protocol);
+            app.setPlanParameter("trajectory_confirmed",true);
+            plan=app.previewCurrentPlan();
+            testCase.verifyEqual(unique( ...
+                string(plan.manifest.trials.stimulation_mode)),"2p_spiral");
+            run=app.runNext();
+            testCase.verifyEqual(run.trials.acquisition_status,"completed");
+            testCase.verifyTrue(isfile(fullfile( ...
+                run.trials.experiment_directory, ...
+                "adaptive_optopatch_2p_waveforms.mat")));
+        end
+
+        function unifiedResumeUsesFrozenManifest(testCase)
+            root=tempname; mkdir(root);
+            cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
+            [app,sim]=launch_simulated_adaptive_optopatch_gui( ...
+                "Visible","off","RunRoot",root); %#ok<ASGLU>
+            appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
+            rois={[25 25;40 25;40 40;25 40], ...
+                [60 40;75 40;75 55;60 55]};
+            app.setReferenceData(ones(80,100),unified_test_info(root),rois);
+            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1);
+            app.setPulseProtocol(protocol);
+            app.setPlanParameter("mode","1p_dmd");
+            app.setPlanParameter("arm_output",true);
+            first=app.runNext();
+            frozenFolder=app.ActiveRunFolder;
+            testCase.verifyEqual(sum(first.trials.acquisition_status=="completed"),1);
+            changedProtocol=adaptive_optopatch.generate_screen_protocol("PulseCount",7);
+            app.setPulseProtocol(changedProtocol);
+            app.setPlanParameter("mode","2p_spiral");
+            app.resumeRun(frozenFolder);
+            frozen=app.ActiveRunPlan;
+            testCase.verifyTrue(all(frozen.manifest.trials.stimulation_mode=="1p_dmd"));
+            testCase.verifyEqual( ...
+                frozen.manifest.trials.pulse_schedule{1}.pulse_count,1);
+            app.setPlanParameter("mode","1p_dmd");
+            app.setPlanParameter("arm_output",true);
+            app.resumeRun(frozenFolder);
+            resumed=app.runAll();
+            testCase.verifyEqual(sum(resumed.trials.acquisition_status=="completed"),2);
+        end
     end
+end
+
+function remove_if_present(folder)
+if isfolder(folder), rmdir(folder,"s"); end
+end
+
+function info=unified_test_info(root)
+camera=struct("ROI",[0 0 100 80],"bin",1, ...
+    "x_world_limits",[974 1074],"y_world_limits",[984 1064]);
+metadata=struct("rig_name","Virtual_Upright","voltage_camera",camera);
+info=struct("snapshot_name","unified_test", ...
+    "snapshot_directory",string(root), ...
+    "snapshot_path",string(fullfile(root,"snapshot.mat")), ...
+    "metadata",metadata);
 end

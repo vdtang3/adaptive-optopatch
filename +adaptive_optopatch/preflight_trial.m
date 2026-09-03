@@ -16,44 +16,15 @@ if ~all(ismember(required,string(trialRow.Properties.VariableNames)))
     issues(end+1)="Trial row is missing required fields.";
 else
     protocol=trialRow.pulse_schedule{1};
-    if ~isfield(protocol,"events") || isempty(protocol.events)
-        issues(end+1)="Pulse schedule is empty.";
-    elseif isfield(protocol,"protocol_type") && protocol.protocol_type=="stf_mixed_conditions"
-        events=protocol.events;
-        if any(events.modulator_voltage<0 | events.modulator_voltage>5)
-            issues(end+1)="An STF modulator command lies outside 0-5 V.";
-        end
-        if any(events.event_offset_s<=events.event_onset_s)
-            issues(end+1)="An STF event has nonpositive duration.";
-        end
-        if height(events)>1 && ...
-                any(events.event_onset_s(2:end)<events.event_offset_s(1:end-1))
-            issues(end+1)="STF event schedule contains overlaps.";
-        end
-        for e=1:height(events)
-            times=events.pulse_times_s{e};
-            if numel(times)>1 && any(diff(times)<=0)
-                issues(end+1)="An STF train contains nonincreasing pulse times."; %#ok<AGROW>
-            end
-        end
-        if abs(protocol.acquisition_duration_s- ...
-                (events.event_offset_s(end)+protocol.post_delay_ms/1000))>1e-9
-            issues(end+1)="Acquisition duration does not match the STF schedule.";
-        end
+    validation=adaptive_optopatch.validate_protocol(protocol);
+    if ~validation.passed
+        issues=[issues;validation.issues(:)];
     else
-        events=protocol.events;
-        if any(events.modulator_voltage<0 | events.modulator_voltage>5)
-            issues(end+1)="A modulator command lies outside 0-5 V.";
-        end
-        if any(events.offset_s<=events.onset_s)
-            issues(end+1)="A pulse has nonpositive duration.";
-        end
-        if height(events)>1 && any(events.onset_s(2:end)<events.offset_s(1:end-1))
-            issues(end+1)="Pulse schedule contains overlapping pulses.";
-        end
-        if abs(protocol.acquisition_duration_s- ...
-                (events.offset_s(end)+protocol.post_delay_ms/1000))>1e-9
-            issues(end+1)="Acquisition duration does not match the pulse schedule.";
+        try
+            adaptive_optopatch.flatten_pulse_schedule( ...
+                validation.protocol,"ConfiguredVoltage",1);
+        catch exception
+            issues(end+1)=string(exception.message);
         end
     end
     if ~trialRow.is_null

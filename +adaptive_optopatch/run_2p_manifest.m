@@ -52,7 +52,7 @@ if ~motionValidation.passed
         strjoin(motionValidation.issues,newline));
 end
 original=capture_state(hardware);
-cleanup=onCleanup(@()restore_state(app,hardware,original,profile)); %#ok<NASGU>
+cleanup=onCleanup(@()restore_state(app,hardware,original,profile));
 hardware.modulator.level=profile.modulator.dark_v;
 trials=manifest.trials; n=height(trials);
 trials=ensure_column(trials,"settings_snapshot",cell(n,1));
@@ -62,8 +62,16 @@ checkpoint="";
 if strlength(options.OutputDirectory)>0
     if ~isfolder(options.OutputDirectory), mkdir(options.OutputDirectory); end
     checkpoint=fullfile(options.OutputDirectory,"run_2p_checkpoint.mat");
+    if options.Resume && isfile(checkpoint)
+        saved=load(checkpoint,"run");
+        if isfield(saved,"run") && height(saved.run.trials)==n
+            trials=saved.run.trials;
+        end
+    end
 end
+simulation=isa(app,"adaptive_optopatch.testing.SimulatedLuminosApp");
 run=struct("schema_version","0.1.0","mode","live_2p_spiral", ...
+    "simulation",simulation,"backend",string(class(app)), ...
     "release_level",options.ReleaseLevel,"release_report",release, ...
     "hardware_profile",profile,"calibration",hardware.calibration, ...
     "initial_settings_snapshot",adaptive_optopatch.snapshot_luminos_settings(app), ...
@@ -123,10 +131,12 @@ for k=1:n
         run.trials.acquisition_status(k)="acquiring"; save_checkpoint();
         bins=arrayfun(@(camera)camera.bin,hardware.cameras);
         if strlength(options.OutputRoot)>0
-            Waveform_Camera_Sync_Acquisition(app,bins,"tag",char(row.output_tag), ...
+            adaptive_optopatch.execute_waveform_camera_sync( ...
+                app,bins,"tag",char(row.output_tag), ...
                 "fullpath",char(options.OutputRoot));
         else
-            Waveform_Camera_Sync_Acquisition(app,bins,"tag",char(row.output_tag));
+            adaptive_optopatch.execute_waveform_camera_sync( ...
+                app,bins,"tag",char(row.output_tag));
         end
         wait_for_completion(globalProps.total_time+options.TimeoutMarginS);
         hardware.modulator.level=profile.modulator.dark_v;
@@ -136,11 +146,11 @@ for k=1:n
                 "Luminos did not create output_data.mat in %s.",folder);
         end
         waveformFile=fullfile(folder,"adaptive_optopatch_2p_waveforms.mat");
-        actual_waveforms=waveforms; %#ok<NASGU>
+        actual_waveforms=waveforms;
         galvo_feedback=adaptive_optopatch.capture_galvo_feedback( ...
-            hardware.daq,waveforms); %#ok<NASGU>
+            hardware.daq,waveforms);
         save(waveformFile,"actual_waveforms","galvo_feedback","-v7.3");
-        adaptive_optopatch_record=build_record(row,summary,waveforms,folder); %#ok<NASGU>
+        adaptive_optopatch_record=build_record(row,summary,waveforms,folder);
         save(fullfile(folder,"output_data.mat"), ...
             "adaptive_optopatch_record","-append");
         run.trials.experiment_directory(k)=folder;
@@ -172,7 +182,8 @@ run.finished_at=string(datetime("now","TimeZone","local")); save_checkpoint();
         if ~isfinite(frameRate)
             frameRate=double(hardware.voltage_camera.calculate_framerate());
         end
-        record=struct("schema_version","0.1.0","created_at", ...
+        record=struct("schema_version","0.1.0", ...
+            "simulation",simulation,"backend",string(class(app)),"created_at", ...
             string(datetime("now","TimeZone","local")), ...
             "release_level",options.ReleaseLevel,"trial",row, ...
             "hardware_profile",profile,"calibration",hardware.calibration, ...
@@ -248,12 +259,8 @@ end
 
 function protocol=override_protocol_voltage(protocol,voltage)
 if ~isfinite(voltage), return; end
-if string(protocol.protocol_type)=="stf_mixed_conditions"
-    protocol.events.modulator_voltage(:)=voltage;
-else
-    protocol.events.modulator_voltage(:)=voltage;
-    protocol.modulator_voltage=voltage;
-end
+protocol=adaptive_optopatch.normalize_protocol(protocol);
+protocol.hardware_command_voltage=voltage;
 end
 function original=capture_state(hardware)
 original=struct("global_props",hardware.daq.global_props, ...

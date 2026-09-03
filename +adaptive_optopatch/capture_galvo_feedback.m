@@ -50,7 +50,8 @@ summary=channels;
 for k=1:numel(summary), summary(k).data=[]; end
 feedback=struct("schema_version","0.1.0","captured_at", ...
     string(datetime("now","TimeZone","local")),"channels",channels, ...
-    "summary",summary,"passed",passed,"issues",issues);
+    "summary",summary,"passed",passed,"issues",issues, ...
+    "simulated",isa(daq,"adaptive_optopatch.testing.SimulatedLuminosDevice"));
 end
 
 function value=safe_correlation(a,b)

@@ -1,9 +1,11 @@
-function pulses = flatten_pulse_schedule(protocol)
+function pulses = flatten_pulse_schedule(protocol,options)
 %FLATTEN_PULSE_SCHEDULE Convert screen or STF schedules to individual pulses.
 arguments
     protocol (1,1) struct
+    options.ConfiguredVoltage (1,1) double = NaN
 end
-if ~isfield(protocol,"events") || isempty(protocol.events)
+protocol=adaptive_optopatch.normalize_protocol(protocol);
+if isempty(protocol.events)
     error("adaptive_optopatch:EmptyPulseSchedule", ...
         "The protocol contains no events.");
 end
@@ -11,18 +13,26 @@ end
 if isfield(protocol,"protocol_type") && ...
         string(protocol.protocol_type)=="stf_mixed_conditions"
     events=protocol.events;
-    required=["condition_index","is_null","modulator_voltage","pulse_times_s"];
-    if ~all(ismember(required,string(events.Properties.VariableNames))) || ...
-            ~isfield(protocol,"conditions")
+    required=["is_null","amplitude_fraction","pulse_times_s"];
+    if ~all(ismember(required,string(events.Properties.VariableNames)))
         error("adaptive_optopatch:InvalidStfProtocol", ...
             "The STF protocol is missing pulse timing or condition information.");
     end
     onset=[]; offset=[]; voltage=[]; eventIndex=[]; pulseInEvent=[]; isNull=[];
     for e=1:height(events)
         times=double(events.pulse_times_s{e}(:));
-        conditionIndex=events.condition_index(e);
-        duration=double(protocol.conditions.pulse_duration_ms(conditionIndex))/1000;
-        values=repmat(double(events.modulator_voltage(e)),numel(times),1);
+        if ismember("pulse_duration_s",string(events.Properties.VariableNames))
+            duration=double(events.pulse_duration_s(e));
+        elseif isfield(protocol,"conditions") && ...
+                ismember("condition_index",string(events.Properties.VariableNames))
+            duration=double(protocol.conditions.pulse_duration_ms( ...
+                events.condition_index(e)))/1000;
+        else
+            error("adaptive_optopatch:InvalidStfProtocol", ...
+                "Train events require pulse_duration_s.");
+        end
+        values=repmat(resolve_voltage(protocol,events,e, ...
+            options.ConfiguredVoltage),numel(times),1);
         if events.is_null(e), values(:)=0; end
         onset=[onset;times]; %#ok<AGROW>
         offset=[offset;times+duration]; %#ok<AGROW>
@@ -33,14 +43,17 @@ if isfield(protocol,"protocol_type") && ...
     end
 else
     events=protocol.events;
-    required=["onset_s","offset_s","modulator_voltage"];
+    required=["onset_s","duration_s","amplitude_fraction"];
     if ~all(ismember(required,string(events.Properties.VariableNames)))
         error("adaptive_optopatch:InvalidScreenProtocol", ...
-            "The screen protocol is missing onset, offset, or voltage columns.");
+            "The protocol is missing canonical onset, duration, or amplitude columns.");
     end
     onset=double(events.onset_s(:));
-    offset=double(events.offset_s(:));
-    voltage=double(events.modulator_voltage(:));
+    offset=onset+double(events.duration_s(:));
+    voltage=zeros(height(events),1);
+    for e=1:height(events)
+        voltage(e)=resolve_voltage(protocol,events,e,options.ConfiguredVoltage);
+    end
     eventIndex=(1:height(events))';
     pulseInEvent=ones(height(events),1);
     isNull=false(height(events),1);
@@ -69,4 +82,20 @@ pulses=table(pulse_index,eventIndex,pulseInEvent,isNull,onset,offset, ...
     offset-onset,voltage, ...
     'VariableNames',{'pulse_index','event_index','pulse_in_event','is_null', ...
     'onset_s','offset_s','duration_s','modulator_voltage'});
+end
+
+function voltage=resolve_voltage(protocol,events,index,configured)
+if ~isfinite(configured) && isfield(protocol,"hardware_command_voltage")
+    configured=double(protocol.hardware_command_voltage);
+end
+if isfinite(configured)
+    voltage=double(events.amplitude_fraction(index))*configured;
+elseif ismember("modulator_voltage",string(events.Properties.VariableNames))
+    voltage=double(events.modulator_voltage(index));
+elseif isfield(protocol,"legacy_voltage_scale_v") && protocol.legacy_voltage_scale_v>0
+    voltage=double(events.amplitude_fraction(index))*protocol.legacy_voltage_scale_v;
+else
+    error("adaptive_optopatch:HardwareAmplitudeRequired", ...
+        "A configured physical modulator/Pockels voltage is required.");
+end
 end

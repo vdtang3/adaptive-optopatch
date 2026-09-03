@@ -12,6 +12,8 @@ snapshot.devices={};
 snapshot.errors=strings(0,1);
 snapshot.daq_synchronization=struct([]);
 snapshot.active_galvo_calibration=struct([]);
+snapshot.simulation=isa(app,"adaptive_optopatch.testing.SimulatedLuminosApp");
+snapshot.backend=string(class(app));
 
 try
     snapshot.app_archive=app.buildAppArchive();
@@ -56,7 +58,13 @@ catch exception
     snapshot.errors(end+1)="DAQ synchronization: "+string(exception.message);
 end
 try
-    [artifact,status]=adaptive_optopatch.get_active_galvo_calibration();
+    if isa(app,"adaptive_optopatch.testing.SimulatedLuminosApp")
+        artifact=app.GalvoCalibration;
+        status=struct("found",true,"simulation",true, ...
+            "calibration_id",artifact.calibration_id);
+    else
+        [artifact,status]=adaptive_optopatch.get_active_galvo_calibration();
+    end
     snapshot.active_galvo_calibration=struct("status",status,"artifact",artifact);
 catch exception
     snapshot.errors(end+1)="Active galvo calibration: "+string(exception.message);

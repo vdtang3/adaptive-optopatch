@@ -42,7 +42,20 @@ if isempty(hardware.voltage_camera_index)
     error("adaptive_optopatch:VoltageCameraNotFound","Camera 1 serial 001125 was not found.");
 end
 hardware.voltage_camera=hardware.cameras(hardware.voltage_camera_index);
-hardware.calibration_status=adaptive_optopatch.load_active_galvo_calibration(app);
+if isa(app,"adaptive_optopatch.testing.SimulatedLuminosApp")
+    artifact=app.GalvoCalibration;
+    validation=adaptive_optopatch.validate_galvo_calibration_artifact(artifact,app);
+    if ~validation.passed
+        error("adaptive_optopatch:SimulatedCalibrationRejected","%s", ...
+            strjoin(validation.issues,newline));
+    end
+    hardware.scanner.tform=artifact.calibration.tform;
+    hardware.calibration_status=struct("found",true,"applied",true, ...
+        "validation",validation,"calibration_id",artifact.calibration_id, ...
+        "artifact",artifact,"message","Using simulator-owned calibration.");
+else
+    hardware.calibration_status=adaptive_optopatch.load_active_galvo_calibration(app);
+end
 if ~hardware.calibration_status.found || ~hardware.calibration_status.applied
     error("adaptive_optopatch:ActiveGalvoCalibrationRequired", ...
         "A validated active Camera 1/galvo calibration is required.");

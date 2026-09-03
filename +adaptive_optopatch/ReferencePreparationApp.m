@@ -3,7 +3,7 @@ classdef ReferencePreparationApp < handle
     properties (SetAccess=private)
         Figure
     end
-    properties (Access=private)
+    properties (Access=protected)
         Axes
         RoiList
         QcTable
@@ -47,7 +47,7 @@ classdef ReferencePreparationApp < handle
         end
     end
 
-    methods (Access=private)
+    methods (Access=protected)
         function buildUI(app,visible)
             app.Figure = uifigure("Name","Adaptive Optopatch — Reference & Targets", ...
                 "Position",[80 80 1320 780],"Visible",visible);
@@ -122,6 +122,13 @@ classdef ReferencePreparationApp < handle
                 "Value",["Ready. In Luminos, click Snap for Camera 1."; ...
                          "Then load its MAT file from the Luminos Snaps folder."]);
             app.Status.Layout.Row=2; app.Status.Layout.Column=[1 3];
+            watched={app.Mode,app.MicronsPerPixel,app.SpiralRadius, ...
+                app.SpiralDensity,app.DmdErosion,app.Repeats,app.PulseCount, ...
+                app.PulseDuration,app.DarkIntervalMin,app.DarkIntervalMax, ...
+                app.ModulatorVoltage,app.PreDelay,app.PostDelay};
+            for k=1:numel(watched)
+                watched{k}.ValueChangedFcn=@(~,~)app.planChanged();
+            end
         end
 
         function chooseSnapshot(app)
@@ -212,7 +219,10 @@ classdef ReferencePreparationApp < handle
 
         function updateQc(app)
             n=numel(app.RoiObjects); items=compose("cell_%03d",1:n); data=cell(n,6);
-            if n==0, app.RoiList.Items=strings(1,0); app.QcTable.Data=data; return; end
+            if n==0
+                app.RoiList.Items=strings(1,0); app.QcTable.Data=data;
+                app.planChanged(); return
+            end
             masks=app.makeMasks(); overlap=sum(masks,3)>1;
             for k=1:n
                 [y,x]=find(masks(:,:,k));
@@ -231,9 +241,27 @@ classdef ReferencePreparationApp < handle
             previous=string(app.RoiList.Value); app.RoiList.Items=reshape(items,1,[]);
             if ~isempty(previous) && any(strcmp(items,previous)), app.RoiList.Value=previous; end
             app.QcTable.Data=data;
+            app.planChanged();
         end
 
         function [reference,targets,manifest]=buildArtifacts(app)
+            [reference,targets]=app.buildSpatialArtifacts( ...
+                "PulseDurationMs",app.PulseDuration.Value);
+            manifest=adaptive_optopatch.build_screen_manifest(reference,targets, ...
+                "Mode",string(app.Mode.Value),"Repeats",app.Repeats.Value, ...
+                "NullFraction",0, ...
+                "PulseCount",app.PulseCount.Value, ...
+                "PulseDurationMs",app.PulseDuration.Value, ...
+                "DarkIntervalMs",[app.DarkIntervalMin.Value app.DarkIntervalMax.Value], ...
+                "PreDelayMs",app.PreDelay.Value,"PostDelayMs",app.PostDelay.Value, ...
+                "ModulatorVoltage",app.ModulatorVoltage.Value);
+        end
+
+        function [reference,targets]=buildSpatialArtifacts(app,options)
+            arguments
+                app
+                options.PulseDurationMs (1,1) double {mustBePositive} = 5
+            end
             if isempty(app.ReferenceImage) || isempty(app.RoiObjects)
                 error("adaptive_optopatch:NothingToSave","Load an image and draw at least one soma ROI.");
             end
@@ -271,17 +299,9 @@ classdef ReferencePreparationApp < handle
             targets=adaptive_optopatch.build_target_bundle(reference, ...
                 "SpiralRadiusUm",app.SpiralRadius.Value, ...
                 "SpiralDensityPointsPerVolt",app.SpiralDensity.Value, ...
-                "PulseDurationMs",app.PulseDuration.Value, ...
+                "PulseDurationMs",options.PulseDurationMs, ...
                 "ScannerSampleRateHz",scannerSampleRate, ...
                 "DmdErosionPixels",app.DmdErosion.Value);
-            manifest=adaptive_optopatch.build_screen_manifest(reference,targets, ...
-                "Mode",string(app.Mode.Value),"Repeats",app.Repeats.Value, ...
-                "NullFraction",0, ...
-                "PulseCount",app.PulseCount.Value, ...
-                "PulseDurationMs",app.PulseDuration.Value, ...
-                "DarkIntervalMs",[app.DarkIntervalMin.Value app.DarkIntervalMax.Value], ...
-                "PreDelayMs",app.PreDelay.Value,"PostDelayMs",app.PostDelay.Value, ...
-                "ModulatorVoltage",app.ModulatorVoltage.Value);
         end
 
         function session=buildSessionState(app)
@@ -329,6 +349,7 @@ classdef ReferencePreparationApp < handle
             parameters=session.parameters;
             app.restorePolygons(positions);
             app.applyParameters(parameters);
+            app.planningSessionRestored(session);
             app.setStatus(sprintf(['Loaded %s\nRestored %d polygon ROIs and ' ...
                 'experimental parameters from latest planning bundle:\n%s'], ...
                 app.LoadInfo.snapshot_path,numel(positions),bundle.folder));
@@ -497,6 +518,14 @@ classdef ReferencePreparationApp < handle
         function showError(app,exception)
             app.setStatus("ERROR: "+string(exception.message));
             uialert(app.Figure,exception.message,"Adaptive Optopatch error","Icon","error");
+        end
+
+        function planChanged(~)
+            % Subclasses use this hook to invalidate previously built plans.
+        end
+
+        function planningSessionRestored(~,~)
+            % Subclasses can restore additional planning-session state.
         end
     end
 end

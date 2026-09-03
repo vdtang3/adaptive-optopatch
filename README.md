@@ -1,15 +1,111 @@
 # Adaptive Optopatch
 
-First-pass MATLAB package for planning one-neuron-per-acquisition Optopatch
-screens alongside Luminos. It keeps neuron definitions in voltage-camera
+MATLAB package for planning and running one-neuron-per-acquisition Optopatch
+experiments alongside Luminos. It keeps neuron definitions in voltage-camera
 coordinates and supports two interchangeable stimulation backends:
 
 - `1p_dmd`: logical soma masks transformed by Luminos through `DMD_Blue`.
 - `2p_spiral`: soma centers and radii passed to the Luminos scanning device.
 
-The planning GUI is read-only with respect to hardware. Separate guarded
-calibration, staged 2P, and automated 1P runners can start Luminos acquisitions
-only after their explicit confirmation controls are satisfied.
+`AdaptiveOptopatchApp` is the primary operator interface. Reference annotation,
+protocol configuration, target/waveform preview, validation, immutable run-plan
+archiving, acquisition, checkpointing, and resume are one continuous workflow.
+The established guarded 1P and 2P execution backends remain separate and retain
+their explicit confirmation controls.
+
+## Primary workflow
+
+Start the unified app in the same MATLAB process as Luminos:
+
+```matlab
+app = launch_adaptive_optopatch_gui(luminosApp);
+```
+
+Then use one window:
+
+```text
+Load Camera 1 snapshot
+→ annotate soma ROIs
+→ choose 1P DMD or 2P spiral
+→ load pulse_protocol.mat
+→ configure mod488/Pockels voltage and hardware limits
+→ preview targets and waveforms
+→ validate
+→ run next or run all
+```
+
+Pulse protocol means **when** stimulation happens. Adaptive Optopatch combines
+that schedule with **where** stimulation happens and **how** the selected rig
+delivers it. The acquisition GUI loads protocol data; it never executes a
+protocol-generation script.
+
+### 1. Generate a pulse protocol
+
+Connectivity example:
+
+```matlab
+protocol = adaptive_optopatch.generate_screen_protocol( ...
+    "PulseCount", 2000, ...
+    "PulseDurationMs", 5, ...
+    "DarkIntervalMs", [45 55], ...
+    "PreDelayMs", 100, ...
+    "PostDelayMs", 100, ...
+    "RandomSeed", 42);
+protocol.protocol_id = "connectivity_2hz";
+
+adaptive_optopatch.save_protocol("connectivity_2hz.mat", protocol);
+```
+
+STF example:
+
+```matlab
+conditions = adaptive_optopatch.default_stf_conditions( ...
+    "RepeatsPerCondition", 100, ...
+    "PulsesPerTrain", 10, ...
+    "PulseDurationMs", 5);
+
+protocol = adaptive_optopatch.generate_stf_protocol(conditions, ...
+    "EventDarkIntervalMs", [450 550], ...
+    "PreDelayMs", 100, ...
+    "PostDelayMs", 100, ...
+    "RandomSeed", 1001);
+protocol.protocol_id = "stf_50_100hz";
+
+adaptive_optopatch.save_protocol("stf_50_100hz.mat", protocol);
+```
+
+Editable generators for randomized connectivity, regular-rate, STF,
+paired-pulse, and custom schedules are in `pulse-protocols/`. Canonical event rows contain
+`event_id`, `condition_id`, `onset_s`, `duration_s`, and
+`amplitude_fraction`. The fraction is relative experimental intensity—not a
+hardware voltage. The GUI multiplies it by the configured mod488 or Pockels
+voltage while constructing the final waveform.
+
+### 2. Open Adaptive Optopatch
+
+Any meaningful ROI or parameter change marks the plan as
+`Modified — validation required`. Successful validation marks the exact current
+plan `Ready to run`. The first run action automatically creates an
+`adaptive_optopatch_run_*` directory containing `reference_model.mat`,
+`pattern_bundle.mat`, `pulse_protocol.mat`, `trial_manifest.mat`, and
+`planning_session.mat` before acquisition starts. Execution and resume use
+those frozen values, not controls that may subsequently be edited. Planning
+controls are disabled while the backend is running. `Save plan…` remains
+available for optional planning-only work, and `Resume run…` loads an existing
+frozen run and its checkpoint.
+
+For local development, open the same GUI with the no-hardware backend:
+
+```matlab
+[app, sim] = launch_simulated_adaptive_optopatch_gui();
+```
+
+The title contains `[SIMULATION]`, arming text explicitly says simulated output,
+and acquisitions are dispatched only to `SimulatedLuminosApp`. Simulation never
+sends hardware output.
+
+The earlier reference and modality-specific runner launchers remain available
+as compatibility interfaces during migration.
 
 ## First installation on the VU
 
@@ -487,6 +583,52 @@ The live path is implemented but has not yet been validated with light on the
 VU. The first run should therefore use a low OBIS setpoint, a low mod488 command,
 one trial (`Run next trial`), and a nonbiological fluorescent target. Staged 2P
 tests use the separate guarded runner described below.
+
+## Local simulation / GUI development
+
+The real 1P and 2P runner GUIs can run against a small local Luminos test
+backend. The general launcher reads `trial_manifest.mat` and selects the right
+GUI:
+
+```matlab
+addpath("/path/to/adaptive-optopatch")
+[gui, sim] = launch_simulated_runner_gui("/path/to/planning_bundle");
+```
+
+Mode-specific launchers are also available:
+
+```matlab
+[gui, sim] = launch_simulated_1p_runner_gui("/path/to/1p_bundle");
+[gui, sim] = launch_simulated_2p_test_runner_gui("/path/to/2p_bundle");
+```
+
+For programmatic use and a few useful overrides:
+
+```matlab
+sim = simulatedLuminosApp( ...
+    "CameraFrameRateHz", 1000, ...
+    "LaserPowerMw", 20, ...
+    "SimulationOutputRoot", "/path/to/simulation_output");
+
+gui = launch_1p_runner_gui(sim, "/path/to/1p_bundle");
+```
+
+`adaptive_optopatch.testing.make_simulated_luminos(...)` is the equivalent
+package-qualified factory when that spelling is preferable in tests.
+
+**SIMULATION MODE NEVER SENDS HARDWARE OUTPUT.** The class identity
+`adaptive_optopatch.testing.SimulatedLuminosApp` is the only condition that
+selects simulated acquisition. Parameter validation, target preparation,
+protocol and waveform construction, previews, checkpoints, and runner logic
+are the normal Adaptive Optopatch implementations. Device responses,
+acquisition completion, `output_data.mat`, and 2P galvo feedback are synthetic.
+Simulation folders are prefixed `SIMULATION_`; convenience launchers place them
+under the planning bundle's `simulation_runs` folder. Both GUIs display a red
+`SIMULATION — NO HARDWARE OUTPUT` banner and include `[SIMULATION]` in the title.
+
+Simple validation-failure injection is available through
+`MissingDevice`, `LaserInterlockEnabled`, `Modulator488Port`, and
+`ValidDaqSync` options on `make_simulated_luminos`.
 
 ## Camera 1 / galvo calibration
 

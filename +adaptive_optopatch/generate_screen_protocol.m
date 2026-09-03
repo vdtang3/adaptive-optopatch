@@ -25,13 +25,20 @@ for k=2:options.PulseCount
     onsetMs(k)=onsetMs(k-1)+durationMs(k-1)+darkMs(k-1);
 end
 offsetMs=onsetMs+durationMs;
-events=table((1:options.PulseCount)',onsetMs/1000,offsetMs/1000, ...
-    durationMs/1000,repmat(options.ModulatorVoltage,options.PulseCount,1), ...
-    'VariableNames',{'pulse_index','onset_s','offset_s','duration_s','modulator_voltage'});
+eventId=(1:options.PulseCount)';
+conditionId=repmat("pulse",options.PulseCount,1);
+amplitudeFraction=ones(options.PulseCount,1);
+events=table(eventId,conditionId,onsetMs/1000,durationMs/1000, ...
+    amplitudeFraction,eventId,offsetMs/1000, ...
+    repmat(options.ModulatorVoltage,options.PulseCount,1), ...
+    'VariableNames',{'event_id','condition_id','onset_s','duration_s', ...
+    'amplitude_fraction','pulse_index','offset_s','modulator_voltage'});
 
 protocol=struct;
-protocol.schema_version="0.2.0";
+protocol.schema_version="1.0.0";
+protocol.protocol_id="connectivity_screen_seed_"+options.RandomSeed;
 protocol.protocol_type="connectivity_screen";
+protocol.created_at=string(datetime("now","TimeZone","local"));
 protocol.random_seed=options.RandomSeed;
 protocol.pulse_count=options.PulseCount;
 protocol.pulse_duration_ms=options.PulseDurationMs;
@@ -44,4 +51,5 @@ protocol.interval_semantics="pulse_end_to_next_pulse_start";
 protocol.events=events;
 protocol.acquisition_duration_s=(offsetMs(end)+options.PostDelayMs)/1000;
 protocol.total_light_on_s=sum(durationMs)/1000;
+protocol=adaptive_optopatch.normalize_protocol(protocol);
 end

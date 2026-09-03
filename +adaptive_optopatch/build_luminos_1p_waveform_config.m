@@ -19,11 +19,8 @@ if ~isscalar(rate) || ~isfinite(rate) || rate<=0
         "The active Luminos waveform sample rate must be positive.");
 end
 
-pulses=adaptive_optopatch.flatten_pulse_schedule(protocol);
-if isfinite(options.ModulatorVoltageOverride)
-    pulses.modulator_voltage(~pulses.is_null)= ...
-        options.ModulatorVoltageOverride;
-end
+pulses=adaptive_optopatch.flatten_pulse_schedule(protocol, ...
+    "ConfiguredVoltage",options.ModulatorVoltageOverride);
 minV=double(profile.modulator.minimum_v); maxV=double(profile.modulator.maximum_v);
 if any(pulses.modulator_voltage<minV | pulses.modulator_voltage>maxV)
     error("adaptive_optopatch:ModulatorVoltageOutOfRange", ...

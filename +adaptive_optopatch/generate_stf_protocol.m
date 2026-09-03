@@ -8,7 +8,7 @@ arguments
     options.RandomSeed (1,1) double {mustBeNonnegative,mustBeInteger} = 1
 end
 required=["condition_id","frequency_hz","pulses_per_train", ...
-    "pulse_duration_ms","repeats","modulator_voltage","is_null"];
+    "pulse_duration_ms","repeats","is_null"];
 if ~all(ismember(required,string(conditions.Properties.VariableNames)))
     error("adaptive_optopatch:InvalidStfConditions", ...
         "STF conditions are missing required columns.");
@@ -21,9 +21,19 @@ if any(conditions.frequency_hz(~isnan(conditions.frequency_hz))>100)
     error("adaptive_optopatch:StfFrequencyTooHigh", ...
         "STF frequency cannot exceed 100 Hz.");
 end
-if any(conditions.modulator_voltage<0 | conditions.modulator_voltage>5)
+if ~ismember("amplitude_fraction",string(conditions.Properties.VariableNames))
+    if ismember("modulator_voltage",string(conditions.Properties.VariableNames))
+        maximum=max(conditions.modulator_voltage,[],"omitmissing");
+        if maximum>0, conditions.amplitude_fraction=conditions.modulator_voltage/maximum;
+        else, conditions.amplitude_fraction=ones(height(conditions),1); end
+    else
+        conditions.amplitude_fraction=ones(height(conditions),1);
+    end
+    conditions.amplitude_fraction(conditions.is_null)=0;
+end
+if any(~isfinite(conditions.amplitude_fraction) | conditions.amplitude_fraction<0)
     error("adaptive_optopatch:ModulatorVoltageOutOfRange", ...
-        "All modulator commands must be between 0 and 5 V.");
+        "All STF amplitude fractions must be finite and nonnegative.");
 end
 
 conditionIndex=[];
@@ -45,6 +55,7 @@ frequencyHz=nan(nEvents,1);
 pulsesPerTrain=zeros(nEvents,1);
 isNull=false(nEvents,1);
 modulatorVoltage=zeros(nEvents,1);
+amplitudeFraction=zeros(nEvents,1);
 cursorMs=options.PreDelayMs;
 for e=1:nEvents
     c=conditions(conditionIndex(e),:);
@@ -52,7 +63,10 @@ for e=1:nEvents
     frequencyHz(e)=c.frequency_hz;
     pulsesPerTrain(e)=c.pulses_per_train;
     isNull(e)=c.is_null;
-    modulatorVoltage(e)=c.modulator_voltage;
+    amplitudeFraction(e)=c.amplitude_fraction;
+    if ismember("modulator_voltage",string(c.Properties.VariableNames))
+        modulatorVoltage(e)=c.modulator_voltage;
+    end
     if c.is_null
         localOnsetsMs=0;
         trainDurationMs=c.pulse_duration_ms;
@@ -73,15 +87,22 @@ for e=1:nEvents
     pulseTimes{e}=(cursorMs+localOnsetsMs)/1000;
     if e<nEvents, cursorMs=cursorMs+trainDurationMs+gapsMs(e); end
 end
-events=table(eventIndex,conditionIndex,conditionId,eventOnsetS,eventOffsetS, ...
-    frequencyHz,pulsesPerTrain,isNull,modulatorVoltage,pulseTimes, ...
-    'VariableNames',{'event_index','condition_index','condition_id', ...
-    'event_onset_s','event_offset_s','frequency_hz','pulses_per_train', ...
-    'is_null','modulator_voltage','pulse_times_s'});
+eventId=eventIndex;
+durationS=eventOffsetS-eventOnsetS;
+pulseDurationS=conditions.pulse_duration_ms(conditionIndex)/1000;
+events=table(eventId,conditionId,eventOnsetS,durationS,amplitudeFraction, ...
+    eventIndex,conditionIndex,eventOnsetS,eventOffsetS,frequencyHz, ...
+    pulsesPerTrain,isNull,modulatorVoltage,pulseTimes,pulseDurationS, ...
+    'VariableNames',{'event_id','condition_id','onset_s','duration_s', ...
+    'amplitude_fraction','event_index','condition_index','event_onset_s', ...
+    'event_offset_s','frequency_hz','pulses_per_train','is_null', ...
+    'modulator_voltage','pulse_times_s','pulse_duration_s'});
 
 protocol=struct;
-protocol.schema_version="0.2.0";
+protocol.schema_version="1.0.0";
+protocol.protocol_id="stf_mixed_seed_"+options.RandomSeed;
 protocol.protocol_type="stf_mixed_conditions";
+protocol.created_at=string(datetime("now","TimeZone","local"));
 protocol.random_seed=options.RandomSeed;
 protocol.conditions=conditions;
 protocol.events=events;
@@ -92,4 +113,5 @@ protocol.post_delay_ms=options.PostDelayMs;
 protocol.acquisition_duration_s=eventOffsetS(end)+options.PostDelayMs/1000;
 protocol.total_light_on_s=sum(conditions.pulse_duration_ms(conditionIndex).* ...
     conditions.pulses_per_train(conditionIndex).*(~conditions.is_null(conditionIndex)))/1000;
+protocol=adaptive_optopatch.normalize_protocol(protocol);
 end

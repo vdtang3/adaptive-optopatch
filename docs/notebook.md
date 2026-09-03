@@ -140,3 +140,13 @@ The Orange recording mask has an explicit deployment action. It always rebuilds
 the union of current `recording_enabled` canonical ROIs at the current Orange
 expansion, requires the specifically named and calibrated `DMD_Orange`, and
 programs it through Luminos without modifying canonical ROI geometry.
+
+## 2026-09-03 — Blue spatial QC is advisory
+
+For Blue-DMD stimulation, ROI overlap and edge proximity are spatial QC
+advisories rather than execution gates. They remain visible and archived so the
+operator can judge targeting specificity, while explicit stimulation exclusion,
+invalid target identity, unusable DMD geometry, and physical hardware limits
+remain hard errors. The diagnostic `blue_qc_pass`, `dmd_overlap_pixels`, and
+`edge_flag` fields remain part of every target bundle; only their role in 1P
+eligibility changed. Two-photon spiral and parking QC remains an execution gate.

@@ -16,27 +16,25 @@ end
 protocol=report.protocol;
 cellIds=string({reference.cells.cell_id})';
 targetIds=string({targets.targets.cell_id})';
-eligible=false(numel(targetIds),1);
+enabled=false(numel(targetIds),1);
+executable=false(numel(targetIds),1);
 for k=1:numel(targetIds)
     referenceIndex=find(cellIds==targetIds(k),1);
     if isempty(referenceIndex)
         error("adaptive_optopatch:TargetReferenceMismatch", ...
             "Target bundle cell %s is absent from the reference model.",targetIds(k));
     end
-    if options.Mode=="1p_dmd" && isfield(targets.targets,"blue_qc_pass")
-        spatialQc=targets.targets(k).blue_qc_pass;
+    if options.Mode=="1p_dmd"
+        executable(k)=adaptive_optopatch.is_blue_target_executable(targets,k);
     elseif options.Mode=="2p_spiral" && isfield(targets.targets,"spiral_qc_pass")
-        spatialQc=targets.targets(k).spiral_qc_pass;
+        executable(k)=logical(targets.targets(k).spiral_qc_pass);
     else
-        spatialQc=targets.targets(k).qc_pass;
+        executable(k)=logical(targets.targets(k).qc_pass);
     end
-    eligible(k)=spatialQc && ...
-        cell_flag(reference.cells(referenceIndex),"stimulation_enabled",true);
+    enabled(k)=cell_flag(reference.cells(referenceIndex),"stimulation_enabled",true);
 end
+eligible=executable & enabled;
 eligibleIndices=find(eligible);
-if isempty(eligibleIndices)
-    error("adaptive_optopatch:NoAcceptedTargets","No stimulation-enabled targets passed QC.");
-end
 
 nonNull=~protocol.events.is_null;
 resolved=strlength(protocol.events.target_cell_id(nonNull))>0;
@@ -45,15 +43,21 @@ if any(resolved) && ~all(resolved)
         "A protocol cannot mix resolved and unresolved non-null target IDs.");
 end
 if all(resolved) && any(nonNull)
-    resolvedProtocols={resolve_pattern_indices(protocol,targets,targetIds,eligible,options.Mode)};
+    resolvedProtocols={resolve_pattern_indices(protocol,targets,targetIds, ...
+        enabled,executable,options.Mode)};
 else
+    if isempty(eligibleIndices)
+        error("adaptive_optopatch:NoAcceptedTargets", ...
+            "No stimulation-enabled targets are executable for %s.",options.Mode);
+    end
     rng(options.RandomSeed,"twister");
     order=eligibleIndices(randperm(numel(eligibleIndices)));
     resolvedProtocols=cell(numel(order),1);
     for k=1:numel(order)
         value=protocol;
         value.events.target_cell_id(nonNull)=targetIds(order(k));
-        resolvedProtocols{k}=resolve_pattern_indices(value,targets,targetIds,eligible,options.Mode);
+        resolvedProtocols{k}=resolve_pattern_indices(value,targets,targetIds, ...
+            enabled,executable,options.Mode);
     end
 end
 
@@ -94,6 +98,12 @@ manifest=struct("schema_version","1.0.0","fov_id",reference.fov_id, ...
 advisories=struct("code",{},"message",{},"cell_id",{}, ...
     "previous_value",{},"current_value",{});
 for k=1:numel(resolvedProtocols)
+    if options.Mode=="1p_dmd"
+        pulseIds=resolvedProtocols{k}.events.target_cell_id( ...
+            ~resolvedProtocols{k}.events.is_null);
+        advisories=[advisories adaptive_optopatch.collect_blue_spatial_advisories( ...
+            targets,pulseIds)]; %#ok<AGROW>
+    end
     found=adaptive_optopatch.collect_calibration_advisories( ...
         reference,targets,resolvedProtocols{k}, ...
         "CurrentObisPowerW",options.CurrentObisPowerW);
@@ -103,7 +113,7 @@ manifest.advisories=unique_advisories(advisories);
 manifest.trials.advisories=repmat({manifest.advisories},height(manifest.trials),1);
 end
 
-function protocol=resolve_pattern_indices(protocol,targets,targetIds,eligible,mode)
+function protocol=resolve_pattern_indices(protocol,targets,targetIds,enabled,executable,mode)
 events=protocol.events; pattern=zeros(height(events),1);
 for k=1:height(events)
     if events.is_null(k), continue; end
@@ -113,10 +123,20 @@ for k=1:height(events)
             "Protocol pulse %s targets unknown cell %s.", ...
             string(events.pulse_id(k)),events.target_cell_id(k));
     end
-    if ~eligible(index)
+    if ~enabled(index)
         error("adaptive_optopatch:StimulationDisabledCell", ...
-            "Protocol pulse %s targets stimulation-disabled or QC-failed cell %s.", ...
+            "Protocol pulse %s targets stimulation-disabled cell %s.", ...
             string(events.pulse_id(k)),events.target_cell_id(k));
+    end
+    if ~executable(index)
+        if mode=="1p_dmd"
+            error("adaptive_optopatch:UnusableBlueTarget", ...
+                "Protocol pulse %s targets cell %s, whose Blue mask is missing or empty.", ...
+                string(events.pulse_id(k)),events.target_cell_id(k));
+        end
+        error("adaptive_optopatch:TargetQcFailed", ...
+            "Protocol pulse %s targets cell %s, which did not pass %s execution QC.", ...
+            string(events.pulse_id(k)),events.target_cell_id(k),mode);
     end
     if mode=="1p_dmd"
         voltage=double(events.command_voltage_v(k));

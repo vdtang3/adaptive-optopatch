@@ -371,6 +371,10 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
                 "ConfirmTrajectoryTest",true,"ConfirmLiveOutput",true, ...
                 "ModulatorVoltageOverride",0.1);
             testCase.verifyTrue(unlimitedTest.passed);
+            standard=adaptive_optopatch.validate_2p_release_level( ...
+                pilotManifest,"standard","ModulatorVoltageOverride",0.1);
+            testCase.verifyTrue(standard.passed);
+            testCase.verifyEqual(standard.maximum_trials_this_call,Inf);
         end
 
         function constructsTwoPhotonTestRunnerGui(testCase)
@@ -995,7 +999,7 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyTrue(feedback.galvo_feedback.passed);
         end
 
-        function buildsSwitchesAndInvalidatesUnifiedPlan(testCase)
+        function buildsFreshUnifiedPlansWithoutValidationInvalidation(testCase)
             root=tempname; mkdir(root);
             cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
             [app,sim]=launch_simulated_adaptive_optopatch_gui( ...
@@ -1009,19 +1013,18 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyEqual(unique( ...
                 string(twoPhoton.manifest.trials.stimulation_mode)),"2p_spiral");
             app.setPlanParameter("mode","1p_dmd");
-            app.setPlanParameter("arm_output",true);
             onePhoton=app.buildCurrentPlan();
             testCase.verifyEqual(unique( ...
                 string(onePhoton.manifest.trials.stimulation_mode)),"1p_dmd");
-            testCase.verifyEqual(app.PlanState,"DIRTY");
+            testCase.verifyEqual(app.PlanState,"EDITABLE");
             report=app.validateCurrentPlan();
             testCase.verifyTrue(report.passed);
-            testCase.verifyEqual(app.PlanState,"VALIDATED");
+            testCase.verifyEqual(app.PlanState,"EDITABLE");
             changed=adaptive_optopatch.generate_screen_protocol("PulseCount",2);
             changedPath=fullfile(root,"changed_protocol.mat");
             adaptive_optopatch.save_protocol(changedPath,changed);
             app.loadPulseProtocol(changedPath);
-            testCase.verifyEqual(app.PlanState,"DIRTY");
+            testCase.verifyEqual(app.PlanState,"EDITABLE");
             testCase.verifyEqual(app.PulseProtocolPath,string(changedPath));
         end
 
@@ -1118,7 +1121,6 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             app.setPulseProtocol(protocol);
             app.setPlanParameter("mode","1p_dmd");
             app.setPlanParameter("modulator_voltage",1.3);
-            app.setPlanParameter("arm_output",true);
             run=app.runNext();
             testCase.verifyEqual(run.trials.acquisition_status,"completed");
             testCase.verifyTrue(run.simulation);
@@ -1160,7 +1162,6 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
                 {[40 30;60 30;60 50;40 50]});
             protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1);
             app.setPulseProtocol(protocol);
-            app.setPlanParameter("trajectory_confirmed",true);
             plan=app.previewCurrentPlan();
             testCase.verifyEqual(unique( ...
                 string(plan.manifest.trials.stimulation_mode)),"2p_spiral");
@@ -1183,7 +1184,6 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1);
             app.setPulseProtocol(protocol);
             app.setPlanParameter("mode","1p_dmd");
-            app.setPlanParameter("arm_output",true);
             first=app.runNext();
             frozenFolder=app.ActiveRunFolder;
             testCase.verifyEqual(sum(first.trials.acquisition_status=="completed"),1);
@@ -1195,8 +1195,6 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyTrue(all(frozen.manifest.trials.stimulation_mode=="1p_dmd"));
             testCase.verifyEqual( ...
                 frozen.manifest.trials.pulse_schedule{1}.pulse_count,1);
-            app.setPlanParameter("mode","1p_dmd");
-            app.setPlanParameter("arm_output",true);
             app.resumeRun(frozenFolder);
             resumed=app.runAll();
             testCase.verifyEqual(sum(resumed.trials.acquisition_status=="completed"),2);

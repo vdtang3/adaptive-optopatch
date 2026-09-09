@@ -9,10 +9,10 @@ interchangeable stimulation backends:
 - `2p_spiral`: soma centers and radii passed to the Luminos scanning device.
 
 `AdaptiveOptopatchApp` is the primary operator interface. Reference annotation,
-protocol configuration, target/waveform preview, validation, immutable run-plan
+protocol configuration, target/waveform preview, preflight, immutable run-plan
 archiving, acquisition, checkpointing, and resume are one continuous workflow.
-The established guarded 1P and 2P execution backends remain separate and retain
-their explicit confirmation controls.
+The established standalone guarded 1P and 2P interfaces remain available for
+commissioning workflows.
 
 ## Primary workflow
 
@@ -33,7 +33,7 @@ Load Camera 1 snapshot
 → load pulse_protocol.mat
 → configure mod488/Pockels voltage and hardware limits
 → preview targets and waveforms
-→ validate
+→ optionally check configuration
 → run next or run all
 ```
 
@@ -95,17 +95,17 @@ resolved, randomized, continuous multi-target acquisition.
 
 ### 2. Open Adaptive Optopatch
 
-Any meaningful ROI or parameter change marks the plan as
-`Modified — validation required`. Successful validation marks the exact current
-plan `Ready to run`. The first run action automatically creates an
+ROI, eligibility, mask, protocol, mode, and voltage edits remain directly
+editable; they do not create a validation gate. Preview always rebuilds from
+the current controls. Every new run action rebuilds current state, performs
+mandatory hardware and compatibility preflight, and then creates an
 `adaptive_optopatch_run_*` directory containing `reference_model.mat`,
 `pattern_bundle.mat`, `fov_state.mat`, `pulse_protocol.mat`,
 `trial_manifest.mat`, and `planning_session.mat` before acquisition starts.
-Execution and resume use
-those frozen values, not controls that may subsequently be edited. Planning
-controls are disabled while the backend is running. `Save plan…` remains
-available for optional planning-only work, and `Resume run…` loads an existing
-frozen run and its checkpoint.
+Execution and resume use those frozen values, not later editable controls.
+Planning controls are disabled while the backend is running. `Resume run…`
+loads an existing frozen run and its checkpoint. The diagnostic configuration
+check runs the same preflight but is not a prerequisite for running.
 
 For local development, open the same GUI with the no-hardware backend:
 
@@ -113,9 +113,8 @@ For local development, open the same GUI with the no-hardware backend:
 [app, sim] = launch_simulated_adaptive_optopatch_gui();
 ```
 
-The title contains `[SIMULATION]`, arming text explicitly says simulated output,
-and acquisitions are dispatched only to `SimulatedLuminosApp`. Simulation never
-sends hardware output.
+The title contains `[SIMULATION]`, and acquisitions are dispatched only to
+`SimulatedLuminosApp`. Simulation never sends hardware output.
 
 The earlier reference and modality-specific runner launchers remain available
 as compatibility interfaces during migration.

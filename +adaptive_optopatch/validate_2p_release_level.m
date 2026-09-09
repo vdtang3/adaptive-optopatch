@@ -3,7 +3,7 @@ function report=validate_2p_release_level(manifest,level,options)
 arguments
     manifest (1,1) struct
     level (1,1) string {mustBeMember(level,["blocked_test","attenuated_test", ...
-        "pilot_single","pilot_mixed_trains","experimental"])}
+        "pilot_single","pilot_mixed_trains","experimental","standard"])}
     options.ConfirmTrajectoryTest (1,1) logical = false
     options.ConfirmLiveOutput (1,1) logical = false
     options.ModulatorVoltageOverride (1,1) double = NaN
@@ -18,7 +18,7 @@ else
         issues(end+1)="The staged 2P runner accepts only 2p_spiral trials.";
     end
 end
-if ~options.ConfirmTrajectoryTest
+if level~="standard" && ~options.ConfirmTrajectoryTest
     issues(end+1)="Blocked trajectory review has not been confirmed.";
 end
 if level=="attenuated_test" || ...
@@ -67,7 +67,7 @@ elseif level=="experimental"
         end
     end
 end
-if level=="experimental", maximumTrials=Inf; else, maximumTrials=1; end
+if ismember(level,["experimental","standard"]), maximumTrials=Inf; else, maximumTrials=1; end
 report=struct("schema_version","0.1.0","release_level",level, ...
     "passed",isempty(issues),"issues",issues, ...
     "maximum_trials_this_call",maximumTrials);

@@ -6,10 +6,11 @@ arguments
     app
     options.ReleaseLevel (1,1) string {mustBeMember(options.ReleaseLevel, ...
         ["blocked_test","attenuated_test","pilot_single", ...
-        "pilot_mixed_trains","experimental"])} = "blocked_test"
+        "pilot_mixed_trains","experimental","standard"])} = "blocked_test"
     options.OutputDirectory (1,1) string = ""
     options.OutputRoot (1,1) string = ""
     options.Resume (1,1) logical = true
+    options.StopAfterTrial (1,1) double {mustBeNonnegative,mustBeInteger} = 0
     options.ConfirmTrajectoryTest (1,1) logical = false
     options.ConfirmLiveOutput (1,1) logical = false
     options.ModulatorVoltageOverride (1,1) double = NaN
@@ -80,7 +81,9 @@ completedThisCall=0;
 for k=1:n
     if options.Resume && ismember(string(run.trials.acquisition_status(k)), ...
             ["completed","analyzed"]), continue; end
-    if options.ReleaseLevel~="experimental" && completedThisCall>=1, break; end
+    if options.StopAfterTrial>0 && completedThisCall>=options.StopAfterTrial, break; end
+    if ~ismember(options.ReleaseLevel,["experimental","standard"]) && ...
+            completedThisCall>=1, break; end
     try
         row=run.trials(k,:);
         targetIndex=row.target_index;

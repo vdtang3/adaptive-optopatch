@@ -1,7 +1,7 @@
 classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
-    %ADAPTIVEOPTOPATCHAPP Unified editable-plan, validation, and run workflow.
+    %ADAPTIVEOPTOPATCHAPP Unified editable-plan and run workflow.
     properties (SetAccess=private)
-        PlanState string = "DIRTY"
+        PlanState string = "EDITABLE"
         ActiveRunFolder string = ""
         ActiveRunPlan struct = struct([])
         LastRun struct = struct([])
@@ -13,16 +13,11 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
     properties (Access=private)
         RunRoot string = ""
         UnifiedReady logical = false
-        ValidatedPlan struct = struct([])
+        EditableStateChanged logical = true
         StateLabel
         ProtocolPathField
         ProtocolSummaryArea
         LoadProtocolButton
-        ObisOverride
-        ObisPowerMw
-        ArmOutput
-        ReleaseLevel
-        TrajectoryConfirmed
         MaximumVelocity
         MaximumAcceleration
         AllowCalibrationExtrapolation
@@ -50,7 +45,7 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             app.RunRoot=options.RunRoot;
             app.buildUnifiedUI();
             app.UnifiedReady=true;
-            app.markDirty();
+            app.planChanged();
         end
 
         function plan=buildCurrentPlan(app)
@@ -125,12 +120,22 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             app.PulseProtocolSummary= ...
                 adaptive_optopatch.summarize_protocol(report.protocol);
             app.updateProtocolDisplay();
-            app.markDirty();
+            app.planChanged();
             app.refreshTrialTable(table);
         end
 
         function report=validateCurrentPlan(app)
             plan=app.buildCurrentPlan();
+            report=app.preflightPlan(plan);
+            app.showPreflightStatus(report,plan.advisories);
+        end
+
+        function report=preflightCurrentPlan(app)
+            plan=app.buildCurrentPlan();
+            report=app.preflightPlan(plan);
+        end
+
+        function report=preflightPlan(app,plan)
             issues=strings(0,1);
             for k=1:height(plan.manifest.trials)
                 preflight=adaptive_optopatch.preflight_trial( ...
@@ -142,48 +147,50 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             end
             mode=string(app.Mode.Value);
             if mode=="1p_dmd"
-                if ~app.ArmOutput.Value
-                    issues(end+1)="ARM live 488 output is not confirmed.";
-                end
                 if isempty(issues)
                     hardware=adaptive_optopatch.resolve_luminos_1p_hardware(app.LuminosApp);
-                    sequencePlan=struct([]);
-                    resolved=plan.manifest.trials.pulse_schedule{1};
-                    pulseTargets=unique(resolved.events.target_cell_id(~resolved.events.is_null));
-                    if numel(pulseTargets)>1
-                        sequencePlan=adaptive_optopatch.build_dmd_sequence_plan( ...
-                            resolved,plan.targets);
+                    for rowIndex=1:height(plan.manifest.trials)
+                        resolved=plan.manifest.trials.pulse_schedule{rowIndex};
+                        sequencePlan=struct([]);
+                        pulseTargets=unique(resolved.events.target_cell_id( ...
+                            ~resolved.events.is_null));
+                        if numel(pulseTargets)>1
+                            sequencePlan=adaptive_optopatch.build_dmd_sequence_plan( ...
+                                resolved,plan.targets);
+                        end
+                        [globalProps,~]=adaptive_optopatch.build_luminos_1p_waveform_config( ...
+                            hardware.daq.global_props,hardware.daq.wfm_data, ...
+                            resolved,adaptive_optopatch.virtual_upright_1p_profile(), ...
+                            "ModulatorVoltageOverride",app.ModulatorVoltage.Value, ...
+                            "DmdSequencePlan",sequencePlan);
+                        preflight_camera_frames(hardware.cameras,globalProps.total_time,false);
                     end
-                    adaptive_optopatch.build_luminos_1p_waveform_config( ...
-                        hardware.daq.global_props,hardware.daq.wfm_data, ...
-                        resolved, ...
-                        adaptive_optopatch.virtual_upright_1p_profile(), ...
-                        "ModulatorVoltageOverride",app.ModulatorVoltage.Value, ...
-                        "DmdSequencePlan",sequencePlan);
                 end
             else
                 bundleReport=adaptive_optopatch.validate_2p_planning_bundle(plan.targets);
                 issues=[issues;bundleReport.issues(:)];
-                release=adaptive_optopatch.validate_2p_release_level( ...
-                    plan.manifest,app.ReleaseLevel.Value, ...
-                    "ConfirmTrajectoryTest",app.TrajectoryConfirmed.Value, ...
-                    "ConfirmLiveOutput",app.ArmOutput.Value, ...
-                    "ModulatorVoltageOverride",app.effectiveTwoPhotonVoltage());
-                issues=[issues;release.issues(:)];
                 if isempty(issues)
                     hardware=adaptive_optopatch.resolve_luminos_2p_hardware(app.LuminosApp);
-                    targetIndex=find(~plan.manifest.trials.is_null,1);
-                    row=plan.manifest.trials(targetIndex,:);
-                    target=plan.targets.targets(row.target_index);
-                    protocol=app.protocolWithEffectiveVoltage( ...
-                        row.pulse_schedule{1},row.is_null);
-                    adaptive_optopatch.build_2p_plan_preview( ...
-                        protocol,target,hardware, ...
-                        "ReleaseLevel",app.ReleaseLevel.Value, ...
-                        "MaximumVelocityVPerS",app.MaximumVelocity.Value, ...
-                        "MaximumAccelerationVPerS2",app.MaximumAcceleration.Value, ...
-                        "AllowCalibrationExtrapolation", ...
-                        app.AllowCalibrationExtrapolation.Value);
+                    rows=find(~plan.manifest.trials.is_null);
+                    for rowIndex=reshape(rows,1,[])
+                        row=plan.manifest.trials(rowIndex,:);
+                        target=plan.targets.targets(row.target_index);
+                        protocol=app.protocolWithEffectiveVoltage( ...
+                            row.pulse_schedule{1},row.is_null);
+                        preview=adaptive_optopatch.build_2p_plan_preview( ...
+                            protocol,target,hardware, ...
+                            "ReleaseLevel","standard", ...
+                            "MaximumVelocityVPerS",app.MaximumVelocity.Value, ...
+                            "MaximumAccelerationVPerS2",app.MaximumAcceleration.Value, ...
+                            "AllowCalibrationExtrapolation", ...
+                            app.AllowCalibrationExtrapolation.Value);
+                        [globalProps,~,~]= ...
+                            adaptive_optopatch.build_luminos_2p_waveform_config( ...
+                            hardware.daq.global_props,hardware.daq.wfm_data, ...
+                            preview.waveforms);
+                        preflight_camera_frames(hardware.cameras, ...
+                            globalProps.total_time,app.AllowCameraRateOverride.Value);
+                    end
                 end
             end
             issues=unique(issues(strlength(issues)>0),"stable");
@@ -191,18 +198,18 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 "validated_at",string(datetime("now","TimeZone","local")), ...
                 "mode",mode,"issues",issues);
             if ~report.passed
-                app.PlanState="DIRTY"; app.updateStateDisplay();
                 error("adaptive_optopatch:UnifiedPlanValidationFailed", ...
                     "%s",strjoin(issues,newline));
             end
-            app.ValidatedPlan=plan;
-            app.PlanState="VALIDATED";
-            app.updateStateDisplay();
-            if isempty(plan.advisories)
-                app.setStatus("Validation passed. The current experiment is ready to freeze and run.");
+        end
+
+        function showPreflightStatus(app,report,advisories)
+            if ~report.passed, return; end
+            if isempty(advisories)
+                app.setStatus("Configuration check passed. Runs will rebuild and freeze current settings.");
             else
-                messages=reshape(string({plan.advisories.message}),[],1);
-                app.setStatus(["Validation passed with nonblocking advisories:";messages]);
+                messages=reshape(string({advisories.message}),[],1);
+                app.setStatus(["Configuration check passed with nonblocking advisories:";messages]);
             end
         end
 
@@ -219,7 +226,7 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                     row.pulse_schedule{1},row.is_null);
                 preview=adaptive_optopatch.build_2p_plan_preview( ...
                     protocol,target,hardware, ...
-                    "ReleaseLevel",app.ReleaseLevel.Value, ...
+                    "ReleaseLevel","standard", ...
                     "MaximumVelocityVPerS",app.MaximumVelocity.Value, ...
                     "MaximumAccelerationVPerS2",app.MaximumAcceleration.Value, ...
                     "AllowCalibrationExtrapolation", ...
@@ -268,11 +275,9 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 app
                 outputRoot (1,1) string = ""
             end
-            if app.PlanState~="VALIDATED" || isempty(app.ValidatedPlan)
-                app.validateCurrentPlan();
-            end
+            plan=app.buildCurrentPlan();
+            app.preflightPlan(plan);
             if strlength(outputRoot)==0, outputRoot=app.defaultRunRoot(); end
-            plan=app.ValidatedPlan;
             paths=adaptive_optopatch.save_bundle(outputRoot, ...
                 plan.reference,plan.targets,plan.manifest, ...
                 "CreateSubfolder",true, ...
@@ -283,6 +288,9 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 plan.manifest.trials.trial_id);
             app.ActiveRunPlan=plan;
             app.ActiveRunFolder=paths.output_directory;
+            app.EditableStateChanged=false;
+            app.PlanState="FROZEN";
+            app.updateStateDisplay();
             app.refreshTrialTable(plan.manifest.trials);
             app.setStatus("Frozen run plan created before acquisition:"+newline+ ...
                 app.ActiveRunFolder);
@@ -315,8 +323,8 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 "advisories",manifest_advisories(manifest));
             app.ActiveRunPlan=plan;
             app.ActiveRunFolder=folder;
-            app.ValidatedPlan=plan;
-            app.PlanState="VALIDATED";
+            app.EditableStateChanged=false;
+            app.PlanState="FROZEN";
             app.updateStateDisplay();
             app.refreshTrialTable(manifest.trials);
             app.setStatus("Loaded frozen run for resume. Editable controls were not substituted into it.");
@@ -333,10 +341,8 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 "blue_mask_adjustment_pixels",app.DmdErosion, ...
                 "dmd_erosion_pixels",app.DmdErosion, ...
                 "modulator_voltage",app.ModulatorVoltage, ...
-                "release_level",app.ReleaseLevel,"maximum_velocity",app.MaximumVelocity, ...
+                "maximum_velocity",app.MaximumVelocity, ...
                 "maximum_acceleration",app.MaximumAcceleration, ...
-                "arm_output",app.ArmOutput,"trajectory_confirmed",app.TrajectoryConfirmed, ...
-                "obis_override",app.ObisOverride,"obis_power_mw",app.ObisPowerMw, ...
                 "allow_calibration_extrapolation",app.AllowCalibrationExtrapolation, ...
                 "allow_camera_rate_override",app.AllowCameraRateOverride);
             key=char(name);
@@ -346,7 +352,7 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             end
             mapping.(key).Value=value;
             if ismember(name,["mode","stimulation_mode"]), app.modeChanged();
-            else, app.markDirty(); end
+            else, app.planChanged(); end
         end
 
         function setReferenceData(app,image,info,roiPositions)
@@ -364,11 +370,19 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             imagesc(app.Axes,image); axis(app.Axes,"image"); app.Axes.YDir="reverse";
             colormap(app.Axes,"gray"); app.applyContrast();
             app.restorePolygons(roiPositions);
-            app.markDirty();
+            app.planChanged();
         end
     end
 
     methods (Access=protected)
+        function value=showPlanningBundleControl(~)
+            value=false;
+        end
+
+        function value=restorePlanningBundleOnSnapshotLoad(~)
+            value=false;
+        end
+
         function value=currentPulseDurationMs(app)
             value=5;
             if isempty(app.PulseProtocol), return; end
@@ -378,7 +392,12 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
         end
 
         function planChanged(app)
-            if app.UnifiedReady && app.PlanState~="RUNNING", app.markDirty(); end
+            if ~app.UnifiedReady || app.PlanState=="RUNNING", return; end
+            app.EditableStateChanged=true;
+            app.ActiveRunPlan=struct([]);
+            app.ActiveRunFolder="";
+            app.PlanState="EDITABLE";
+            app.updateStateDisplay();
         end
 
         function planningSessionRestored(app,session)
@@ -435,12 +454,6 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 "Visible",matlab.lang.OnOffSwitchState(simulation));
             banner.Layout.Row=2; banner.Layout.Column=[1 3];
             app.Status.Layout.Row=5; app.Status.Layout.Column=[1 3];
-            legacySave=findall(app.Figure,"Text","Save planning bundle…");
-            if ~isempty(legacySave)
-                legacySave.Text="Save plan…"; legacySave.FontWeight="normal";
-                legacySave.Tooltip="Optional: save the editable plan without running.";
-            end
-
             planningControls=app.Mode.Parent;
             heights=planningControls.RowHeight;
             heights(:)=repmat({21},size(heights));
@@ -464,9 +477,9 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             runtime.ColumnWidth={920,"1x"}; runtime.Padding=[4 4 4 4];
             controls=uigridlayout(runtime,[6 8]);
             controls.RowHeight={30,45,30,30,38,30};
-            controls.ColumnWidth={105,90,115,100,105,100,115,"1x"};
-            app.StateLabel=uilabel(controls,"Text","● Modified — validation required", ...
-                "FontWeight","bold","FontColor",[0.75 0.25 0]);
+            controls.ColumnWidth={105,100,115,105,115,105,115,"1x"};
+            app.StateLabel=uilabel(controls,"Text","Editable — current settings run", ...
+                "FontWeight","bold","FontColor",[0 0.35 0.65]);
             app.StateLabel.Layout.Row=1; app.StateLabel.Layout.Column=[1 2];
             app.ProtocolPathField=uieditfield(controls,"text", ...
                 "Editable","off","Value","No pulse protocol loaded");
@@ -477,28 +490,15 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             app.ProtocolSummaryArea=uitextarea(controls,"Editable","off", ...
                 "Value","Load a validated pulse_protocol.mat generated by MATLAB.");
             app.ProtocolSummaryArea.Layout.Row=2; app.ProtocolSummaryArea.Layout.Column=[1 8];
-            app.ArmOutput=uicheckbox(controls,"Text","ARM live output", ...
-                "FontWeight","bold");
-            app.ArmOutput.Layout.Row=3; app.ArmOutput.Layout.Column=[7 8];
-
-            app.ObisOverride=uicheckbox(controls,"Text","Override OBIS");
-            app.ObisOverride.Layout.Row=3; app.ObisOverride.Layout.Column=1;
-            app.ObisPowerMw=uieditfield(controls,"numeric","Value",10,"Limits",[0 55]);
-            app.ObisPowerMw.Layout.Row=3; app.ObisPowerMw.Layout.Column=2;
             commandLabel=uilabel(controls,"Text","mod488 / Pockels (V)", ...
                 "HorizontalAlignment","right");
-            commandLabel.Layout.Row=3; commandLabel.Layout.Column=3;
+            commandLabel.Layout.Row=3; commandLabel.Layout.Column=[1 2];
             commandGrid=uigridlayout(controls,[1 1]); commandGrid.Padding=0;
-            commandGrid.Layout.Row=3; commandGrid.Layout.Column=4;
+            commandGrid.Layout.Row=3; commandGrid.Layout.Column=3;
             app.ModulatorVoltage.Parent=commandGrid;
-            releaseLabel=uilabel(controls,"Text","Release level");
-            releaseLabel.Layout.Row=3; releaseLabel.Layout.Column=5;
-            app.ReleaseLevel=uidropdown(controls,"Items", ...
-                ["blocked_test","attenuated_test","pilot_single","pilot_mixed_trains"], ...
-                "Value","blocked_test");
-            app.ReleaseLevel.Layout.Row=3; app.ReleaseLevel.Layout.Column=6;
-            app.TrajectoryConfirmed=uicheckbox(controls,"Text","Trajectory reviewed");
-            app.TrajectoryConfirmed.Layout.Row=4; app.TrajectoryConfirmed.Layout.Column=[7 8];
+            obisLabel=uilabel(controls,"Text","OBIS power is owned by Luminos/React", ...
+                "FontAngle","italic");
+            obisLabel.Layout.Row=3; obisLabel.Layout.Column=[5 8];
 
             velocityLabel=uilabel(controls,"Text","Max velocity");
             velocityLabel.Layout.Row=4; velocityLabel.Layout.Column=1;
@@ -516,7 +516,7 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             previewButton=uibutton(controls,"Text","Preview", ...
                 "ButtonPushedFcn",@(~,~)app.invoke(@()app.previewCurrentPlan()));
             previewButton.Layout.Row=5; previewButton.Layout.Column=1;
-            validateButton=uibutton(controls,"Text","Validate", ...
+            validateButton=uibutton(controls,"Text","Check", ...
                 "ButtonPushedFcn",@(~,~)app.invoke(@()app.validateCurrentPlan()));
             validateButton.Layout.Row=5; validateButton.Layout.Column=2;
             app.RunNextButton=uibutton(controls,"Text","Run next", ...
@@ -540,14 +540,15 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             app.TrialTable=uitable(root,"ColumnName", ...
                 {'Trial','Cell','Protocol','Duration','Status','Output'});
             app.TrialTable.Layout.Row=4; app.TrialTable.Layout.Column=[1 3];
-            app.OnePhotonControls={app.ObisOverride,app.ObisPowerMw};
-            app.TwoPhotonControls={app.ReleaseLevel,app.TrajectoryConfirmed, ...
-                app.MaximumVelocity,app.MaximumAcceleration, ...
+            app.OnePhotonControls={};
+            app.TwoPhotonControls={velocityLabel,app.MaximumVelocity, ...
+                accelerationLabel,app.MaximumAcceleration, ...
                 app.AllowCalibrationExtrapolation,app.AllowCameraRateOverride};
-            watched=[app.OnePhotonControls app.TwoPhotonControls ...
-                {app.ModulatorVoltage,app.ArmOutput}];
+            watched=[app.TwoPhotonControls {app.ModulatorVoltage}];
             for k=1:numel(watched)
-                watched{k}.ValueChangedFcn=@(~,~)app.markDirty();
+                if isprop(watched{k},"ValueChangedFcn")
+                    watched{k}.ValueChangedFcn=@(~,~)app.planChanged();
+                end
             end
             app.Mode.ValueChangedFcn=@(~,~)app.modeChanged();
             app.modeChanged();
@@ -555,48 +556,30 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
 
         function modeChanged(app)
             is1p=string(app.Mode.Value)=="1p_dmd";
-            set_enable(app.OnePhotonControls,is1p);
-            set_enable(app.TwoPhotonControls,~is1p);
+            set_visible(app.OnePhotonControls,is1p);
+            set_visible(app.TwoPhotonControls,~is1p);
             app.DmdErosion.Enable=matlab.lang.OnOffSwitchState(is1p);
             app.SpiralRadius.Enable=matlab.lang.OnOffSwitchState(~is1p);
             app.SpiralDensity.Enable=matlab.lang.OnOffSwitchState(~is1p);
-            if isa(app.LuminosApp,"adaptive_optopatch.testing.SimulatedLuminosApp")
-                app.ArmOutput.Text=ternary_local(is1p, ...
-                    "ARM simulated 488 output","ARM simulated 2P output");
-            else
-                app.ArmOutput.Text=ternary_local(is1p, ...
-                    "ARM live 488 output","ARM live 2P output");
-            end
-            app.markDirty();
-        end
-
-        function markDirty(app)
-            if app.PlanState=="RUNNING", return; end
-            app.PlanState="DIRTY";
-            app.ValidatedPlan=struct([]);
-            app.ActiveRunPlan=struct([]);
-            app.ActiveRunFolder="";
-            app.updateStateDisplay();
+            app.planChanged();
         end
 
         function updateStateDisplay(app)
             if isempty(app.StateLabel) || ~isvalid(app.StateLabel), return; end
             switch app.PlanState
-                case "VALIDATED"
-                    app.StateLabel.Text="✓ Ready to run"; app.StateLabel.FontColor=[0 0.5 0];
+                case "FROZEN"
+                    app.StateLabel.Text="Frozen run ready / resumable"; app.StateLabel.FontColor=[0 0.5 0];
                 case "RUNNING"
                     app.StateLabel.Text="● Running frozen plan"; app.StateLabel.FontColor=[0 0.3 0.8];
                 otherwise
-                    app.StateLabel.Text="● Modified — validation required";
-                    app.StateLabel.FontColor=[0.75 0.25 0];
+                    app.StateLabel.Text="Editable — current settings run";
+                    app.StateLabel.FontColor=[0 0.35 0.65];
             end
         end
 
         function run=executeCurrentPlan(app,count)
-            if app.PlanState=="DIRTY" || isempty(app.ValidatedPlan)
-                app.validateCurrentPlan();
-            end
-            if isempty(app.ActiveRunPlan) || strlength(app.ActiveRunFolder)==0
+            if isempty(app.ActiveRunPlan) || strlength(app.ActiveRunFolder)==0 || ...
+                    app.EditableStateChanged
                 app.freezeCurrentPlan();
             end
             plan=app.ActiveRunPlan;
@@ -614,17 +597,18 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                     plan.manifest,plan.targets,app.LuminosApp, ...
                     "OutputDirectory",app.ActiveRunFolder,"OutputRoot",outputRoot, ...
                     "Resume",true,"StopAfterTrial",count, ...
-                    "ConfirmLiveOutput",app.ArmOutput.Value, ...
+                    "ConfirmLiveOutput",true, ...
                     "LaserPowerW",frozenControls.laser_power_w, ...
                     "ModulatorVoltageOverride",frozenControls.modulator_voltage_override, ...
                     "StopRequestedFcn",@()app.StopRequested);
             else
                 run=adaptive_optopatch.run_2p_manifest( ...
                     plan.manifest,plan.targets,app.LuminosApp, ...
-                    "ReleaseLevel",frozenControls.release_level, ...
+                    "ReleaseLevel","standard", ...
                     "OutputDirectory",app.ActiveRunFolder,"OutputRoot",outputRoot, ...
-                    "Resume",true,"ConfirmTrajectoryTest",app.TrajectoryConfirmed.Value, ...
-                    "ConfirmLiveOutput",app.ArmOutput.Value, ...
+                    "Resume",true,"StopAfterTrial",count, ...
+                    "ConfirmTrajectoryTest",true, ...
+                    "ConfirmLiveOutput",true, ...
                     "ModulatorVoltageOverride",frozenControls.two_photon_voltage, ...
                     "MaximumVelocityVPerS",frozenControls.maximum_velocity_v_per_s, ...
                     "MaximumAccelerationVPerS2",frozenControls.maximum_acceleration_v_per_s2, ...
@@ -638,7 +622,7 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
 
         function finishRunning(app)
             app.setControlsLocked(false);
-            if app.PlanState=="RUNNING", app.PlanState="VALIDATED"; end
+            if app.PlanState=="RUNNING", app.PlanState="FROZEN"; end
             app.updateStateDisplay();
         end
 
@@ -676,8 +660,8 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
 
         function modeChangedWithoutDirty(app)
             is1p=string(app.Mode.Value)=="1p_dmd";
-            set_enable(app.OnePhotonControls,is1p);
-            set_enable(app.TwoPhotonControls,~is1p);
+            set_visible(app.OnePhotonControls,is1p);
+            set_visible(app.TwoPhotonControls,~is1p);
         end
 
         function requestStop(app)
@@ -769,24 +753,15 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             app.setStatus("Stored ramp calibration decision in the active FOV. Save the FOV to persist it.");
         end
 
-        function value=effectiveTwoPhotonVoltage(app)
-            value=app.ModulatorVoltage.Value;
-            if string(app.ReleaseLevel.Value)=="blocked_test", value=0; end
-        end
-
         function protocol=protocolWithEffectiveVoltage(app,protocol,isNull)
-            voltage=app.effectiveTwoPhotonVoltage();
+            voltage=app.ModulatorVoltage.Value;
             if isNull, voltage=0; end
             protocol=adaptive_optopatch.normalize_protocol(protocol);
             protocol.hardware_command_voltage=voltage;
         end
 
         function value=captureRunControls(app)
-            value=struct("obis_override",app.ObisOverride.Value, ...
-                "obis_power_mw",app.ObisPowerMw.Value, ...
-                "arm_output",app.ArmOutput.Value, ...
-                "release_level",string(app.ReleaseLevel.Value), ...
-                "trajectory_confirmed",app.TrajectoryConfirmed.Value, ...
+            value=struct("active_obis_power_w",app.currentObisPowerW(), ...
                 "maximum_velocity_v_per_s",app.MaximumVelocity.Value, ...
                 "maximum_acceleration_v_per_s2",app.MaximumAcceleration.Value, ...
                 "allow_calibration_extrapolation",app.AllowCalibrationExtrapolation.Value, ...
@@ -794,23 +769,18 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
         end
 
         function value=plannedObisPowerW(app)
-            if app.ObisOverride.Value
-                value=app.ObisPowerMw.Value/1000;
-            else
-                value=app.currentObisPowerW();
-            end
+            value=app.currentObisPowerW();
         end
 
         function controls=frozenRunControls(~,plan)
             saved=plan.session.run_controls;
             controls=struct;
-            if saved.obis_override, controls.laser_power_w=saved.obis_power_mw/1000;
-            else, controls.laser_power_w=NaN; end
+            % Luminos/React owns the OBIS setpoint. NaN tells the runner to
+            % preserve it; the observed value remains archived in the plan.
+            controls.laser_power_w=NaN;
             controls.modulator_voltage_override= ...
                 plan.session.parameters.modulator_voltage;
-            controls.release_level=string(saved.release_level);
             controls.two_photon_voltage=plan.session.parameters.modulator_voltage;
-            if controls.release_level=="blocked_test", controls.two_photon_voltage=0; end
             controls.maximum_velocity_v_per_s=saved.maximum_velocity_v_per_s;
             controls.maximum_acceleration_v_per_s2=saved.maximum_acceleration_v_per_s2;
             controls.allow_calibration_extrapolation=saved.allow_calibration_extrapolation;
@@ -819,12 +789,19 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
     end
 end
 
-function set_enable(controls,state)
-for k=1:numel(controls), controls{k}.Enable=matlab.lang.OnOffSwitchState(state); end
+function set_visible(controls,state)
+for k=1:numel(controls), controls{k}.Visible=matlab.lang.OnOffSwitchState(state); end
 end
 
-function value=ternary_local(condition,yes,no)
-if condition, value=yes; else, value=no; end
+function preflight_camera_frames(cameras,durationS,allowOverride)
+original=arrayfun(@(camera)double(camera.frames_requested),cameras);
+cleanup=onCleanup(@()restore_camera_frames(cameras,original));
+adaptive_optopatch.set_camera_frames_for_duration(cameras,durationS, ...
+    "AllowRateLimitOverride",allowOverride);
+end
+
+function restore_camera_frames(cameras,frames)
+for k=1:numel(cameras), cameras(k).frames_requested=frames(k); end
 end
 
 function value=load_required(folder,filename,variable)

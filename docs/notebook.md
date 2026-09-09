@@ -150,3 +150,31 @@ invalid target identity, unusable DMD geometry, and physical hardware limits
 remain hard errors. The diagnostic `blue_qc_pass`, `dmd_overlap_pixels`, and
 `edge_flag` fields remain part of every target bundle; only their role in 1P
 eligibility changed. Two-photon spiral and parking QC remains an execution gate.
+
+## 2026-09-04 — Persistent FOV and automatic run freezing are the primary workflow
+
+The unified GUI no longer presents a manual planning-bundle save action and no
+longer restores a hidden “latest plan” when a Luminos snapshot is loaded. A
+saved FOV is the explicit persistent home for canonical ROIs, cell state, and
+the six spatial/setup controls. Exact runnable state is still frozen
+automatically before acquisition, including the resolved protocol, manifest,
+planning session, hardware controls, derived targets, and FOV snapshot. Legacy
+planning-bundle serialization and restoration remain available to the standalone
+reference planner for compatibility.
+
+## 2026-09-09 — Current editable state replaces plan invalidation
+
+The unified app no longer has a `DIRTY`/`VALIDATED` cache or operator
+acknowledgement controls for OBIS override, output arming, staged release, and
+trajectory review. Preview and diagnostic checks build from current controls;
+run actions rebuild, perform mandatory modality-specific preflight, and freeze
+that exact state before acquisition. Resume remains distinct and loads only the
+archived plan and checkpoint. Luminos/React owns the OBIS setpoint, whose active
+value is captured for provenance without being changed by Adaptive Optopatch.
+
+Recording and stimulation eligibility are independent persistent cell fields.
+The QC table checkboxes update those fields directly without creating or
+replacing a Blue calibration record. The staged standalone 2P modes remain
+available, while the unified path uses a standard mode that preserves motion,
+calibration, waveform, camera, routing, and device preflight without the removed
+acknowledgement steps.

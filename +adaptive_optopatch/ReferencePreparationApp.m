@@ -55,6 +55,10 @@ classdef ReferencePreparationApp < handle
             positions=cellfun(@(roi)double(roi.Position),app.RoiObjects, ...
                 "UniformOutput",false);
             fovState=adaptive_optopatch.create_fov_state(reference,positions, ...
+                "StimulationMode",string(app.Mode.Value), ...
+                "MicronsPerPixel",app.MicronsPerPixel.Value, ...
+                "SpiralRadiusUm",app.SpiralRadius.Value, ...
+                "SpiralDensityPointsPerVolt",app.SpiralDensity.Value, ...
                 "OrangeExpansionPixels",app.OrangeExpansion.Value, ...
                 "BlueMaskAdjustmentPixels",app.DmdErosion.Value);
             if ~isempty(app.CurrentFovState)
@@ -98,14 +102,14 @@ classdef ReferencePreparationApp < handle
             colormap(app.Axes,"gray"); app.applyContrast();
             app.CellIds=string({fovState.cells.cell_id})';
             app.NextCellIndex=double(fovState.next_cell_index);
+            app.CurrentFovState=fovState;
             positions=fovState.canonical_roi_polygons;
             if isempty(positions)
                 positions=masks_to_polygons(fovState.canonical_roi_masks);
             end
             app.restorePolygons(positions);
-            app.OrangeExpansion.Value=fovState.orange_expansion_pixels;
-            app.DmdErosion.Value=fovState.blue_mask_adjustment_pixels;
-            app.CurrentFovState=fovState;
+            app.restoreFovControls(fovState,reference);
+            app.updateQc();
             app.setStatus(sprintf("Loaded persistent FOV %s with %d stable cells.", ...
                 fovState.fov_id,numel(fovState.cells)));
             app.planChanged();
@@ -127,11 +131,32 @@ classdef ReferencePreparationApp < handle
             if isfield(fovState.cells,"blue_calibration")
                 replaceSnapshot=isempty(fovState.cells(index).blue_calibration);
             end
+            recordingEnabled=logical(fovState.cells(index).recording_enabled);
             fovState=adaptive_optopatch.update_cell_calibration(fovState,cellId, ...
                 "CommandVoltageV",commandVoltageV,"Status",status, ...
-                "StimulationEnabled",stimulationEnabled,"RecordingEnabled",true, ...
+                "StimulationEnabled",stimulationEnabled, ...
+                "RecordingEnabled",recordingEnabled, ...
                 "PulseDurationMs",pulseDurationMs,"ObisPowerW",obisPowerW, ...
                 "ReplaceCalibrationSnapshot",replaceSnapshot);
+            app.CurrentFovState=fovState;
+            app.updateQc();
+        end
+
+        function fovState=setCellEligibility(app,cellId,options)
+            arguments
+                app
+                cellId (1,1) string
+                options.RecordingEnabled = []
+                options.StimulationEnabled = []
+            end
+            if isempty(options.RecordingEnabled) && isempty(options.StimulationEnabled)
+                error("adaptive_optopatch:CellEligibilityRequired", ...
+                    "Specify RecordingEnabled or StimulationEnabled.");
+            end
+            fovState=app.currentFovState();
+            fovState=adaptive_optopatch.update_cell_eligibility(fovState,cellId, ...
+                "RecordingEnabled",options.RecordingEnabled, ...
+                "StimulationEnabled",options.StimulationEnabled);
             app.CurrentFovState=fovState;
             app.updateQc();
         end
@@ -178,6 +203,24 @@ classdef ReferencePreparationApp < handle
             if isempty(index), error("adaptive_optopatch:UnknownCellId","Unknown cell ID: %s",cellId); end
             app.RoiObjects{index}.Position=double(position);
             app.updateQc();
+        end
+
+        function loadSnapshot(app,snapshotPath)
+            [image,info]=adaptive_optopatch.read_reference_snapshot(snapshotPath);
+            app.ReferenceImage=image; app.LoadInfo=info; app.clearRois();
+            app.CurrentFovState=struct([]);
+            app.NextCellIndex=1;
+            imagesc(app.Axes,image); axis(app.Axes,"image"); app.Axes.YDir="reverse";
+            colormap(app.Axes,"gray"); app.applyContrast();
+            title(app.Axes,sprintf("%s — %s snapshot", ...
+                info.metadata.rig_name,info.camera_name),"Interpreter","none");
+            app.setStatus(sprintf(['Loaded snapshot:\n%s\nCamera: %s, ' ...
+                '%d × %d pixels, binning %.3g.'], ...
+                info.snapshot_path,info.camera_name, ...
+                info.image_size(2),info.image_size(1),info.camera_bin));
+            if app.restorePlanningBundleOnSnapshotLoad()
+                app.restoreLatestPlanning(info.snapshot_directory);
+            end
         end
     end
 
@@ -246,8 +289,11 @@ classdef ReferencePreparationApp < handle
             app.ToggleRoisButton.Layout.Column = [1 2];
             b=uibutton(controls,"Text","Send Orange recording mask", ...
                 "ButtonPushedFcn",@(~,~)app.invokeOrangeMask()); b.Layout.Column=[1 2];
-            b = uibutton(controls,"Text","Save planning bundle…", ...
-                "ButtonPushedFcn",@(~,~)app.savePlanningBundle(),"FontWeight","bold"); b.Layout.Column = [1 2];
+            if app.showPlanningBundleControl()
+                b = uibutton(controls,"Text","Save planning bundle…", ...
+                    "ButtonPushedFcn",@(~,~)app.savePlanningBundle(), ...
+                    "FontWeight","bold"); b.Layout.Column = [1 2];
+            end
 
             app.Axes = uiaxes(root); app.Axes.Layout.Row = 1; app.Axes.Layout.Column = 2;
             title(app.Axes,"Load a Luminos camera snapshot to begin"); axis(app.Axes,"image");
@@ -259,11 +305,11 @@ classdef ReferencePreparationApp < handle
             app.RoiList = uilistbox(side,"Items",strings(1,0), ...
                 "ValueChangedFcn",@(~,~)app.highlightSelection());
             app.QcTable = uitable(side,"ColumnName", ...
-                ["Cell","Area px","X","Y","Edge px","QC","Record","Stim","Blue V","Calibration"]);
+                ["Cell","Area px","X","Y","Edge px","QC","Record","Stim","Blue V","Calibration"], ...
+                "ColumnEditable",[false false false false false false true true false false], ...
+                "CellEditCallback",@(source,event)app.qcCellEdited(source,event));
             uibutton(side,"Text","Set selected Blue calibration…", ...
                 "ButtonPushedFcn",@(~,~)app.chooseCellCalibration());
-            uibutton(side,"Text","Exclude selected from stimulation", ...
-                "ButtonPushedFcn",@(~,~)app.excludeSelectedCell());
 
             app.Status = uitextarea(root,"Editable","off", ...
                 "Value",["Ready. In Luminos, click Snap for Camera 1."; ...
@@ -286,20 +332,7 @@ classdef ReferencePreparationApp < handle
             snapshotPath=string(fullfile(selectedFolder,selectedFile));
             app.setStatus("Loading Luminos Camera 1 snapshot…"); drawnow;
             try
-                [image,info] = adaptive_optopatch.read_reference_snapshot(snapshotPath);
-                app.ReferenceImage=image; app.LoadInfo=info; app.clearRois();
-                app.CurrentFovState=struct([]);
-                app.NextCellIndex=1;
-                imagesc(app.Axes,image); axis(app.Axes,"image"); app.Axes.YDir="reverse";
-                colormap(app.Axes,"gray"); app.applyContrast();
-                title(app.Axes,sprintf("%s — %s snapshot", ...
-                    info.metadata.rig_name,info.camera_name), ...
-                    "Interpreter","none");
-                app.setStatus(sprintf(['Loaded snapshot:\n%s\nCamera: %s, ' ...
-                    '%d × %d pixels, binning %.3g.'], ...
-                    info.snapshot_path,info.camera_name, ...
-                    info.image_size(2),info.image_size(1),info.camera_bin));
-                app.restoreLatestPlanning(info.snapshot_directory);
+                app.loadSnapshot(snapshotPath);
             catch exception
                 app.showError(exception);
             end
@@ -750,19 +783,6 @@ classdef ReferencePreparationApp < handle
             end
         end
 
-        function excludeSelectedCell(app)
-            cellId=app.selectedCellId();
-            if strlength(cellId)==0
-                app.setStatus("Select a cell before excluding it from stimulation."); return
-            end
-            try
-                app.setCellCalibration(cellId,NaN,"excluded",false);
-                app.setStatus(cellId+" remains recording-enabled but is excluded from stimulation. Save the FOV to persist it.");
-            catch exception
-                app.showError(exception);
-            end
-        end
-
         function value=selectedCellId(app)
             value="";
             if ~isempty(app.RoiList.Value), value=string(app.RoiList.Value); end
@@ -773,12 +793,40 @@ classdef ReferencePreparationApp < handle
             positions=cellfun(@(roi)double(roi.Position),app.RoiObjects, ...
                 "UniformOutput",false);
             fovState=adaptive_optopatch.create_fov_state(reference,positions, ...
+                "StimulationMode",string(app.Mode.Value), ...
+                "MicronsPerPixel",app.MicronsPerPixel.Value, ...
+                "SpiralRadiusUm",app.SpiralRadius.Value, ...
+                "SpiralDensityPointsPerVolt",app.SpiralDensity.Value, ...
                 "OrangeExpansionPixels",app.OrangeExpansion.Value, ...
                 "BlueMaskAdjustmentPixels",app.DmdErosion.Value);
             if ~isempty(app.CurrentFovState)
                 fovState=merge_cell_state(fovState,app.CurrentFovState);
             end
             fovState.next_cell_index=max(double(fovState.next_cell_index),app.NextCellIndex);
+        end
+
+        function qcCellEdited(app,source,event)
+            row=event.Indices(1); column=event.Indices(2);
+            if row<1 || row>numel(app.CellIds) || ~ismember(column,[7 8])
+                app.updateQc();
+                return
+            end
+            try
+                cellId=app.CellIds(row);
+                if column==7
+                    app.setCellEligibility(cellId, ...
+                        "RecordingEnabled",logical(event.NewData));
+                else
+                    app.setCellEligibility(cellId, ...
+                        "StimulationEnabled",logical(event.NewData));
+                end
+                app.setStatus(sprintf( ...
+                    "%s %s eligibility updated. Save the FOV to persist it.", ...
+                    cellId,lower(string(source.ColumnName(column)))));
+            catch exception
+                app.updateQc();
+                app.showError(exception);
+            end
         end
 
 
@@ -810,7 +858,41 @@ classdef ReferencePreparationApp < handle
         function planningSessionRestored(~,~)
             % Subclasses can restore additional planning-session state.
         end
+
+        function value=showPlanningBundleControl(~)
+            value=true;
+        end
+
+        function value=restorePlanningBundleOnSnapshotLoad(~)
+            value=true;
+        end
+
+        function restoreFovControls(app,fovState,reference)
+            if isfield(fovState,"stimulation_mode") && ...
+                    ismember(string(fovState.stimulation_mode),string(app.Mode.Items))
+                app.Mode.Value=string(fovState.stimulation_mode);
+            end
+            app.MicronsPerPixel.Value=fov_number(fovState,"microns_per_pixel", ...
+                reference.microns_per_pixel,app.MicronsPerPixel.Value);
+            app.SpiralRadius.Value=fov_number(fovState,"spiral_radius_um", ...
+                NaN,app.SpiralRadius.Value);
+            app.SpiralDensity.Value=fov_number(fovState, ...
+                "spiral_density_points_per_volt",NaN,app.SpiralDensity.Value);
+            app.OrangeExpansion.Value=fov_number(fovState, ...
+                "orange_expansion_pixels",NaN,app.OrangeExpansion.Value);
+            app.DmdErosion.Value=fov_number(fovState, ...
+                "blue_mask_adjustment_pixels",NaN,app.DmdErosion.Value);
+        end
     end
+end
+
+function value=fov_number(fovState,name,preferredFallback,currentFallback)
+value=currentFallback;
+if isfinite(preferredFallback), value=double(preferredFallback); end
+if isfield(fovState,name) && isscalar(fovState.(name)) && ...
+        isfinite(double(fovState.(name)))
+    value=double(fovState.(name));
+end
 end
 
 function value=ternary(condition,yes,no)

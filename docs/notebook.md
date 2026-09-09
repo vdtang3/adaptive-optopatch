@@ -198,3 +198,26 @@ voltage were removed. Record, Stim, and Blue voltage are independent; voltage
 is required only when generic parameter resolution still needs it. Frozen runs
 archive both the source definition and resolved acquisition schedules, and
 runners execute only the latter.
+
+## 2026-09-09 — 1P Blue executability follows the resolved event, and overlap is no longer a concept
+
+`build_target_bundle` computes a bundle-level Blue mask from a single
+default/GUI adjustment, but schema 3 lets a resolved event override that
+adjustment per pulse. Gating 1P executability on the bundle-level mask (via the
+former `is_blue_target_executable`) was therefore architecturally wrong: an
+invalid default could silently exclude a target whose actual resolved event
+was executable, and a valid default could mask an actual resolved event that
+was not. Resolution and preflight now determine executability from the
+resolved `(target, blue_mask_adjustment_pixels)` pair applied to the canonical
+ROI through the same `apply_blue_mask_adjustment` primitive used at DMD
+execution time (`resolve_protocol`'s `validate_blue_mask_executability` and
+`preflight_trial`'s per-event mask check). `build_target_bundle` no longer
+errors when its own default adjustment would empty a ROI; that bundle-level
+mask is now only a convenience/default value for display, never authoritative
+for execution.
+
+Blue-mask overlap with other ROIs was removed as a spatial QC/advisory concept
+entirely (`dmd_overlap_pixels`, `blue_qc_pass`, and the `blue_mask_overlap`
+advisory). It was advisory-only prior to this change (see 2026-09-03) and is
+no longer computed, displayed, or archived; edge-proximity QC/advisories are
+unaffected and remain separate from mask emptiness.

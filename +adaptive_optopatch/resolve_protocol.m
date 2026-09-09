@@ -39,6 +39,33 @@ for acquisitionIndex=1:numel(definition.acquisitions)
             acquisitionIndex,outputIndex);
     end
 end
+if options.Mode=="1p_dmd"
+    validate_blue_mask_executability(resolved,targets);
+end
+end
+
+function validate_blue_mask_executability(resolved,targets)
+% Every distinct non-null (target, resolved blue_mask_adjustment_pixels)
+% combination must produce a nonempty physical mask via the same
+% canonical primitive used at DMD execution time. This is evaluated after
+% event resolution so an event-level override (which may differ from the
+% bundle/GUI default) is authoritative rather than the bundle's default
+% mask.
+seen=strings(0,1);
+for i=1:numel(resolved)
+    events=resolved{i}.events;
+    for k=reshape(find(~events.is_null),1,[])
+        targetIndex=double(events.target_index(k));
+        adjustment=double(events.blue_mask_adjustment_pixels(k));
+        key=string(targetIndex)+"_"+string(adjustment);
+        if any(seen==key), continue; end
+        seen(end+1,1)=key; %#ok<AGROW>
+        adaptive_optopatch.apply_blue_mask_adjustment( ...
+            targets.canonical_roi_masks(:,:,targetIndex),adjustment,"Context", ...
+            sprintf("cell %s, pulse %s, requested adjustment %d", ...
+            events.target_cell_id(k),string(events.pulse_id(k)),adjustment));
+    end
+end
 end
 
 function protocol=resolve_acquisition(definition,acquisition,fovState,gui, ...
@@ -281,7 +308,13 @@ for k=1:numel(cells)
     targetIndex=find(targetIds==string(cells(k).cell_id),1);
     if isempty(targetIndex), continue; end
     if mode=="1p_dmd"
-        executable=adaptive_optopatch.is_blue_target_executable(targets,targetIndex);
+        % 1P Blue executability depends on the resolved per-event mask
+        % adjustment, not any bundle-level default, so a stimulation-
+        % enabled target is never excluded here. An event whose resolved
+        % adjustment cannot produce a physical mask fails explicitly in
+        % validate_blue_mask_executability below instead of being silently
+        % dropped from selection.
+        executable=true;
     else
         executable=logical(targets.targets(targetIndex).spiral_qc_pass);
     end

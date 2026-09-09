@@ -70,7 +70,7 @@ classdef TestBlueMaskAdjustment < matlab.unittest.TestCase
             testCase.verifyTrue(issorted(areaByAdjustment(order)));
         end
 
-        function requestedErosionThatEmptiesMaskFailsDmdPlanInsteadOfSubstitutingCanonicalMask(testCase)
+        function requestedErosionThatEmptiesMaskFailsResolutionInsteadOfSubstitutingCanonicalMask(testCase)
             [fovState,~]=test_fov_state();
             fovState=adaptive_optopatch.update_cell_calibration( ...
                 fovState,"cell_001","CommandVoltageV",1);
@@ -83,12 +83,13 @@ classdef TestBlueMaskAdjustment < matlab.unittest.TestCase
             fovState.reference.cells=fovState.cells;
             definition=adaptive_optopatch.generate_blue_mask_titration_protocol( ...
                 -5,"EventOrder","ordered","RandomSeed",5);
-            resolved=adaptive_optopatch.resolve_protocol(definition,fovState, ...
-                targets,test_gui_defaults(),"Mode","1p_dmd");
-            resolved=resolved{1};
-            testCase.verifyEqual(resolved.events.blue_mask_adjustment_pixels,-5);
+            % The resolved event's adjustment (-5), not the bundle/GUI
+            % default (0), determines executability: resolution must fail
+            % explicitly rather than silently excluding cell_001 or
+            % deferring the failure to DMD-sequence construction.
             testCase.verifyError( ...
-                @()adaptive_optopatch.build_dmd_sequence_plan(resolved,targets), ...
+                @()adaptive_optopatch.resolve_protocol(definition,fovState, ...
+                targets,test_gui_defaults(),"Mode","1p_dmd"), ...
                 "adaptive_optopatch:EmptyBlueMaskAdjustment");
         end
     end

@@ -1,40 +1,12 @@
 classdef TestBlueDmdAdvisoryPolicy < matlab.unittest.TestCase
     methods (Test)
-        function overlapIsAdvisoryAndRunProvenance(testCase)
-            [reference,targets,fovState]=blue_case(true,false);
-            protocol=adaptive_optopatch.generate_screen_protocol( ...
-                "PulseCount",1,"ModulatorVoltage",1);
-            manifest=adaptive_optopatch.build_manifest(reference,targets,protocol, ...
-                "Mode","1p_dmd","FovState",fovState,"GuiDefaults",gui_defaults());
-            testCase.verifyFalse(targets.targets(1).blue_qc_pass);
-            testCase.verifyGreaterThan(targets.targets(1).dmd_overlap_pixels,0);
-            testCase.verifyTrue(has_code(manifest.advisories,"blue_mask_overlap"));
-            preflight=adaptive_optopatch.preflight_trial(targets,manifest.trials(1,:), ...
-                "RequireConfirmedLiveProtocol",false);
-            testCase.verifyTrue(preflight.passed);
-            testCase.verifyTrue(any(contains(preflight.warnings,"overlaps another canonical ROI")));
-
-            outputRoot=tempname;
-            cleanup=onCleanup(@()remove_if_present(outputRoot)); %#ok<NASGU>
-            simulator=adaptive_optopatch.testing.make_simulated_luminos( ...
-                "SimulationOutputRoot",outputRoot);
-            run=adaptive_optopatch.run_1p_manifest(manifest,targets,simulator, ...
-                "ConfirmLiveOutput",true,"ShutterSettleTimeS",0);
-            testCase.verifyEqual(run.trials.acquisition_status,repmat("completed",2,1));
-            saved=load(fullfile(run.trials.experiment_directory(1),"output_data.mat"), ...
-                "adaptive_optopatch_record");
-            testCase.verifyTrue(has_code( ...
-                saved.adaptive_optopatch_record.advisories,"blue_mask_overlap"));
-        end
-
         function edgeProximityIsAdvisory(testCase)
-            [reference,targets,fovState]=blue_case(false,true);
+            [reference,targets,fovState]=blue_case(true,false);
             manifest=adaptive_optopatch.build_manifest(reference,targets, ...
                 adaptive_optopatch.generate_screen_protocol( ...
                 "PulseCount",1,"ModulatorVoltage",1),"Mode","1p_dmd", ...
                 "FovState",fovState,"GuiDefaults",gui_defaults());
             testCase.verifyTrue(targets.targets(1).edge_flag);
-            testCase.verifyFalse(targets.targets(1).blue_qc_pass);
             testCase.verifyTrue(has_code(manifest.advisories,"blue_mask_near_edge"));
             preflight=adaptive_optopatch.preflight_trial(targets,manifest.trials(1,:), ...
                 "RequireConfirmedLiveProtocol",false);
@@ -42,34 +14,8 @@ classdef TestBlueDmdAdvisoryPolicy < matlab.unittest.TestCase
             testCase.verifyTrue(any(contains(preflight.warnings,"near the camera ROI edge")));
         end
 
-        function overlapAndEdgeRemainRunnable(testCase)
-            [reference,targets,fovState]=blue_case(true,true);
-            manifest=adaptive_optopatch.build_manifest(reference,targets, ...
-                adaptive_optopatch.generate_screen_protocol( ...
-                "PulseCount",1,"ModulatorVoltage",1),"Mode","1p_dmd", ...
-                "FovState",fovState,"GuiDefaults",gui_defaults());
-            codes=string({manifest.advisories.code});
-            testCase.verifyTrue(all(ismember( ...
-                ["blue_mask_overlap","blue_mask_near_edge"],codes)));
-            preflight=adaptive_optopatch.preflight_trial(targets,manifest.trials(1,:), ...
-                "RequireConfirmedLiveProtocol",false);
-            testCase.verifyTrue(preflight.passed);
-        end
-
-        function unresolvedProtocolIncludesWarningTargets(testCase)
-            [reference,targets,fovState]=blue_case(true,false);
-            protocol=adaptive_optopatch.generate_screen_protocol( ...
-                "PulseCount",1,"ModulatorVoltage",1);
-            manifest=adaptive_optopatch.build_manifest(reference,targets,protocol, ...
-                "Mode","1p_dmd","FovState",fovState,"GuiDefaults",gui_defaults());
-            assigned=string(cellfun(@(p)p.events.target_cell_id(1), ...
-                manifest.trials.pulse_schedule));
-            testCase.verifyTrue(any(assigned=="cell_001"));
-            testCase.verifyTrue(has_code(manifest.advisories,"blue_mask_overlap"));
-        end
-
         function trueOnePhotonFailuresRemainHard(testCase)
-            [reference,targets,fovState]=blue_case(true,false);
+            [reference,targets,fovState]=blue_case(false,false);
             protocol=adaptive_optopatch.generate_screen_protocol( ...
                 "PulseCount",1,"ModulatorVoltage",1);
 
@@ -77,19 +23,24 @@ classdef TestBlueDmdAdvisoryPolicy < matlab.unittest.TestCase
             disabledReference.cells(1).stimulation_enabled=false;
             disabledTargets=adaptive_optopatch.build_target_bundle(disabledReference, ...
                 "SpiralRadiusUm",2,"ParkingClearancePixels",1, ...
-                "BlueMaskAdjustmentPixels",4);
+                "BlueMaskAdjustmentPixels",0);
             disabledFov=fovState; disabledFov.cells(1).stimulation_enabled=false;
             [manifest,~]=adaptive_optopatch.build_manifest( ...
                 disabledReference,disabledTargets,protocol,"Mode","1p_dmd", ...
                 "FovState",disabledFov,"GuiDefaults",gui_defaults());
             testCase.verifyFalse(any(manifest.trials.target_cell_id=="cell_001"));
 
-            unusable=targets; unusable.dmd_camera_masks(:,:,1)=false;
+            % A resolved event whose Blue-mask adjustment truly empties
+            % the canonical ROI must fail explicitly at resolution time
+            % rather than silently excluding the target from the
+            % manifest, so acquisition count is never silently reduced.
             unusableFov=fovState; unusableFov.cells(2).stimulation_enabled=false;
+            emptyingDefaults=gui_defaults();
+            emptyingDefaults.blue_mask_adjustment_pixels=-5;
             testCase.verifyError(@()adaptive_optopatch.build_manifest( ...
-                reference,unusable,protocol,"Mode","1p_dmd", ...
-                "FovState",unusableFov,"GuiDefaults",gui_defaults()), ...
-                "adaptive_optopatch:NoAcceptedTargets");
+                reference,targets,protocol,"Mode","1p_dmd", ...
+                "FovState",unusableFov,"GuiDefaults",emptyingDefaults), ...
+                "adaptive_optopatch:EmptyBlueMaskAdjustment");
 
             testCase.verifyError(@()adaptive_optopatch.generate_screen_protocol( ...
                 "PulseCount",1,"ModulatorVoltage",5.1), ...
@@ -97,7 +48,7 @@ classdef TestBlueDmdAdvisoryPolicy < matlab.unittest.TestCase
         end
 
         function twoPhotonExecutionQcRemainsStrict(testCase)
-            [reference,targets,fovState]=blue_case(false,true);
+            [reference,targets,fovState]=blue_case(true,true);
             fovState.cells(2).stimulation_enabled=false;
             testCase.verifyFalse(targets.targets(1).spiral_qc_pass);
             testCase.verifyError(@()adaptive_optopatch.build_manifest( ...
@@ -109,19 +60,19 @@ classdef TestBlueDmdAdvisoryPolicy < matlab.unittest.TestCase
     end
 end
 
-function [reference,targets,fovState]=blue_case(overlap,nearEdge)
+function [reference,targets,fovState]=blue_case(nearEdge,~)
+% Two non-overlapping canonical ROIs; overlap is no longer a spatial QC
+% concept, so cases here vary only edge proximity.
 image=zeros(40,50); masks=false(40,50,2);
 if nearEdge, rows=1:6; else, rows=12:17; end
-masks(rows,10:15,1)=true;
-if overlap, columns=19:24; adjustment=4; else, columns=35:40; adjustment=0; end
-masks(rows,columns,2)=true;
+masks(rows,10:15,1)=true; masks(rows,35:40,2)=true;
 metadata=struct("rig_name","Virtual_Upright", ...
     "voltage_camera",struct("name","Orca Fusion","bin",1));
 reference=adaptive_optopatch.create_reference_model(image,masks,metadata, ...
     "FovId","blue_advisory_test");
 targets=adaptive_optopatch.build_target_bundle(reference, ...
     "SpiralRadiusUm",2,"ParkingClearancePixels",1, ...
-    "BlueMaskAdjustmentPixels",adjustment);
+    "BlueMaskAdjustmentPixels",0);
 polygons=cell(numel(reference.cells),1);
 for k=1:numel(reference.cells)
     boundaries=bwboundaries(reference.roi_masks(:,:,k));
@@ -139,8 +90,4 @@ end
 
 function tf=has_code(advisories,code)
 tf=~isempty(advisories) && any(string({advisories.code})==string(code));
-end
-
-function remove_if_present(folder)
-if isfolder(folder), rmdir(folder,"s"); end
 end

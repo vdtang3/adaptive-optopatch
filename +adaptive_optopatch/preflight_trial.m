@@ -43,9 +43,9 @@ else
             elseif isfield(targets.targets,"stimulation_enabled") && ...
                     ~targets.targets(idx).stimulation_enabled
                 issues(end+1)="Target is disabled for stimulation: "+id; %#ok<AGROW>
-            elseif mode=="1p_dmd" && ...
-                    ~adaptive_optopatch.is_blue_target_executable(targets,idx)
-                issues(end+1)="Blue mask is missing or empty for target: "+id; %#ok<AGROW>
+            elseif mode=="1p_dmd"
+                maskIssue=blue_mask_issue(targets,idx,id,events);
+                if maskIssue~="", issues(end+1)=maskIssue; end %#ok<AGROW>
             elseif mode=="2p_spiral" && ~target_qc_pass(targets.targets(idx),mode)
                 issues(end+1)="Target did not pass 2P execution QC: "+id; %#ok<AGROW>
             end
@@ -76,6 +76,30 @@ if string(trialRow.stimulation_mode)=="2p_spiral"
 end
 report=struct("schema_version","0.2.0","passed",isempty(issues), ...
     "issues",issues,"warnings",unique(warnings,"stable"));
+end
+
+function issue=blue_mask_issue(targets,idx,id,events)
+% Evaluate physical Blue-mask executability from the resolved per-event
+% adjustment against the canonical ROI, using the same primitive applied
+% at DMD execution time, rather than any bundle-level default mask.
+issue="";
+if ~isfield(targets,"canonical_roi_masks") || size(targets.canonical_roi_masks,3)<idx
+    issue="Blue mask geometry is unavailable for target: "+id; return
+end
+canonicalMask=targets.canonical_roi_masks(:,:,idx);
+selected=reshape(find(~events.is_null & events.target_cell_id==id),1,[]);
+seenAdjustments=[];
+for k=selected
+    adjustment=double(events.blue_mask_adjustment_pixels(k));
+    if any(seenAdjustments==adjustment), continue; end
+    seenAdjustments(end+1)=adjustment; %#ok<AGROW>
+    try
+        adaptive_optopatch.apply_blue_mask_adjustment(canonicalMask,adjustment, ...
+            "Context",sprintf("target %s, pulse %s",id,string(events.pulse_id(k))));
+    catch exception
+        issue=string(exception.message); return
+    end
+end
 end
 
 function passed=target_qc_pass(target,mode)

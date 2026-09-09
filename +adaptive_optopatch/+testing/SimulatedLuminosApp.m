@@ -24,6 +24,16 @@ classdef SimulatedLuminosApp < handle
             app.SimulationOutputRoot=string(outputRoot);
         end
 
+        function applyGalvoCalibration(app,calibration)
+            %APPLYGALVOCALIBRATION Simulate an operator recalibrating the rig.
+            %   Updates the simulator's active-calibration pointer and pushes
+            %   the new transform onto the live scanner device, mirroring
+            %   what a real recalibration workflow leaves behind.
+            app.GalvoCalibration=calibration;
+            scanner=app.getDevice("Scanning_Device","name",calibration.scanner_name);
+            scanner.tform=calibration.calibration.tform;
+        end
+
         function devices=getDevice(app,type,varargin)
             requestedType=string(type);
             if requestedType=="DAQ"

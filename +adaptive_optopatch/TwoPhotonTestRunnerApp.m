@@ -154,7 +154,8 @@ classdef TwoPhotonTestRunnerApp < handle
             end
         end
         function [hardware,protocol,target,manifest]=preparePreview(gui)
-            hardware=adaptive_optopatch.resolve_luminos_2p_hardware(gui.LuminosApp);
+            hardware=adaptive_optopatch.resolve_luminos_2p_hardware( ...
+                gui.LuminosApp,"ApplyCalibration",false);
             manifest=gui.prepareSelectedManifest();
             trial=manifest.trials(1,:);
             protocol=trial.pulse_schedule{1};

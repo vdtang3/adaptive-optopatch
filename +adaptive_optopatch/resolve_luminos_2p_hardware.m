@@ -1,8 +1,18 @@
 function hardware=resolve_luminos_2p_hardware(app,options)
 %RESOLVE_LUMINOS_2P_HARDWARE Validate live VU devices and active calibration.
+%   This validates device identity/readiness and reads (but by default also
+%   applies) the currently active galvo calibration. Callers that must
+%   execute or preview a previously frozen run should pass
+%   ApplyCalibration=false so this purely observational hardware discovery
+%   never overwrites the live scanner's targeting transform: the frozen
+%   transform this run must use lives with the frozen plan, not the
+%   scanner device. hardware.calibration always reflects the currently
+%   active calibration (for live validation/provenance) regardless of
+%   ApplyCalibration.
 arguments
     app
     options.Profile (1,1) struct = adaptive_optopatch.virtual_upright_2p_profile()
+    options.ApplyCalibration (1,1) logical = true
 end
 profile=options.Profile;
 if isempty(app), error("adaptive_optopatch:MissingLuminosApp","A live Luminos app is required."); end
@@ -49,14 +59,18 @@ if isa(app,"adaptive_optopatch.testing.SimulatedLuminosApp")
         error("adaptive_optopatch:SimulatedCalibrationRejected","%s", ...
             strjoin(validation.issues,newline));
     end
-    hardware.scanner.tform=artifact.calibration.tform;
-    hardware.calibration_status=struct("found",true,"applied",true, ...
+    if options.ApplyCalibration
+        hardware.scanner.tform=artifact.calibration.tform;
+    end
+    hardware.calibration_status=struct("found",true,"applied",options.ApplyCalibration, ...
         "validation",validation,"calibration_id",artifact.calibration_id, ...
         "artifact",artifact,"message","Using simulator-owned calibration.");
 else
-    hardware.calibration_status=adaptive_optopatch.load_active_galvo_calibration(app);
+    hardware.calibration_status=adaptive_optopatch.load_active_galvo_calibration( ...
+        app,"Apply",options.ApplyCalibration);
 end
-if ~hardware.calibration_status.found || ~hardware.calibration_status.applied
+if ~hardware.calibration_status.found || ...
+        (options.ApplyCalibration && ~hardware.calibration_status.applied)
     error("adaptive_optopatch:ActiveGalvoCalibrationRequired", ...
         "A validated active Camera 1/galvo calibration is required.");
 end

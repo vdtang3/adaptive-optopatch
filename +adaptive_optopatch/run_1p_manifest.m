@@ -52,6 +52,7 @@ trials=manifest.trials;
 n=height(trials);
 trials=ensure_column(trials,"preflight_report",cell(n,1));
 trials=ensure_column(trials,"target_configuration",cell(n,1));
+trials=ensure_column(trials,"orange_configuration",cell(n,1));
 trials=ensure_column(trials,"settings_snapshot",cell(n,1));
 trials=ensure_column(trials,"waveform_summary",cell(n,1));
 trials=ensure_column(trials,"error_message",repmat("",n,1));
@@ -99,7 +100,9 @@ for k=1:n
     if options.Resume && ismember(status,["completed","analyzed"]), continue; end
     try
         row=run.trials(k,:);
-        preflight=adaptive_optopatch.preflight_trial(targets,row, ...
+        protocol=adaptive_optopatch.normalize_protocol(row.pulse_schedule{1});
+        trialTargets=adaptive_optopatch.apply_acquisition_parameters(targets,protocol);
+        preflight=adaptive_optopatch.preflight_trial(trialTargets,row, ...
             "RequireConfirmedLiveProtocol",false,"LiveProtocolConfirmed",true, ...
             "Advisories",row_advisories(row));
         run.trials.preflight_report{k}=preflight;
@@ -111,23 +114,26 @@ for k=1:n
         run.trials.settings_snapshot{k}= ...
             adaptive_optopatch.snapshot_luminos_settings(app);
 
-        protocol=adaptive_optopatch.normalize_protocol(row.pulse_schedule{1});
         pulseTargets=unique(protocol.events.target_cell_id(~protocol.events.is_null),"stable");
         dmdSequencePlan=struct([]);
-        if numel(pulseTargets)>1
-            dmdSequencePlan=adaptive_optopatch.build_dmd_sequence_plan(protocol,targets);
+        maskVaries=any(protocol.events.blue_mask_adjustment_pixels~= ...
+            trialTargets.parameters.blue_mask_adjustment_pixels);
+        if numel(pulseTargets)>1 || maskVaries
+            dmdSequencePlan=adaptive_optopatch.build_dmd_sequence_plan(protocol,trialTargets);
             config=adaptive_optopatch.prepare_luminos_dmd_sequence( ...
                 hardware.dmd,dmdSequencePlan,"DryRun",false);
         else
-            config=adaptive_optopatch.prepare_luminos_target(app,targets,row, ...
+            config=adaptive_optopatch.prepare_luminos_target(app,trialTargets,row, ...
                 "DryRun",false,"DmdName",profile.dmd.name, ...
                 "WriteDmdImmediately",true);
         end
+        run.trials.orange_configuration{k}= ...
+            adaptive_optopatch.prepare_luminos_orange_mask(app,trialTargets, ...
+            "DryRun",false);
         run.trials.target_configuration{k}=config;
         run.trials.acquisition_status(k)="configured";
 
-        voltageOverride=options.ModulatorVoltageOverride;
-        if row.is_null, voltageOverride=0; end
+        voltageOverride=NaN;
         [globalProps,wfmData,waveformSummary]= ...
             adaptive_optopatch.build_luminos_1p_waveform_config( ...
             original.global_props,original.wfm_data,row.pulse_schedule{1},profile, ...

@@ -5,21 +5,23 @@ arguments
     targets (1,1) struct
 end
 protocol=adaptive_optopatch.normalize_protocol(protocol); events=protocol.events;
-required=["target_cell_id","dmd_pattern_index"];
+required=["target_cell_id","target_index","dmd_pattern_index", ...
+    "blue_mask_adjustment_pixels"];
 if ~all(ismember(required,string(events.Properties.VariableNames)))
     error("adaptive_optopatch:UnresolvedDmdSequence", ...
         "Resolved target IDs and DMD pattern indices are required.");
 end
 n=height(events); stack=false([size(targets.blank_dmd_mask),n]);
 for k=1:n
-    index=double(events.dmd_pattern_index(k));
+    index=double(events.target_index(k));
     if events.is_null(k)
         if index~=0, error("adaptive_optopatch:NullDmdPattern","Null pulses must use blank pattern index zero."); end
     elseif index<1 || index>size(targets.dmd_camera_masks,3) || fix(index)~=index
         error("adaptive_optopatch:DmdPatternIndexMismatch", ...
             "Pulse %s has invalid DMD pattern index %g.",string(events.pulse_id(k)),index);
     else
-        stack(:,:,k)=targets.dmd_camera_masks(:,:,index);
+        stack(:,:,k)=adjust_mask(targets.canonical_roi_masks(:,:,index), ...
+            events.blue_mask_adjustment_pixels(k));
         if string(targets.targets(index).cell_id)~=events.target_cell_id(k)
             error("adaptive_optopatch:DmdPatternTargetMismatch", ...
                 "Pulse %s target does not match its DMD pattern.",string(events.pulse_id(k)));
@@ -41,4 +43,13 @@ plan=struct("schema_version","1.0.0","camera_pattern_stack",stack, ...
     "initialization_trigger_s",activationS(1), ...
     "advance_onset_s",events.offset_s(1:end-1), ...
     "no_artificial_settle_interval",true);
+end
+
+function mask=adjust_mask(mask,adjustment)
+if adjustment<0
+    candidate=imerode(mask,strel("disk",abs(adjustment),0));
+    if any(candidate,"all"), mask=candidate; end
+elseif adjustment>0
+    mask=imdilate(mask,strel("disk",adjustment,0));
+end
 end

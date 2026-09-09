@@ -37,10 +37,11 @@ Load Camera 1 snapshot
 → run next or run all
 ```
 
-Pulse protocol means **when** stimulation happens. Adaptive Optopatch combines
-that schedule with **where** stimulation happens and **how** the selected rig
-delivers it. The acquisition GUI loads protocol data; it never executes a
-protocol-generation script.
+Pulse protocol definitions describe experimental structure and explicit
+parameter overrides without naming ROI IDs. At plan-build time Adaptive
+Optopatch selects the current Stim-enabled cells, resolves protocol/FOV/GUI
+values, and freezes literal acquisition schedules. The acquisition GUI loads
+protocol data; it never executes a protocol-generation script.
 
 ### 1. Generate a pulse protocol
 
@@ -77,21 +78,19 @@ protocol.protocol_id = "stf_50_100hz";
 adaptive_optopatch.save_protocol("stf_50_100hz.mat", protocol);
 ```
 
-Editable generators for randomized connectivity, regular-rate, STF,
-paired-pulse, single-cell Blue ramps, calibrated round robin, and custom
-schedules are in `pulse-protocols/`. Protocol schema 2 uses one row per
-physical pulse. Canonical columns are `pulse_id`, `condition_id`, `onset_s`,
-`duration_s`, `target_cell_id`, `is_null`, `command_voltage_v`, and
-`amplitude_fraction`. A finite physical command takes precedence; otherwise
-the relative amplitude is multiplied by the configured GUI hardware voltage.
-Train metadata such as `train_id`, `pulse_in_train`, `repeat_index`, and
-`frequency_hz` groups ordinary pulse rows without nesting pulse times.
+Editable generators for connectivity, regular-rate, STF, paired-pulse, Blue
+voltage ramps, Blue-mask titration, round robin, and custom schedules are in
+`pulse-protocols/`. Protocol schema 3 separates ROI-independent experiment
+definitions from fully resolved acquisitions. Target policy, acquisition
+boundaries, and event order are explicit. Resolution follows event, then
+acquisition/protocol, then per-cell FOV, then GUI precedence; unresolved
+required values fail before freezing.
 
-For the EPSP workflow, use `create_single_cell_ramp_protocol.m` to acquire one
-static-target calibration movie, store the operator-selected voltage in the
-FOV, then use `create_round_robin_protocol.m`. The latter reads calibrated,
-stimulation-enabled cells directly from `fov_state.mat` and produces one
-resolved, randomized, continuous multi-target acquisition.
+For the EPSP workflow, use `create_single_cell_ramp_protocol.m` to apply an
+ordered voltage ramp separately to every Stim-enabled cell, store the chosen
+per-cell voltages in the FOV, then load the ROI-independent round-robin
+definition. Round robin resolves the current cells and voltages only when the
+run is built and frozen.
 
 ### 2. Open Adaptive Optopatch
 
@@ -116,8 +115,9 @@ For local development, open the same GUI with the no-hardware backend:
 The title contains `[SIMULATION]`, and acquisitions are dispatched only to
 `SimulatedLuminosApp`. Simulation never sends hardware output.
 
-The earlier reference and modality-specific runner launchers remain available
-as compatibility interfaces during migration.
+The reference and modality-specific runner launchers remain available for
+commissioning and diagnostics, but they consume the same current resolved
+protocol schedules.
 
 ## First installation on the VU
 
@@ -402,15 +402,21 @@ targets = adaptive_optopatch.build_target_bundle(reference, ...
     "SpiralRadiusUm", 6, "SpiralDensityPointsPerVolt", 10, ...
     "OrangeExpansionPixels", 2, "BlueMaskAdjustmentPixels", -1);
 
-manifest = adaptive_optopatch.build_screen_manifest(reference, targets, ...
-    "Mode", "2p_spiral", "Repeats", 5, "NullFraction", 0.1, ...
-    "RandomSeed", 1);
+fov = adaptive_optopatch.create_fov_state(reference);
+definition = adaptive_optopatch.generate_screen_protocol( ...
+    "PulseCount", 200, "ModulatorVoltage", 1, "RandomSeed", 1);
+guiDefaults = struct("command_voltage_v",1,"pulse_duration_s",0.005, ...
+    "blue_mask_adjustment_pixels",-1,"orange_expansion_pixels",2, ...
+    "spiral_radius_um",6,"spiral_density_points_per_volt",10);
+[manifest,resolved] = adaptive_optopatch.build_manifest( ...
+    reference,targets,definition,"Mode","2p_spiral", ...
+    "FovState",fov,"GuiDefaults",guiDefaults);
 
 adaptive_optopatch.save_bundle('/path/to/planning_output', ...
     reference, targets, manifest);
 ```
 
-Each screen-manifest row now contains its complete realized 200-pulse schedule:
+Each manifest row contains one complete realized acquisition schedule:
 5 ms pulses by default, 45–55 ms end-to-start dark intervals, 100 ms pre/post
 delays, and an automatically calculated acquisition duration.
 
@@ -483,19 +489,22 @@ conditions = adaptive_optopatch.default_stf_conditions( ...
     "ModulatorVoltage", 0);
 ```
 
-After saving accepted pairs from the review GUI:
+Build the STF definition, then resolve it against the current FOV just like any
+other protocol:
 
 ```matlab
-s = load("accepted_pairs.mat");
-stfManifest = adaptive_optopatch.build_stf_manifest( ...
-    s.accepted_pairs, targets, conditions, ...
-    "Mode", "2p_spiral", ...
-    "EventDarkIntervalMs", [450 550]);
+definition = adaptive_optopatch.generate_stf_protocol(conditions, ...
+    "EventDarkIntervalMs",[450 550], ...
+    "EventOrder","randomized","RandomSeed",1001);
+[stfManifest,resolved] = adaptive_optopatch.build_manifest( ...
+    reference,targets,definition,"Mode","2p_spiral", ...
+    "FovState",fov,"GuiDefaults",guiDefaults);
 ```
 
-Each presynaptic source receives one acquisition containing the randomized,
+Each Stim-enabled source receives one acquisition containing the realized,
 intermixed conditions. Frequencies above 100 Hz and overlapping pulses are
-rejected.
+rejected. See `pulse-protocols/README.md` for schema fields, target policies,
+scope rules, ordering semantics, and explicit multi-acquisition examples.
 
 ## Active Luminos settings
 

@@ -58,6 +58,7 @@ hardware.modulator.level=profile.modulator.dark_v;
 trials=manifest.trials; n=height(trials);
 trials=ensure_column(trials,"settings_snapshot",cell(n,1));
 trials=ensure_column(trials,"waveform_summary",cell(n,1));
+trials=ensure_column(trials,"orange_configuration",cell(n,1));
 trials=ensure_column(trials,"error_message",repmat("",n,1));
 checkpoint="";
 if strlength(options.OutputDirectory)>0
@@ -86,9 +87,19 @@ for k=1:n
             completedThisCall>=1, break; end
     try
         row=run.trials(k,:);
+        sourceProtocol=row.pulse_schedule{1};
+        if isfield(targets,"canonical_roi_masks")
+            trialTargets=adaptive_optopatch.apply_acquisition_parameters( ...
+                targets,sourceProtocol);
+            run.trials.orange_configuration{k}= ...
+                adaptive_optopatch.prepare_luminos_orange_mask(app,trialTargets, ...
+                "DryRun",false);
+        else
+            trialTargets=targets;
+        end
         targetIndex=row.target_index;
         if row.is_null || targetIndex<1, targetIndex=1; end
-        target=targets.targets(targetIndex);
+        target=trialTargets.targets(targetIndex);
         calibrationCoverage= ...
             adaptive_optopatch.validate_2p_calibration_coverage( ...
             target,hardware.calibration);
@@ -102,8 +113,8 @@ for k=1:n
             options.AllowCalibrationExtrapolation;
         calibrationCoverage.extrapolation_used= ...
             ~calibrationCoverage.passed && options.AllowCalibrationExtrapolation;
-        protocol=row.pulse_schedule{1};
-        voltage=options.ModulatorVoltageOverride;
+        protocol=sourceProtocol;
+        voltage=NaN;
         if options.ReleaseLevel=="blocked_test" || row.is_null, voltage=0; end
         protocol=override_protocol_voltage(protocol,voltage);
         minimumRadiusFraction=0.95;
@@ -221,21 +232,15 @@ if ~isfield(protocol,"protocol_type") || ...
 end
 count=pulseCount;
 if count>height(protocol.events)
-    protocol=adaptive_optopatch.generate_screen_protocol( ...
-        "PulseCount",count,"PulseDurationMs",protocol.pulse_duration_ms, ...
-        "DarkIntervalMs",protocol.dark_interval_range_ms, ...
-        "PreDelayMs",protocol.pre_delay_ms, ...
-        "PostDelayMs",protocol.post_delay_ms, ...
-        "ModulatorVoltage",protocol.modulator_voltage, ...
-        "RandomSeed",protocol.random_seed);
-else
-    protocol.events=protocol.events(1:count,:);
-    protocol.pulse_count=count;
-    protocol.total_light_on_s=sum(protocol.events.duration_s);
+    error("adaptive_optopatch:TestPulseCountExceedsFrozenSchedule", ...
+        "The staged test requests %d pulses, but the frozen acquisition contains only %d.", ...
+        count,height(protocol.events));
 end
-postDelay=100;
-if isfield(protocol,"post_delay_ms"), postDelay=protocol.post_delay_ms; end
-protocol.acquisition_duration_s=protocol.events.offset_s(end)+postDelay/1000;
+postDelay=max(0,protocol.acquisition_duration_s-protocol.events.offset_s(end));
+protocol.events=protocol.events(1:count,:);
+protocol.acquisition_duration_s=protocol.events.offset_s(end)+postDelay;
+protocol.protocol_id=protocol.protocol_id+"_"+level;
+protocol=adaptive_optopatch.normalize_protocol(protocol);
 trials.pulse_schedule={protocol};
 trials.acquisition_duration_s=protocol.acquisition_duration_s;
 trials.output_tag=string(trials.output_tag)+"_"+level;
@@ -265,9 +270,16 @@ end
 function protocol=override_protocol_voltage(protocol,voltage)
 if ~isfinite(voltage), return; end
 protocol=adaptive_optopatch.normalize_protocol(protocol);
-protocol.hardware_command_voltage=voltage;
-protocol.events.command_voltage_v(~protocol.events.is_null)=voltage;
-protocol.events.command_voltage_v(protocol.events.is_null)=0;
+if voltage==0
+    protocol.events.is_null(:)=true;
+    protocol.events.target_cell_id(:)="";
+    protocol.events.target_index(:)=0;
+    protocol.events.dmd_pattern_index(:)=0;
+    protocol.events.command_voltage_v(:)=0;
+else
+    protocol.events.command_voltage_v(~protocol.events.is_null)=voltage;
+    protocol.events.command_voltage_v(protocol.events.is_null)=0;
+end
 end
 function original=capture_state(hardware)
 original=struct("global_props",hardware.daq.global_props, ...

@@ -8,32 +8,28 @@ if ~isfield(saved,"fov_state") || ~isscalar(saved.fov_state)
     error("adaptive_optopatch:InvalidFovState","File does not contain scalar fov_state.");
 end
 fovState=saved.fov_state;
-if ~isfield(fovState,"next_cell_index")
-    fovState.next_cell_index=infer_next_cell_index(fovState.cells);
+if ~isfield(fovState,"schema_version") || string(fovState.schema_version)~="2.0.0"
+    error("adaptive_optopatch:ObsoleteFovSchema", ...
+        "This artifact uses an obsolete Adaptive Optopatch FOV schema. Regenerate it with the current package.");
 end
-fovState=ensure_calibration_fields(fovState);
+required=["fov_id","reference","canonical_roi_masks","canonical_roi_polygons", ...
+    "stimulation_mode","microns_per_pixel","spiral_radius_um", ...
+    "spiral_density_points_per_volt","orange_expansion_pixels", ...
+    "blue_mask_adjustment_pixels","next_cell_index","cells"];
+if ~all(isfield(fovState,cellstr(required)))
+    error("adaptive_optopatch:InvalidFovState", ...
+        "Schema-2 FOV state is incomplete. Regenerate it with the current package.");
+end
+cellRequired=["recording_enabled","stimulation_enabled", ...
+    "selected_blue_voltage_v","blue_calibration","blue_calibration_history"];
+if ~all(isfield(fovState.cells,cellstr(cellRequired))) || ...
+        isfield(fovState.cells,"calibration_status")
+    error("adaptive_optopatch:InvalidFovState", ...
+        "FOV cells do not match the current status-free calibration schema.");
+end
 if ~isequal(size(fovState.canonical_roi_masks),size(fovState.reference.roi_masks)) || ...
         ~isequal(logical(fovState.canonical_roi_masks),logical(fovState.reference.roi_masks))
     error("adaptive_optopatch:CanonicalRoiMismatch", ...
         "Saved canonical ROI masks do not match the reference model.");
 end
-end
-
-function fovState=ensure_calibration_fields(fovState)
-defaults=struct("blue_calibration",struct([]),"blue_calibration_history",struct([]));
-for name=string(fieldnames(defaults))'
-    if ~isfield(fovState.cells,name)
-        [fovState.cells.(name)]=deal(defaults.(name));
-    end
-end
-fovState.reference.cells=fovState.cells;
-end
-
-function value=infer_next_cell_index(cells)
-numbers=zeros(numel(cells),1);
-for k=1:numel(cells)
-    token=regexp(char(string(cells(k).cell_id)),'^cell_(\d+)$','tokens','once');
-    if ~isempty(token), numbers(k)=str2double(token{1}); end
-end
-value=max([numbers;0])+1;
 end

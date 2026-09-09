@@ -1,65 +1,128 @@
 function report=validate_protocol(value)
-%VALIDATE_PROTOCOL Validate the canonical one-row-per-pulse schema.
+%VALIDATE_PROTOCOL Validate a schema-3 definition or resolved acquisition.
 arguments
     value (1,1) struct
 end
-issues=strings(0,1);
+issues=strings(0,1); protocol=struct([]);
 try
     protocol=adaptive_optopatch.normalize_protocol(value);
+    if string(protocol.artifact_type)=="experiment_definition"
+        issues=[issues;validate_parameter_shapes(protocol.parameters,"protocol")];
+        for k=1:numel(protocol.acquisitions)
+            issues=[issues;validate_events(protocol.acquisitions(k).events,false)]; %#ok<AGROW>
+            issues=[issues;validate_parameter_scopes(protocol.acquisitions(k))]; %#ok<AGROW>
+            issues=[issues;validate_parameter_shapes( ...
+                protocol.acquisitions(k).parameters,"acquisition")]; %#ok<AGROW>
+        end
+    else
+        issues=validate_events(protocol.events,true);
+        issues=[issues;validate_resolved_parameters(protocol.parameters)];
+    end
 catch exception
-    report=struct("schema_version","2.0.0","passed",false, ...
-        "issues",string(exception.message),"protocol",struct([]));
-    return
+    issues=string(exception.message);
 end
-events=protocol.events;
-required=["pulse_id","condition_id","onset_s","duration_s", ...
-    "target_cell_id","is_null","command_voltage_v","amplitude_fraction"];
-if ~all(ismember(required,string(events.Properties.VariableNames)))
-    issues(end+1)="Canonical pulse columns are missing.";
-else
-    onset=double(events.onset_s); duration=double(events.duration_s);
-    command=double(events.command_voltage_v); fraction=double(events.amplitude_fraction);
-    isNull=logical(events.is_null);
-    if isempty(events), issues(end+1)="Protocol contains no pulses."; end
+
+issues=unique(issues(strlength(issues)>0),"stable");
+report=struct("schema_version","3.0.0","passed",isempty(issues), ...
+    "issues",issues,"protocol",protocol);
+end
+
+function issues=validate_parameter_shapes(parameters,scope)
+issues=strings(0,1);
+metadata=adaptive_optopatch.protocol_parameter_metadata();
+for k=1:numel(metadata)
+    name=string(metadata(k).name);
+    if isfield(parameters,name) && ...
+            (~isnumeric(parameters.(name)) || ~isscalar(parameters.(name)))
+        issues(end+1)=scope+"-level parameter "+name+ ...
+            " must be a scalar. Vectors never create acquisition boundaries; "+ ...
+            "define separate acquisition entries explicitly."; %#ok<AGROW>
+    end
+end
+end
+
+function issues=validate_events(events,resolved)
+issues=strings(0,1); onset=events.onset_s; duration=events.duration_s;
+if isempty(events), issues(end+1)="Every acquisition requires at least one event."; return; end
+if numel(unique(events.pulse_id))~=height(events)
+    issues(end+1)="Pulse IDs must be unique within an acquisition.";
+end
+if any(strlength(strip(events.condition_id))==0)
+    issues(end+1)="Condition IDs must be nonempty.";
+end
+if resolved || all(isfinite(onset))
     if any(~isfinite(onset) | onset<0), issues(end+1)="Pulse onsets must be finite and nonnegative."; end
-    if any(~isfinite(duration) | duration<=0), issues(end+1)="Pulse durations must be finite and positive."; end
-    if any(isfinite(command) & command<0)
-        issues(end+1)="Explicit command voltages must be nonnegative.";
-    end
-    if any(isfinite(fraction) & (fraction<0 | fraction>1))
-        issues(end+1)="Amplitude fractions must lie between zero and one.";
-    end
-    unresolved=~isNull & ~isfinite(command) & ~isfinite(fraction);
-    if any(unresolved), issues(end+1)="Every non-null pulse needs a command voltage or amplitude fraction."; end
-    if any(isNull & ((isfinite(command) & command~=0) | (isfinite(fraction) & fraction~=0)))
-        issues(end+1)="Null pulses must have zero stimulation amplitude.";
-    end
-    if numel(unique(string(events.pulse_id)))~=height(events)
-        issues(end+1)="Pulse IDs must be unique.";
-    end
-    if any(strlength(strip(string(events.condition_id)))==0)
-        issues(end+1)="Condition IDs must be nonempty.";
-    end
-    [sortedOnset,index]=sort(onset); sortedEnd=sortedOnset+duration(index);
-    if numel(sortedOnset)>1 && any(sortedOnset(2:end)<sortedEnd(1:end-1)-1e-12)
+    [sorted,index]=sort(onset); finish=sorted+duration(index);
+    if numel(sorted)>1 && any(sorted(2:end)<finish(1:end-1)-1e-12)
         issues(end+1)="Protocol pulses overlap in time.";
     end
-    finalTime=max(onset+duration,[],"omitmissing");
-    if ~isscalar(protocol.acquisition_duration_s) || ...
-            ~isfinite(protocol.acquisition_duration_s) || ...
-            protocol.acquisition_duration_s<finalTime-1e-12
-        issues(end+1)="Acquisition duration ends before the final pulse.";
+end
+if any(isfinite(duration) & duration<=0)
+    issues(end+1)="Pulse durations must be positive when specified.";
+end
+if resolved
+    nonNull=~events.is_null;
+    if any(strlength(events.target_cell_id(nonNull))==0)
+        issues(end+1)="Resolved pulses require literal target cell IDs.";
     end
-    names=string(events.Properties.VariableNames);
-    for name=["train_id","pulse_in_train","repeat_index"]
-        if ismember(name,names)
-            values=double(events.(name)); present=isfinite(values);
-            if any(values(present)<1 | fix(values(present))~=values(present))
-                issues(end+1)=name+" values must be positive integers."; %#ok<AGROW>
-            end
+    if any(~isfinite(events.command_voltage_v(nonNull)) | ...
+            events.command_voltage_v(nonNull)<=0 | ...
+            events.command_voltage_v(nonNull)>5)
+        issues(end+1)="Resolved non-null command voltages must lie in (0,5] V.";
+    end
+    if any(~isfinite(duration) | duration<=0)
+        issues(end+1)="Resolved pulse durations must be positive and finite.";
+    end
+    if any(~isfinite(events.target_index(nonNull)) | ...
+            events.target_index(nonNull)<1 | ...
+            fix(events.target_index(nonNull))~=events.target_index(nonNull))
+        issues(end+1)="Resolved non-null target indices must be positive integers.";
+    end
+    if any(events.target_index(events.is_null)~=0)
+        issues(end+1)="Resolved null events must use target index zero.";
+    end
+    adjustment=events.blue_mask_adjustment_pixels;
+    if any(~isfinite(adjustment) | fix(adjustment)~=adjustment)
+        issues(end+1)="Resolved Blue DMD-mask adjustments must be finite integers.";
+    end
+end
+end
+
+function issues=validate_resolved_parameters(parameters)
+issues=strings(0,1);
+if ~isfield(parameters,"orange_expansion_pixels") || ...
+        ~isfinite(parameters.orange_expansion_pixels) || ...
+        parameters.orange_expansion_pixels<0 || ...
+        fix(parameters.orange_expansion_pixels)~=parameters.orange_expansion_pixels
+    issues(end+1)="Resolved Orange DMD-mask expansion must be a nonnegative integer.";
+end
+for name=["spiral_radius_um","spiral_density_points_per_volt"]
+    if ~isfield(parameters,name) || ~isfinite(parameters.(name)) || ...
+            parameters.(name)<=0
+        issues(end+1)="Resolved "+replace(name,"_"," ")+ ...
+            " must be positive and finite."; %#ok<AGROW>
+    end
+end
+end
+
+function issues=validate_parameter_scopes(acquisition)
+issues=strings(0,1);
+names=string(acquisition.events.Properties.VariableNames);
+for name=["orange_expansion_pixels","spiral_radius_um", ...
+        "spiral_density_points_per_volt"]
+    if ismember(name,names)
+        values=double(acquisition.events.(name));
+        if any(isfinite(values))
+            issues(end+1)=scope_message(name); %#ok<AGROW>
         end
     end
 end
-report=struct("schema_version","2.0.0","passed",isempty(issues), ...
-    "issues",issues,"protocol",protocol);
+end
+
+function value=scope_message(name)
+labels=struct("orange_expansion_pixels","Orange DMD mask expansion", ...
+    "spiral_radius_um","2P spiral radius", ...
+    "spiral_density_points_per_volt","2P spiral density");
+value=labels.(name)+" cannot vary within one acquisition. "+ ...
+    "Define separate acquisition entries explicitly.";
 end

@@ -56,7 +56,9 @@ else
                 warnings=[warnings;reshape(string({spatial.message}),[],1)]; %#ok<AGROW>
             end
         end
-        if mode=="1p_dmd" && numel(unique(pulseIds))>1
+        defaultAdjustment=double(targets.parameters.blue_mask_adjustment_pixels);
+        if mode=="1p_dmd" && (numel(unique(pulseIds))>1 || ...
+                any(events.blue_mask_adjustment_pixels~=defaultAdjustment))
             try
                 adaptive_optopatch.build_dmd_sequence_plan(validation.protocol,targets);
             catch exception

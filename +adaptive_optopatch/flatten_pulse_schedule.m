@@ -12,21 +12,15 @@ protocol=report.protocol; events=protocol.events;
 if isempty(events)
     error("adaptive_optopatch:EmptyPulseSchedule","The protocol contains no pulses.");
 end
-configured=options.ConfiguredVoltage;
-if ~isfinite(configured) && isfield(protocol,"hardware_command_voltage")
-    configured=double(protocol.hardware_command_voltage);
-end
 command=zeros(height(events),1);
 for k=1:height(events)
     if events.is_null(k)
         command(k)=0;
     elseif isfinite(events.command_voltage_v(k))
         command(k)=events.command_voltage_v(k);
-    elseif isfinite(configured) && isfinite(events.amplitude_fraction(k))
-        command(k)=configured*events.amplitude_fraction(k);
     else
         error("adaptive_optopatch:HardwareAmplitudeRequired", ...
-            "Pulse %s has no resolvable physical command voltage.",string(events.pulse_id(k)));
+            "Resolved pulse %s has no concrete command voltage.",string(events.pulse_id(k)));
     end
 end
 [~,order]=sort(events.onset_s);

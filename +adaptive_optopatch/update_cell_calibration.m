@@ -4,10 +4,6 @@ arguments
     fovState (1,1) struct
     cellId (1,1) string
     options.CommandVoltageV (1,1) double = NaN
-    options.Status (1,1) string {mustBeMember(options.Status, ...
-        ["uncalibrated","good","unreliable","multispike","off_target","excluded"])} = "good"
-    options.StimulationEnabled (1,1) logical = true
-    options.RecordingEnabled (1,1) logical = true
     options.Notes (1,1) string = ""
     options.Acquisition (1,1) string = ""
     options.PulseDurationMs (1,1) double = NaN
@@ -16,19 +12,16 @@ arguments
 end
 ids=string({fovState.cells.cell_id}); index=find(ids==cellId,1);
 if isempty(index), error("adaptive_optopatch:UnknownCellId","Unknown cell ID: %s",cellId); end
-if options.StimulationEnabled && ...
-        (~isfinite(options.CommandVoltageV) || options.CommandVoltageV<=0)
+if isfinite(options.CommandVoltageV) && ...
+        (options.CommandVoltageV<=0 || options.CommandVoltageV>5)
     error("adaptive_optopatch:InvalidCellCalibration", ...
-        "Enabled stimulation requires a positive finite command voltage.");
+        "A stored Blue voltage must be NaN or lie in (0,5] V.");
 end
 oldCalibration=struct([]);
 if isfield(fovState.cells,"blue_calibration")
     oldCalibration=fovState.cells(index).blue_calibration;
 end
-fovState.cells(index).recording_enabled=options.RecordingEnabled;
-fovState.cells(index).stimulation_enabled=options.StimulationEnabled;
 fovState.cells(index).selected_blue_voltage_v=options.CommandVoltageV;
-fovState.cells(index).calibration_status=options.Status;
 fovState.cells(index).calibration_notes=options.Notes;
 fovState.cells(index).calibration_acquisition=options.Acquisition;
 if options.ReplaceCalibrationSnapshot

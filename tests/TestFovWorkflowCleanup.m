@@ -22,7 +22,7 @@ classdef TestFovWorkflowCleanup < matlab.unittest.TestCase
             testCase.verifyEmpty(findall(second.Figure,"Text","Save planning bundle…"));
         end
 
-        function loadsOlderFovWithoutNewControlFields(testCase)
+        function rejectsObsoleteFovSchema(testCase)
             root=tempname; mkdir(root);
             cleanup=onCleanup(@()remove_if_present(root));
             [source,~]=launch_simulated_adaptive_optopatch_gui("Visible","off","RunRoot",root);
@@ -30,24 +30,12 @@ classdef TestFovWorkflowCleanup < matlab.unittest.TestCase
             source.setReferenceData(ones(70,90),test_info(root),test_polygon());
             source.setPlanParameter("microns_per_pixel",0.44);
             current=source.saveCurrentFov(fullfile(root,"current.mat"));
-            oldFields=["stimulation_mode","microns_per_pixel", ...
-                "spiral_radius_um","spiral_density_points_per_volt"];
-            fov_state=rmfield(current,cellstr(oldFields));
+            fov_state=current;
+            fov_state.schema_version="1.0.0";
             oldPath=fullfile(root,"old_fov.mat"); save(oldPath,"fov_state");
 
-            [app,~]=launch_simulated_adaptive_optopatch_gui("Visible","off","RunRoot",root);
-            appCleanup=onCleanup(@()delete(app));
-            app.setPlanParameter("mode","1p_dmd");
-            app.setPlanParameter("spiral_radius_um",8);
-            app.setPlanParameter("spiral_density_points_per_volt",13);
-            app.loadFov(oldPath);
-            app.setPulseProtocol(adaptive_optopatch.generate_screen_protocol( ...
-                "PulseCount",1,"ModulatorVoltage",1));
-            plan=app.buildCurrentPlan();
-            testCase.verifyEqual(plan.session.parameters.stimulation_mode,"1p_dmd");
-            testCase.verifyEqual(plan.session.parameters.microns_per_pixel,0.44);
-            testCase.verifyEqual(plan.session.parameters.spiral_radius_um,8);
-            testCase.verifyEqual(plan.session.parameters.spiral_density_points_per_volt,13);
+            testCase.verifyError(@()adaptive_optopatch.load_fov_state(oldPath), ...
+                "adaptive_optopatch:ObsoleteFovSchema");
         end
 
         function unifiedSnapshotLoadDoesNotRestoreLatestPlan(testCase)
@@ -108,7 +96,7 @@ classdef TestFovWorkflowCleanup < matlab.unittest.TestCase
             state=app.setCellEligibility("cell_001","StimulationEnabled",true);
             testCase.verifyFalse(state.cells(1).recording_enabled);
             testCase.verifyTrue(state.cells(1).stimulation_enabled);
-            app.setCellCalibration("cell_001",1,"good",true);
+            app.setCellCalibration("cell_001",1,"manual selection");
             state=app.saveCurrentFov(fullfile(root,"eligibility_fov.mat"));
             testCase.verifyFalse(state.cells(1).recording_enabled);
             testCase.verifyTrue(state.cells(1).stimulation_enabled);
@@ -130,10 +118,10 @@ classdef TestFovWorkflowCleanup < matlab.unittest.TestCase
             appCleanup=onCleanup(@()delete(app));
             app.setReferenceData(ones(70,90),test_info(root),test_polygon());
             tables=findall(app.Figure,"Type","uitable");
-            qc=tables(arrayfun(@(value)numel(value.ColumnName)==10,tables));
+            qc=tables(arrayfun(@(value)numel(value.ColumnName)==9,tables));
             testCase.verifyNumElements(qc,1);
             testCase.verifyEqual(logical(qc.ColumnEditable), ...
-                [false false false false false false true true false false]);
+                [false false false false false false true true false]);
             callback=qc.CellEditCallback;
             callback(qc,struct("Indices",[1 8],"NewData",false));
             state=app.saveCurrentFov(fullfile(root,"table_edit_fov.mat"));

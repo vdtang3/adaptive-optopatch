@@ -178,3 +178,23 @@ replacing a Blue calibration record. The staged standalone 2P modes remain
 available, while the unified path uses a standard mode that preserves motion,
 calibration, waveform, camera, routing, and device preflight without the removed
 acknowledgement steps.
+
+## 2026-09-09 — Schema 3 separates intent from frozen acquisitions
+
+Pulse protocols now contain explicit acquisition definitions, a target policy,
+and an explicit ordered/randomized rule. Reusable definitions never name ROI
+IDs. A single generic resolver combines event and acquisition overrides with
+the current FOV cells and GUI defaults, validates parameter scope, realizes all
+target ordering and timing jitter, and emits literal per-acquisition schedules
+with value provenance. Acquisition count is never inferred from parameter
+vectors. `each_stimulation_enabled_cell` expands each explicit definition once
+per selected cell; `multi_target_continuous` resolves a multi-cell event stream
+inside each explicit definition.
+
+This is an intentional pre-production schema break: protocol schema 3 and FOV
+schema 2 reject obsolete artifacts rather than migrating them. Categorical
+Blue calibration status and the coupling between Stim eligibility and selected
+voltage were removed. Record, Stim, and Blue voltage are independent; voltage
+is required only when generic parameter resolution still needs it. Frozen runs
+archive both the source definition and resolved acquisition schedules, and
+runners execute only the latter.

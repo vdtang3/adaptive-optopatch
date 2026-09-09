@@ -115,13 +115,12 @@ classdef ReferencePreparationApp < handle
             app.planChanged();
         end
 
-        function setCellCalibration(app,cellId,commandVoltageV,status,stimulationEnabled)
+        function setCellCalibration(app,cellId,commandVoltageV,notes)
             arguments
                 app
                 cellId (1,1) string
                 commandVoltageV (1,1) double = NaN
-                status (1,1) string = "good"
-                stimulationEnabled (1,1) logical = true
+                notes (1,1) string = ""
             end
             fovState=app.currentFovState();
             pulseDurationMs=app.currentPulseDurationMs();
@@ -131,11 +130,8 @@ classdef ReferencePreparationApp < handle
             if isfield(fovState.cells,"blue_calibration")
                 replaceSnapshot=isempty(fovState.cells(index).blue_calibration);
             end
-            recordingEnabled=logical(fovState.cells(index).recording_enabled);
             fovState=adaptive_optopatch.update_cell_calibration(fovState,cellId, ...
-                "CommandVoltageV",commandVoltageV,"Status",status, ...
-                "StimulationEnabled",stimulationEnabled, ...
-                "RecordingEnabled",recordingEnabled, ...
+                "CommandVoltageV",commandVoltageV,"Notes",notes, ...
                 "PulseDurationMs",pulseDurationMs,"ObisPowerW",obisPowerW, ...
                 "ReplaceCalibrationSnapshot",replaceSnapshot);
             app.CurrentFovState=fovState;
@@ -274,7 +270,7 @@ classdef ReferencePreparationApp < handle
             app.DarkIntervalMax = uieditfield(controls,"numeric","Value",55,"Limits",[eps Inf]);
             uilabel(controls,"Text","Pulse command (V)", ...
                 "Tooltip","2P mod for spirals; mod488 for 1P DMD stimulation.");
-            app.ModulatorVoltage = uieditfield(controls,"numeric","Value",0,"Limits",[0 5]);
+            app.ModulatorVoltage = uieditfield(controls,"numeric","Value",1,"Limits",[eps 5]);
             uilabel(controls,"Text","Pre / post delay (ms)");
             delayGrid=uigridlayout(controls,[1 2]); delayGrid.Padding=0;
             app.PreDelay=uieditfield(delayGrid,"numeric","Value",100,"Limits",[0 Inf]);
@@ -305,8 +301,8 @@ classdef ReferencePreparationApp < handle
             app.RoiList = uilistbox(side,"Items",strings(1,0), ...
                 "ValueChangedFcn",@(~,~)app.highlightSelection());
             app.QcTable = uitable(side,"ColumnName", ...
-                ["Cell","Area px","X","Y","Edge px","QC","Record","Stim","Blue V","Calibration"], ...
-                "ColumnEditable",[false false false false false false true true false false], ...
+                ["Cell","Area px","X","Y","Edge px","QC","Record","Stim","Blue V"], ...
+                "ColumnEditable",[false false false false false false true true false], ...
                 "CellEditCallback",@(source,event)app.qcCellEdited(source,event));
             uibutton(side,"Text","Set selected Blue calibration…", ...
                 "ButtonPushedFcn",@(~,~)app.chooseCellCalibration());
@@ -408,7 +404,7 @@ classdef ReferencePreparationApp < handle
             for k=1:numel(app.RoiObjects)
                 if isvalid(app.RoiObjects{k}), delete(app.RoiObjects{k}); end
             end
-            app.RoiObjects={}; app.CellIds=strings(0,1); app.RoiList.Items=strings(1,0); app.QcTable.Data=cell(0,10);
+            app.RoiObjects={}; app.CellIds=strings(0,1); app.RoiList.Items=strings(1,0); app.QcTable.Data=cell(0,9);
             app.RoisVisible=true; app.updateRoiVisibility();
             app.deletePreview();
         end
@@ -436,7 +432,7 @@ classdef ReferencePreparationApp < handle
         function updateQc(app)
             n=numel(app.RoiObjects);
             if numel(app.CellIds)~=n, app.CellIds=compose("cell_%03d",(1:n)'); end
-            items=app.CellIds; data=cell(n,10);
+            items=app.CellIds; data=cell(n,9);
             if n==0
                 app.RoiList.Items=strings(1,0); app.QcTable.Data=data;
                 app.planChanged(); return
@@ -456,8 +452,7 @@ classdef ReferencePreparationApp < handle
                 state=cell_state_for_id(app.CurrentFovState,items(k));
                 data(k,:)={char(items(k)),area,round(cx,1),round(cy,1),edge, ...
                     ternary(pass,'PASS','CHECK'),state.recording_enabled, ...
-                    state.stimulation_enabled,state.selected_blue_voltage_v, ...
-                    char(state.calibration_status)};
+                    state.stimulation_enabled,state.selected_blue_voltage_v};
             end
             previous=string(app.RoiList.Value); app.RoiList.Items=reshape(items,1,[]);
             if ~isempty(previous) && any(strcmp(items,previous)), app.RoiList.Value=previous; end
@@ -468,14 +463,29 @@ classdef ReferencePreparationApp < handle
         function [reference,targets,manifest]=buildArtifacts(app)
             [reference,targets]=app.buildSpatialArtifacts( ...
                 "PulseDurationMs",app.PulseDuration.Value);
-            manifest=adaptive_optopatch.build_screen_manifest(reference,targets, ...
-                "Mode",string(app.Mode.Value),"Repeats",app.Repeats.Value, ...
-                "NullFraction",0, ...
+            definition=adaptive_optopatch.generate_screen_protocol( ...
                 "PulseCount",app.PulseCount.Value, ...
                 "PulseDurationMs",app.PulseDuration.Value, ...
                 "DarkIntervalMs",[app.DarkIntervalMin.Value app.DarkIntervalMax.Value], ...
                 "PreDelayMs",app.PreDelay.Value,"PostDelayMs",app.PostDelay.Value, ...
-                "ModulatorVoltage",app.ModulatorVoltage.Value);
+                "RandomSeed",1);
+            template=definition.acquisitions;
+            definition.acquisitions=repmat(template,app.Repeats.Value,1);
+            for repeat=1:app.Repeats.Value
+                definition.acquisitions(repeat).acquisition_id=compose( ...
+                    "screen_repeat_%03d",repeat);
+            end
+            fovState=app.currentFovState();
+            reference=fovState.reference;
+            defaults=struct("command_voltage_v",app.ModulatorVoltage.Value, ...
+                "pulse_duration_s",app.PulseDuration.Value/1000, ...
+                "blue_mask_adjustment_pixels",app.DmdErosion.Value, ...
+                "orange_expansion_pixels",app.OrangeExpansion.Value, ...
+                "spiral_radius_um",app.SpiralRadius.Value, ...
+                "spiral_density_points_per_volt",app.SpiralDensity.Value);
+            manifest=adaptive_optopatch.build_manifest(reference,targets,definition, ...
+                "Mode",string(app.Mode.Value),"FovState",fovState, ...
+                "GuiDefaults",defaults,"OutputPrefix","connectivity_screen");
         end
 
         function [reference,targets]=buildSpatialArtifacts(app,options)
@@ -763,12 +773,11 @@ classdef ReferencePreparationApp < handle
                 app.setStatus("Select a cell before storing a Blue calibration."); return
             end
             answer=inputdlg({"Chosen Blue command voltage (V):", ...
-                "Status (good, unreliable, multispike, off_target, excluded):"}, ...
-                "Blue calibration for "+cellId,[1 55],{"1","good"});
+                "Optional notes:"},"Blue calibration for "+cellId,[1 55],{"1",""});
             if isempty(answer), return; end
-            voltage=str2double(answer{1}); status=string(strip(answer{2}));
+            voltage=str2double(answer{1}); notes=string(strip(answer{2}));
             try
-                app.setCellCalibration(cellId,voltage,status,status=="good");
+                app.setCellCalibration(cellId,voltage,notes);
                 app.setStatus("Stored Blue calibration for "+cellId+". Save the FOV to persist it.");
             catch exception
                 app.showError(exception);
@@ -848,7 +857,9 @@ classdef ReferencePreparationApp < handle
         function setStatus(app,message), app.Status.Value=reshape(splitlines(string(message)),[],1); end
         function showError(app,exception)
             app.setStatus("ERROR: "+string(exception.message));
-            uialert(app.Figure,exception.message,"Adaptive Optopatch error","Icon","error");
+            if app.Figure.Visible=="on"
+                uialert(app.Figure,exception.message,"Adaptive Optopatch error","Icon","error");
+            end
         end
 
         function planChanged(~)
@@ -907,7 +918,7 @@ end
 
 function cellState=cell_state_for_id(fovState,cellId)
 cellState=struct("recording_enabled",true,"stimulation_enabled",true, ...
-    "selected_blue_voltage_v",NaN,"calibration_status","uncalibrated");
+    "selected_blue_voltage_v",NaN);
 if isempty(fovState) || ~isfield(fovState,"cells"), return; end
 ids=string({fovState.cells.cell_id}); index=find(ids==cellId,1);
 if isempty(index), return; end
@@ -925,7 +936,7 @@ function reference=merge_reference_cell_state(reference,previous)
 if isempty(previous) || ~isfield(previous,"cells"), return; end
 oldIds=string({previous.cells.cell_id});
 stateFields=["recording_enabled","stimulation_enabled", ...
-    "selected_blue_voltage_v","calibration_status", ...
+    "selected_blue_voltage_v", ...
     "calibration_notes","calibration_acquisition", ...
     "blue_calibration","blue_calibration_history"];
 for k=1:numel(reference.cells)

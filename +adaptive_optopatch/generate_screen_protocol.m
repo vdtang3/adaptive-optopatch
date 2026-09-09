@@ -1,64 +1,50 @@
-function protocol = generate_screen_protocol(options)
-%GENERATE_SCREEN_PROTOCOL Create the realized test-pulse schedule.
+function protocol=generate_screen_protocol(options)
+%GENERATE_SCREEN_PROTOCOL Create an explicit single-acquisition definition.
 arguments
     options.PulseCount (1,1) double {mustBePositive,mustBeInteger} = 200
     options.PulseDurationMs (1,1) double {mustBePositive} = 5
-    options.DarkIntervalMs (1,2) double {mustBePositive} = [45 55]
+    options.DarkIntervalMs (1,2) double {mustBeNonnegative} = [45 55]
     options.PreDelayMs (1,1) double {mustBeNonnegative} = 100
     options.PostDelayMs (1,1) double {mustBeNonnegative} = 100
-    options.ModulatorVoltage (1,1) double {mustBeGreaterThanOrEqual(options.ModulatorVoltage,0),mustBeLessThanOrEqual(options.ModulatorVoltage,5)} = 0
+    options.ModulatorVoltage (1,1) double = NaN
+    options.EventOrder (1,1) string {mustBeMember(options.EventOrder,["ordered","randomized"])} = "ordered"
     options.RandomSeed (1,1) double {mustBeNonnegative,mustBeInteger} = 1
 end
-if options.DarkIntervalMs(2) < options.DarkIntervalMs(1)
-    error("adaptive_optopatch:InvalidDarkInterval", ...
-        "DarkIntervalMs must be [minimum maximum].");
+if options.DarkIntervalMs(2)<options.DarkIntervalMs(1)
+    error("adaptive_optopatch:InvalidDarkInterval","DarkIntervalMs must be [minimum maximum].");
 end
-
-rng(options.RandomSeed,"twister");
-nGaps=options.PulseCount-1;
-darkMs=options.DarkIntervalMs(1) + ...
-    diff(options.DarkIntervalMs)*rand(nGaps,1);
-durationMs=repmat(options.PulseDurationMs,options.PulseCount,1);
-onsetMs=zeros(options.PulseCount,1);
-onsetMs(1)=options.PreDelayMs;
+if isfinite(options.ModulatorVoltage) && ...
+        (options.ModulatorVoltage<=0 || options.ModulatorVoltage>5)
+    error("adaptive_optopatch:InvalidCommandVoltage", ...
+        "An explicit ModulatorVoltage must be in (0,5] V.");
+end
+stream=RandStream("mt19937ar","Seed",options.RandomSeed);
+gaps=options.DarkIntervalMs(1)+diff(options.DarkIntervalMs)* ...
+    rand(stream,max(0,options.PulseCount-1),1);
+onsetMs=zeros(options.PulseCount,1); onsetMs(1)=options.PreDelayMs;
 for k=2:options.PulseCount
-    onsetMs(k)=onsetMs(k-1)+durationMs(k-1)+darkMs(k-1);
+    onsetMs(k)=onsetMs(k-1)+options.PulseDurationMs+gaps(k-1);
 end
-offsetMs=onsetMs+durationMs;
-pulseId=(1:options.PulseCount)';
-conditionId=repmat("pulse",options.PulseCount,1);
-targetCellId=repmat("",options.PulseCount,1);
-isNull=false(options.PulseCount,1);
-commandVoltage=nan(options.PulseCount,1);
-amplitudeFraction=ones(options.PulseCount,1);
-if options.ModulatorVoltage>0
-    commandVoltage(:)=options.ModulatorVoltage;
-end
-events=table(pulseId,conditionId,onsetMs/1000,durationMs/1000, ...
-    targetCellId,isNull,commandVoltage,amplitudeFraction,offsetMs/1000, ...
+n=options.PulseCount; pulseId=(1:n)';
+conditionId=repmat("pulse",n,1); onsetS=onsetMs/1000;
+durationS=repmat(options.PulseDurationMs/1000,n,1); isNull=false(n,1);
+commandVoltageV=repmat(options.ModulatorVoltage,n,1);
+blueMaskAdjustmentPixels=nan(n,1);
+events=table(pulseId,conditionId,onsetS,durationS,isNull, ...
+    commandVoltageV,blueMaskAdjustmentPixels, ...
     'VariableNames',{'pulse_id','condition_id','onset_s','duration_s', ...
-    'target_cell_id','is_null','command_voltage_v','amplitude_fraction','offset_s'});
-
-protocol=struct;
-protocol.schema_version="2.0.0";
-protocol.protocol_id="connectivity_screen_seed_"+options.RandomSeed;
-protocol.protocol_type="connectivity_screen";
-protocol.created_at=string(datetime("now","TimeZone","local"));
-protocol.random_seed=options.RandomSeed;
-protocol.pulse_count=options.PulseCount;
-protocol.pulse_duration_ms=options.PulseDurationMs;
-protocol.dark_interval_range_ms=options.DarkIntervalMs;
-protocol.realized_dark_intervals_ms=darkMs;
-protocol.pre_delay_ms=options.PreDelayMs;
-protocol.post_delay_ms=options.PostDelayMs;
-protocol.modulator_voltage=options.ModulatorVoltage;
-% Retain the generator's configured physical level as the fallback used by
-% non-GUI callers. A finite per-pulse command or explicit runner override
-% still takes precedence.
-protocol.hardware_command_voltage=options.ModulatorVoltage;
-protocol.interval_semantics="pulse_end_to_next_pulse_start";
-protocol.events=events;
-protocol.acquisition_duration_s=(offsetMs(end)+options.PostDelayMs)/1000;
-protocol.total_light_on_s=sum(durationMs)/1000;
+    'is_null','command_voltage_v','blue_mask_adjustment_pixels'});
+acquisition=struct("acquisition_id","screen", ...
+    "events",events,"parameters",struct, ...
+    "event_order_realized",true,"target_repetitions",1, ...
+    "acquisition_duration_s",max(onsetS+durationS)+options.PostDelayMs/1000);
+protocol=struct("schema_version","3.0.0", ...
+    "artifact_type","experiment_definition", ...
+    "protocol_id","connectivity_screen_seed_"+options.RandomSeed, ...
+    "protocol_type","connectivity_screen", ...
+    "created_at",string(datetime("now","TimeZone","local")), ...
+    "target_policy","each_stimulation_enabled_cell", ...
+    "event_order",options.EventOrder,"random_seed",options.RandomSeed, ...
+    "parameters",struct,"acquisitions",acquisition);
 protocol=adaptive_optopatch.normalize_protocol(protocol);
 end

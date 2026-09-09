@@ -12,7 +12,6 @@ classdef RampReviewApp < handle
         DecisionAppliedFcn
         ObisPowerW double = NaN
         VoltageField
-        StatusDropdown
         NotesArea
     end
 
@@ -46,19 +45,15 @@ classdef RampReviewApp < handle
             app.buildUi(options.Visible);
         end
 
-        function fovState=applyDecision(app,voltage,status,notes)
+        function fovState=applyDecision(app,voltage,notes)
             arguments
                 app
                 voltage (1,1) double
-                status (1,1) string {mustBeMember(status, ...
-                    ["good","unreliable","multispike","off_target","excluded"])}
                 notes (1,1) string = ""
             end
             durations=1000*app.Protocol.events.duration_s(~app.Protocol.events.is_null);
-            stimulationEnabled=status~="excluded";
             app.UpdatedFovState=adaptive_optopatch.update_cell_calibration( ...
                 app.UpdatedFovState,app.TargetCellId,"CommandVoltageV",voltage, ...
-                "Status",status,"StimulationEnabled",stimulationEnabled, ...
                 "Notes",notes,"Acquisition",app.ExperimentDirectory, ...
                 "PulseDurationMs",durations(1),"ObisPowerW",app.ObisPowerW);
             if ~isempty(app.DecisionAppliedFcn)
@@ -123,19 +118,16 @@ classdef RampReviewApp < handle
                 note.Layout.Row=2; note.Layout.Column=2;
             end
 
-            controls=uigridlayout(root,[2 6]); controls.Layout.Row=3; controls.Layout.Column=[1 2];
-            controls.RowHeight={28,"1x"}; controls.ColumnWidth={120,100,70,140,90,"1x"};
+            controls=uigridlayout(root,[2 5]); controls.Layout.Row=3; controls.Layout.Column=[1 2];
+            controls.RowHeight={28,"1x"}; controls.ColumnWidth={120,100,120,90,"1x"};
             uilabel(controls,"Text","Chosen voltage (V)");
             app.VoltageField=uieditfield(controls,"numeric","Value",levels(1), ...
                 "Limits",[eps 5]);
-            uilabel(controls,"Text","Status");
-            app.StatusDropdown=uidropdown(controls,"Items", ...
-                ["good","unreliable","multispike","off_target","excluded"],"Value","good");
             uibutton(controls,"Text","Save decision", ...
                 "ButtonPushedFcn",@(~,~)app.saveFromControls());
             uilabel(controls,"Text","The operator's decision is authoritative; plots are review aids.");
             notesLabel=uilabel(controls,"Text","Notes"); notesLabel.Layout.Row=2;
-            app.NotesArea=uitextarea(controls); app.NotesArea.Layout.Row=2; app.NotesArea.Layout.Column=[2 6];
+            app.NotesArea=uitextarea(controls); app.NotesArea.Layout.Row=2; app.NotesArea.Layout.Column=[2 5];
         end
 
         function [relativeMs,aligned,targetIndex]=alignedTraces(app)
@@ -158,7 +150,7 @@ classdef RampReviewApp < handle
 
         function saveFromControls(app)
             notes=strjoin(string(app.NotesArea.Value),newline);
-            app.applyDecision(app.VoltageField.Value,string(app.StatusDropdown.Value),notes);
+            app.applyDecision(app.VoltageField.Value,notes);
             app.Figure.Name="Blue ramp review — saved "+app.TargetCellId;
         end
     end

@@ -9,6 +9,10 @@ required=["fov_id","reference","canonical_roi_masks","cells", ...
 if ~all(isfield(fovState,required))
     error("adaptive_optopatch:InvalidFovState","FOV state is missing required fields.");
 end
+if ~isfield(fovState,"schema_version") || string(fovState.schema_version)~="2.0.0"
+    error("adaptive_optopatch:ObsoleteFovSchema", ...
+        "This artifact uses an obsolete Adaptive Optopatch FOV schema. Regenerate it with the current package.");
+end
 if numel(unique(string({fovState.cells.cell_id})))~=numel(fovState.cells)
     error("adaptive_optopatch:DuplicateCellIds","FOV cell IDs must be unique.");
 end

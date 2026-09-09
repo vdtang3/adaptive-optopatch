@@ -46,15 +46,9 @@ for i = 1:nCells
     if options.OrangeExpansionPixels>0
         orangeMask=imdilate(orangeMask,strel("disk",options.OrangeExpansionPixels,0));
     end
-    mask=canonicalMask;
-    if options.BlueMaskAdjustmentPixels < 0
-        mask = imerode(mask, strel("disk", abs(options.BlueMaskAdjustmentPixels), 0));
-        if ~any(mask,"all")
-            mask = canonicalMask;
-        end
-    elseif options.BlueMaskAdjustmentPixels > 0
-        mask = imdilate(mask,strel("disk",options.BlueMaskAdjustmentPixels,0));
-    end
+    mask=adaptive_optopatch.apply_blue_mask_adjustment(canonicalMask, ...
+        options.BlueMaskAdjustmentPixels,"Context", ...
+        sprintf("cell %s",reference.cells(i).cell_id));
     otherIndex=setdiff(1:nCells,i);
     if isempty(otherIndex), otherRois=false(reference.image_size);
     else, otherRois=any(reference.roi_masks(:,:,otherIndex),3); end

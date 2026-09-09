@@ -54,11 +54,9 @@ if isfield(fovState,"blue_mask_adjustment_pixels")
     adjustment=double(fovState.blue_mask_adjustment_pixels);
 end
 blueMask=mask;
-if isfinite(adjustment) && adjustment<0
-    candidate=imerode(mask,strel("disk",abs(adjustment),0));
-    if any(candidate,"all"), blueMask=candidate; end
-elseif isfinite(adjustment) && adjustment>0
-    blueMask=imdilate(mask,strel("disk",adjustment,0));
+if isfinite(adjustment) && adjustment~=0
+    blueMask=adaptive_optopatch.apply_blue_mask_adjustment(mask,adjustment, ...
+        "Context",sprintf("cell %s calibration snapshot",fovState.cells(index).cell_id));
 end
 snapshot=struct("selected_voltage_v",double(voltage), ...
     "pulse_duration_ms",double(pulseDurationMs), ...

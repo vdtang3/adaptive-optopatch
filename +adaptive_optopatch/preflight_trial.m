@@ -46,9 +46,12 @@ else
             elseif mode=="1p_dmd"
                 maskIssue=blue_mask_issue(targets,idx,id,events);
                 if maskIssue~="", issues(end+1)=maskIssue; end %#ok<AGROW>
-            elseif mode=="2p_spiral" && ~target_qc_pass(targets.targets(idx),mode)
-                issues(end+1)="Target did not pass 2P execution QC: "+id; %#ok<AGROW>
             end
+            % 2P edge-proximity and parking-point QC (spiral_qc_pass) are
+            % nonblocking advisories, not execution gates: they do not
+            % reflect a genuine physical/hardware impossibility. Real
+            % scanner/calibration limits are enforced elsewhere (e.g.
+            % validate_2p_calibration_coverage, build_2p_trial_waveforms).
         end
         if mode=="1p_dmd"
             spatial=adaptive_optopatch.collect_blue_spatial_advisories(targets,pulseIds);
@@ -99,13 +102,5 @@ for k=selected
     catch exception
         issue=string(exception.message); return
     end
-end
-end
-
-function passed=target_qc_pass(target,mode)
-if mode=="2p_spiral" && isfield(target,"spiral_qc_pass")
-    passed=logical(target.spiral_qc_pass);
-else
-    passed=logical(target.qc_pass);
 end
 end

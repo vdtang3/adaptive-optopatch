@@ -17,7 +17,7 @@ if string(definition.artifact_type)~="experiment_definition"
         "Plan resolution requires a schema-3 experiment_definition.");
 end
 
-[cellIndices,targetIndices]=selected_targets(fovState,targets,options.Mode);
+[cellIndices,targetIndices]=selected_targets(fovState,targets);
 if isempty(cellIndices)
     error("adaptive_optopatch:NoAcceptedTargets", ...
         "No stimulation-enabled targets are executable for %s.",options.Mode);
@@ -300,28 +300,33 @@ events.onset_s=onsets;
 events.realized_dark_interval_s=[gaps;NaN];
 end
 
-function [cellIndices,targetIndices]=selected_targets(fovState,targets,mode)
+function [cellIndices,targetIndices]=selected_targets(fovState,targets)
+% Stim selection is authoritative for both 1P and 2P: a stimulation-
+% enabled cell with matching target geometry always participates in
+% resolution. Advisory QC (spiral_qc_pass, edge_flag, parking QC) never
+% determines acquisition count; true physical impossibility is detected
+% explicitly downstream (validate_blue_mask_executability for 1P; the
+% appropriate resolved/preflight/hardware validation for 2P) so a
+% requested target either participates or fails explicitly, never
+% silently disappears.
 cells=fovState.cells; targetIds=string({targets.targets.cell_id});
 cellIndices=zeros(0,1); targetIndices=zeros(0,1);
 for k=1:numel(cells)
     if ~logical(cells(k).stimulation_enabled), continue; end
-    targetIndex=find(targetIds==string(cells(k).cell_id),1);
-    if isempty(targetIndex), continue; end
-    if mode=="1p_dmd"
-        % 1P Blue executability depends on the resolved per-event mask
-        % adjustment, not any bundle-level default, so a stimulation-
-        % enabled target is never excluded here. An event whose resolved
-        % adjustment cannot produce a physical mask fails explicitly in
-        % validate_blue_mask_executability below instead of being silently
-        % dropped from selection.
-        executable=true;
-    else
-        executable=logical(targets.targets(targetIndex).spiral_qc_pass);
+    cellId=string(cells(k).cell_id);
+    matches=find(targetIds==cellId);
+    if isempty(matches)
+        error("adaptive_optopatch:MissingTargetGeometry", ...
+            "Stimulation-enabled cell %s has no matching target geometry " + ...
+            "in the target bundle.",cellId);
+    elseif numel(matches)>1
+        error("adaptive_optopatch:AmbiguousTargetGeometry", ...
+            "Stimulation-enabled cell %s matches %d target entries; " + ...
+            "its target geometry cannot be unambiguously resolved.", ...
+            cellId,numel(matches));
     end
-    if executable
-        cellIndices(end+1,1)=k; %#ok<AGROW>
-        targetIndices(end+1,1)=targetIndex; %#ok<AGROW>
-    end
+    cellIndices(end+1,1)=k; %#ok<AGROW>
+    targetIndices(end+1,1)=matches; %#ok<AGROW>
 end
 end
 

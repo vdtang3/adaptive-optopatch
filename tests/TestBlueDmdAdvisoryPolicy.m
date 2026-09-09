@@ -47,15 +47,23 @@ classdef TestBlueDmdAdvisoryPolicy < matlab.unittest.TestCase
                 "adaptive_optopatch:InvalidCommandVoltage");
         end
 
-        function twoPhotonExecutionQcRemainsStrict(testCase)
+        function twoPhotonEdgeAndParkingQcAreAdvisoryOnly(testCase)
+            % Edge proximity and parking-point QC are nonblocking
+            % advisories for 2P, not execution gates: a stimulation-
+            % enabled target with matching geometry must still be
+            % resolved and preflighted successfully even when
+            % spiral_qc_pass is false for these reasons.
             [reference,targets,fovState]=blue_case(true,true);
             fovState.cells(2).stimulation_enabled=false;
             testCase.verifyFalse(targets.targets(1).spiral_qc_pass);
-            testCase.verifyError(@()adaptive_optopatch.build_manifest( ...
+            manifest=adaptive_optopatch.build_manifest( ...
                 reference,targets,adaptive_optopatch.generate_screen_protocol( ...
                 "PulseCount",1,"ModulatorVoltage",1),"Mode","2p_spiral", ...
-                "FovState",fovState,"GuiDefaults",gui_defaults()), ...
-                "adaptive_optopatch:NoAcceptedTargets");
+                "FovState",fovState,"GuiDefaults",gui_defaults());
+            testCase.verifyTrue(any(manifest.trials.target_cell_id=="cell_001"));
+            preflight=adaptive_optopatch.preflight_trial(targets,manifest.trials(1,:), ...
+                "RequireConfirmedLiveProtocol",false);
+            testCase.verifyTrue(preflight.passed);
         end
     end
 end

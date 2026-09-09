@@ -21,6 +21,7 @@ arguments
     options.TestPulseCount (1,1) double {mustBePositive,mustBeInteger} = 1
     options.AllowCalibrationExtrapolation (1,1) logical = false
     options.AllowCameraRateOverride (1,1) logical = false
+    options.StopRequestedFcn = []
 end
 bundleValidation=adaptive_optopatch.validate_2p_planning_bundle(targets);
 if ~bundleValidation.passed
@@ -171,6 +172,9 @@ for k=1:n
         run.trials.acquisition_status(k)="completed";
         run.trials.error_message(k)="";
         completedThisCall=completedThisCall+1; save_checkpoint();
+        if ~isempty(options.StopRequestedFcn) && logical(options.StopRequestedFcn())
+            break
+        end
     catch exception
         hardware.modulator.level=profile.modulator.dark_v;
         run.trials.acquisition_status(k)="failed";

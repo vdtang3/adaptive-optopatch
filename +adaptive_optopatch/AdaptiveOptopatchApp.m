@@ -645,7 +645,8 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                     "MaximumVelocityVPerS",frozenControls.maximum_velocity_v_per_s, ...
                     "MaximumAccelerationVPerS2",frozenControls.maximum_acceleration_v_per_s2, ...
                     "AllowCalibrationExtrapolation",frozenControls.allow_calibration_extrapolation, ...
-                    "AllowCameraRateOverride",frozenControls.allow_camera_rate_override);
+                    "AllowCameraRateOverride",frozenControls.allow_camera_rate_override, ...
+                    "StopRequestedFcn",@()app.StopRequested);
             end
             app.LastRun=run;
             app.refreshTrialTable(run.trials);
@@ -654,6 +655,8 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
 
         function finishRunning(app)
             app.setControlsLocked(false);
+            app.StopRequested=false;
+            app.StopButton.Text="Stop after current";
             if app.PlanState=="RUNNING", app.PlanState="FROZEN"; end
             app.updateStateDisplay();
         end

@@ -1053,6 +1053,69 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyTrue(feedback.galvo_feedback.passed);
         end
 
+        function runsAllSimulatedTwoPhotonAcquisitionsWithoutStopRequest(testCase)
+            [trials,targets,sim]=make_multi_trial_2p_fixture(2,tempname);
+            cleanup=onCleanup(@()remove_if_present(sim.SimulationOutputRoot)); %#ok<NASGU>
+            run=adaptive_optopatch.run_2p_manifest( ...
+                struct("trials",trials),targets,sim,"ReleaseLevel","standard");
+            testCase.verifyEqual(run.trials.acquisition_status, ...
+                repmat("completed",2,1));
+        end
+
+        function stopsTwoPhotonManifestAfterCurrentAcquisitionAndResumes(testCase)
+            outputDirectory=tempname; mkdir(outputDirectory);
+            cleanup=onCleanup(@()remove_if_present(outputDirectory)); %#ok<NASGU>
+            [trials,targets,sim]=make_multi_trial_2p_fixture(3,tempname);
+            cleanup2=onCleanup(@()remove_if_present(sim.SimulationOutputRoot)); %#ok<NASGU>
+            stopRequested=@()true;
+            run=adaptive_optopatch.run_2p_manifest( ...
+                struct("trials",trials),targets,sim,"ReleaseLevel","standard", ...
+                "OutputDirectory",outputDirectory,"StopRequestedFcn",stopRequested);
+            testCase.verifyEqual(run.trials.acquisition_status(1),"completed");
+            testCase.verifyEqual(run.trials.acquisition_status(2:3), ...
+                repmat("planned",2,1));
+            testCase.verifyEqual(run.trials.pulse_schedule(2:3), ...
+                trials.pulse_schedule(2:3));
+
+            resumed=adaptive_optopatch.run_2p_manifest( ...
+                struct("trials",trials),targets,sim,"ReleaseLevel","standard", ...
+                "OutputDirectory",outputDirectory,"Resume",true);
+            testCase.verifyEqual(resumed.trials.acquisition_status, ...
+                repmat("completed",3,1));
+        end
+
+        function threadsUnifiedGuiStopRequestIntoTwoPhotonRunner(testCase)
+            root=tempname; mkdir(root);
+            cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
+            [app,sim]=launch_simulated_adaptive_optopatch_gui( ...
+                "Visible","off","RunRoot",root); %#ok<ASGLU>
+            appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
+            rois={[40 30;60 30;60 50;40 50], ...
+                [40 55;60 55;60 75;40 75]};
+            app.setReferenceData(ones(80,100),unified_test_info(root),rois);
+            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1);
+            app.setPulseProtocol(protocol);
+            testCase.verifyEqual(unique( ...
+                string(app.buildCurrentPlan().manifest.trials.stimulation_mode)),"2p_spiral");
+
+            app.freezeCurrentPlan();
+            plan=app.ActiveRunPlan;
+            stopButton=findall(app.Figure,"Text","Stop after current");
+            stopButton.ButtonPushedFcn(stopButton,[]);
+            testCase.verifyEqual(string(stopButton.Text),"Stop requested");
+
+            run=adaptive_optopatch.run_2p_manifest(plan.manifest,plan.targets,sim, ...
+                "ReleaseLevel","standard","OutputDirectory",app.ActiveRunFolder, ...
+                "Resume",true, ...
+                "StopRequestedFcn",@()string(stopButton.Text)=="Stop requested");
+            testCase.verifyEqual(sum(run.trials.acquisition_status=="completed"),1);
+            testCase.verifyEqual(sum(run.trials.acquisition_status=="planned"),1);
+
+            resumed=app.runAll();
+            testCase.verifyEqual(sum(resumed.trials.acquisition_status=="completed"),2);
+            testCase.verifyEqual(string(stopButton.Text),"Stop after current");
+        end
+
         function buildsFreshUnifiedPlansWithoutValidationInvalidation(testCase)
             root=tempname; mkdir(root);
             cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
@@ -1712,6 +1775,39 @@ reference=adaptive_optopatch.create_reference_model(image,masks,metadata, ...
     "FovId","test_fov","CellIds",["cell_001";"cell_002";"cell_003"], ...
     "RoiPolygons",polygons);
 fovState=adaptive_optopatch.create_fov_state(reference,polygons);
+end
+
+function [trials,targets,sim]=make_multi_trial_2p_fixture(trialCount,outputRoot)
+sim=adaptive_optopatch.testing.make_simulated_luminos( ...
+    "SimulationOutputRoot",outputRoot);
+definition=adaptive_optopatch.generate_screen_protocol( ...
+    "PulseCount",1,"PulseDurationMs",5, ...
+    "PreDelayMs",100,"PostDelayMs",100,"ModulatorVoltage",1);
+protocol=resolve_for_test(definition,"2p_spiral");
+target=struct("cell_id","cell_001","qc_pass",true,"spiral_center_xy",[1024 1024], ...
+    "spiral_radius_pixels",10,"spiral_density_points_per_volt",20, ...
+    "parking_point_xy",[1080 1024], ...
+    "spiral_preview_center_xy",[1024 1024], ...
+    "parking_preview_point_xy",[1080 1024]);
+targets=struct("schema_version","2.0.0", ...
+    "coordinate_space","voltage_camera_full_sensor_pixels", ...
+    "targets",target);
+trialId=(1:trialCount)';
+stimulationMode=repmat("2p_spiral",trialCount,1);
+targetCellId=repmat("cell_001",trialCount,1);
+isNull=false(trialCount,1);
+targetIndex=ones(trialCount,1);
+pulseSchedule=repmat({protocol},trialCount,1);
+acquisitionDuration=repmat(protocol.acquisition_duration_s,trialCount,1);
+outputTag="sim_2p_"+string(1:trialCount)';
+acquisitionStatus=repmat("planned",trialCount,1);
+experimentDirectory=repmat("",trialCount,1);
+trials=table(trialId,stimulationMode,targetCellId,isNull,targetIndex, ...
+    pulseSchedule,acquisitionDuration,outputTag,acquisitionStatus, ...
+    experimentDirectory,'VariableNames',{'trial_id','stimulation_mode', ...
+    'target_cell_id','is_null','target_index','pulse_schedule', ...
+    'acquisition_duration_s','output_tag','acquisition_status', ...
+    'experiment_directory'});
 end
 
 function protocol=resolve_for_test(definition,mode)

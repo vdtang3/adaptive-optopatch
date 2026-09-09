@@ -473,6 +473,31 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyTrue(report.passed);
         end
 
+        function allowsStfFrequencyAbove100HzWhenPhysicallyValid(testCase)
+            frequency_hz=200; pulse_duration_ms=2; % 2 ms < 5 ms period
+            conditions=table("train_200hz",frequency_hz,3,pulse_duration_ms,1,0.1,false, ...
+                'VariableNames',{'condition_id','frequency_hz', ...
+                'pulses_per_train','pulse_duration_ms','repeats', ...
+                'command_voltage_v','is_null'});
+            definition=adaptive_optopatch.generate_stf_protocol(conditions, ...
+                "EventDarkIntervalMs",[450 550]);
+            events=definition.acquisitions.events;
+            testCase.verifyEqual(height(events),3);
+            testCase.verifyEqual(events.frequency_hz,repmat(frequency_hz,3,1));
+            expectedOnsets=events.onset_s(1)+(0:2)'/frequency_hz;
+            testCase.verifyEqual(events.onset_s,expectedOnsets,"AbsTol",1e-9);
+        end
+
+        function rejectsOverlappingStfPulseTrain(testCase)
+            conditions=table("train_overlap",200,3,10,1,0.1,false, ...
+                'VariableNames',{'condition_id','frequency_hz', ...
+                'pulses_per_train','pulse_duration_ms','repeats', ...
+                'command_voltage_v','is_null'});
+            testCase.verifyError(@()adaptive_optopatch.generate_stf_protocol( ...
+                conditions,"EventDarkIntervalMs",[450 550]), ...
+                "adaptive_optopatch:OverlappingStfPulses");
+        end
+
         function createsContinuousAngularSpiralReturn(testCase)
             t=(0:199)'; r=sqrt(t/199); theta=4*pi*r;
             x=r.*cos(theta); y=r.*sin(theta);

@@ -18,9 +18,6 @@ if options.EventDarkIntervalMs(2)<options.EventDarkIntervalMs(1)
     error("adaptive_optopatch:InvalidDarkInterval", ...
         "EventDarkIntervalMs must be [minimum maximum].");
 end
-if any(conditions.frequency_hz(~isnan(conditions.frequency_hz))>100)
-    error("adaptive_optopatch:StfFrequencyTooHigh","STF frequency cannot exceed 100 Hz.");
-end
 names=string(conditions.Properties.VariableNames);
 if ~ismember("amplitude_fraction",names), conditions.amplitude_fraction=ones(height(conditions),1); end
 if ~ismember("command_voltage_v",names), conditions.command_voltage_v=nan(height(conditions),1); end

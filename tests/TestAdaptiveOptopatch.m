@@ -1254,6 +1254,112 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyEqual(sum(resumed.trials.acquisition_status=="completed"),2);
         end
 
+        function frozenRunContinuesAfterEditableCalibrationChange(testCase)
+            root=tempname; mkdir(root);
+            cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
+            [app,sim]=launch_simulated_adaptive_optopatch_gui( ...
+                "Visible","off","RunRoot",root); %#ok<ASGLU>
+            appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
+            rois={[25 25;40 25;40 40;25 40], ...
+                [60 40;75 40;75 55;60 55]};
+            app.setReferenceData(ones(80,100),unified_test_info(root),rois);
+            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1);
+            app.setPulseProtocol(protocol);
+            app.setPlanParameter("mode","1p_dmd");
+            first=app.runNext();
+            testCase.verifyEqual(sum(first.trials.acquisition_status=="completed"),1);
+            frozenFolder=app.ActiveRunFolder;
+            frozenPlan=app.ActiveRunPlan;
+            testCase.verifyEqual(app.PlanState,"FROZEN");
+
+            % Ordinary per-cell calibration edit to the editable FOV after the
+            % first acquisition of a multi-cell frozen run has completed.
+            app.setPlanParameter("blue_mask_adjustment_pixels",3);
+
+            testCase.verifyTrue(app.EditableStateChanged);
+            testCase.verifyEqual(app.PlanState,"FROZEN");
+            testCase.verifyEqual(app.ActiveRunFolder,frozenFolder);
+            testCase.verifyEqual(app.ActiveRunPlan,frozenPlan);
+
+            second=app.runNext();
+            testCase.verifyEqual(app.ActiveRunFolder,frozenFolder, ...
+                "Run next must continue the original frozen folder, not freeze a new one.");
+            testCase.verifyEqual(sum(second.trials.acquisition_status=="completed"),2);
+            testCase.verifyEqual( ...
+                second.trials.pulse_schedule{1}.events.blue_mask_adjustment_pixels, ...
+                first.trials.pulse_schedule{1}.events.blue_mask_adjustment_pixels, ...
+                "The next acquisition must come from the original frozen manifest.");
+        end
+
+        function resumedFrozenRunContinuesAfterEditableChange(testCase)
+            root=tempname; mkdir(root);
+            cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
+            [app,sim]=launch_simulated_adaptive_optopatch_gui( ...
+                "Visible","off","RunRoot",root); %#ok<ASGLU>
+            appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
+            rois={[25 25;40 25;40 40;25 40], ...
+                [60 40;75 40;75 55;60 55]};
+            app.setReferenceData(ones(80,100),unified_test_info(root),rois);
+            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1);
+            app.setPulseProtocol(protocol);
+            app.setPlanParameter("mode","1p_dmd");
+            first=app.runNext();
+            testCase.verifyEqual(sum(first.trials.acquisition_status=="completed"),1);
+            frozenFolder=app.ActiveRunFolder;
+
+            app.resumeRun(frozenFolder);
+            resumedPlan=app.ActiveRunPlan;
+
+            % An editable FOV/GUI change made after resuming must not silently
+            % replace or forget the archived frozen run.
+            app.setPlanParameter("mode","2p_spiral");
+            app.setPlanParameter("blue_mask_adjustment_pixels",3);
+
+            testCase.verifyTrue(app.EditableStateChanged);
+            testCase.verifyEqual(app.PlanState,"FROZEN");
+            testCase.verifyEqual(app.ActiveRunFolder,frozenFolder);
+            testCase.verifyEqual(app.ActiveRunPlan,resumedPlan);
+
+            resumed=app.runAll();
+            testCase.verifyEqual(app.ActiveRunFolder,frozenFolder);
+            testCase.verifyTrue(all(resumed.trials.stimulation_mode=="1p_dmd"), ...
+                "Continuation must consume the archived frozen manifest, not the edited mode.");
+            testCase.verifyEqual(sum(resumed.trials.acquisition_status=="completed"),2);
+        end
+
+        function explicitFreezeReplacesActiveFrozenRun(testCase)
+            root=tempname; mkdir(root);
+            cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
+            [app,sim]=launch_simulated_adaptive_optopatch_gui( ...
+                "Visible","off","RunRoot",root); %#ok<ASGLU>
+            appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
+            rois={[25 25;40 25;40 40;25 40], ...
+                [60 40;75 40;75 55;60 55]};
+            app.setReferenceData(ones(80,100),unified_test_info(root),rois);
+            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1);
+            app.setPulseProtocol(protocol);
+            app.setPlanParameter("mode","1p_dmd");
+            first=app.runNext();
+            testCase.verifyEqual(sum(first.trials.acquisition_status=="completed"),1);
+            firstFolder=app.ActiveRunFolder;
+
+            app.setPlanParameter("blue_mask_adjustment_pixels",3);
+            testCase.verifyEqual(app.ActiveRunFolder,firstFolder);
+
+            % An explicit request to start a new run may still replace the
+            % active frozen run.
+            app.freezeCurrentPlan();
+
+            testCase.verifyNotEqual(app.ActiveRunFolder,firstFolder);
+            testCase.verifyEqual(app.PlanState,"FROZEN");
+            testCase.verifyFalse(app.EditableStateChanged);
+            secondManifest=load(fullfile(app.ActiveRunFolder,"trial_manifest.mat"),"manifest");
+            testCase.verifyEqual( ...
+                secondManifest.manifest.trials.pulse_schedule{1}.events.blue_mask_adjustment_pixels,3);
+            testCase.verifyTrue(isfile(fullfile(firstFolder,"trial_manifest.mat")), ...
+                "The previously frozen run's artifacts must remain on disk.");
+        end
+
         function persistsCanonicalFovAndIndependentDerivedMasks(testCase)
             [fovState,polygons]=test_fov_state();
             folder=tempname; mkdir(folder);

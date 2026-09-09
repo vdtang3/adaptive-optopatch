@@ -221,3 +221,24 @@ entirely (`dmd_overlap_pixels`, `blue_qc_pass`, and the `blue_mask_overlap`
 advisory). It was advisory-only prior to this change (see 2026-09-03) and is
 no longer computed, displayed, or archived; edge-proximity QC/advisories are
 unaffected and remain separate from mask emptiness.
+
+## 2026-09-09 — Editable edits never mutate or discard an active frozen run
+
+`planChanged()` previously cleared `ActiveRunPlan`/`ActiveRunFolder` on every
+editable GUI change, including ordinary per-cell calibration edits made
+between acquisitions of an already-frozen multi-cell run. Because
+`executeCurrentPlan` treats a missing active plan/folder as "nothing frozen
+yet," this silently orphaned the partially completed frozen run: the next
+"Run next" click froze a brand-new run in a new folder rather than continuing
+the original one.
+
+`planChanged()` now only clears the active plan/folder and reverts
+`PlanState` to `EDITABLE` when no frozen run is currently active. Once a run
+is frozen (or resumed via `resumeRun`), later editable changes set
+`EditableStateChanged` for display purposes only; the frozen plan and folder
+remain authoritative until explicitly replaced. `executeCurrentPlan` no
+longer treats `EditableStateChanged` as a reason to re-freeze — it freezes
+only when no active frozen run exists. Starting a genuinely new run over an
+active one still requires an explicit call to `freezeCurrentPlan` (there is
+no separate GUI action or confirmation gate for this); resume is likewise
+unaffected by editable GUI state.

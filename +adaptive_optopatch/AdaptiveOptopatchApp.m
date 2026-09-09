@@ -9,11 +9,11 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
         PulseProtocol struct = struct([])
         PulseProtocolPath string = ""
         PulseProtocolSummary struct = struct([])
+        EditableStateChanged logical = true
     end
     properties (Access=private)
         RunRoot string = ""
         UnifiedReady logical = false
-        EditableStateChanged logical = true
         StateLabel
         ProtocolPathField
         ProtocolSummaryArea
@@ -413,11 +413,18 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
         end
 
         function planChanged(app)
+            % Marks the editable configuration changed. A frozen run (or one
+            % loaded via resumeRun) is authoritative once it exists and is
+            % never mutated or discarded here: editable edits made afterward
+            % apply only to a future run, started explicitly via
+            % freezeCurrentPlan. "Run next"/"Run all" continue the active
+            % frozen run regardless of later editable changes.
             if ~app.UnifiedReady || app.PlanState=="RUNNING", return; end
             app.EditableStateChanged=true;
-            app.ActiveRunPlan=struct([]);
-            app.ActiveRunFolder="";
-            app.PlanState="EDITABLE";
+            if strlength(app.ActiveRunFolder)==0
+                app.ActiveRunPlan=struct([]);
+                app.PlanState="EDITABLE";
+            end
             app.updateStateDisplay();
         end
 
@@ -599,8 +606,12 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
         end
 
         function run=executeCurrentPlan(app,count)
-            if isempty(app.ActiveRunPlan) || strlength(app.ActiveRunFolder)==0 || ...
-                    app.EditableStateChanged
+            % Continue an existing active frozen run whenever one exists.
+            % Editable changes since freezing (app.EditableStateChanged) do
+            % not by themselves trigger a new freeze here — only the absence
+            % of an active frozen run does. A new run is created only via an
+            % explicit freezeCurrentPlan call.
+            if isempty(app.ActiveRunPlan) || strlength(app.ActiveRunFolder)==0
                 app.freezeCurrentPlan();
             end
             plan=app.ActiveRunPlan;

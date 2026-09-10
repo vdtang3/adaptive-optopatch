@@ -11,9 +11,10 @@ outputRoot=options.SimulationOutputRoot;
 if strlength(outputRoot)==0
     outputRoot=fullfile(bundleFolder,"simulation_runs");
 end
+geometry=adaptive_optopatch.testing.simulated_camera_geometry(bundleFolder);
 sim=adaptive_optopatch.testing.make_simulated_luminos( ...
     "CameraFrameRateHz",options.CameraFrameRateHz, ...
-    "SimulationOutputRoot",outputRoot);
+    "SimulationOutputRoot",outputRoot,geometry{:});
 gui=adaptive_optopatch.TwoPhotonTestRunnerApp( ...
     sim,bundleFolder,"Visible",options.Visible);
 end

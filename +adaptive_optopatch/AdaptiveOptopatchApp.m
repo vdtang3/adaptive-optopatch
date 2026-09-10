@@ -157,6 +157,8 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             if mode=="1p_dmd"
                 if isempty(issues)
                     hardware=adaptive_optopatch.resolve_luminos_1p_hardware(app.LuminosApp);
+                    adaptive_optopatch.validate_camera_geometry( ...
+                        hardware.voltage_camera,plan.targets);
                     for rowIndex=1:height(plan.manifest.trials)
                         resolved=plan.manifest.trials.pulse_schedule{rowIndex};
                         sequencePlan=struct([]);
@@ -182,6 +184,8 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 if isempty(issues)
                     hardware=adaptive_optopatch.resolve_luminos_2p_hardware( ...
                         app.LuminosApp,"ApplyCalibration",false);
+                    adaptive_optopatch.validate_camera_geometry( ...
+                        hardware.voltage_camera,plan.targets);
                     rows=find(~plan.manifest.trials.is_null);
                     for rowIndex=reshape(rows,1,[])
                         row=plan.manifest.trials(rowIndex,:);

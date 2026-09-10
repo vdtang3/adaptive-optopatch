@@ -81,6 +81,47 @@ classdef TestHardwareTimingInvariants < matlab.unittest.TestCase
                 min(summary.pulse_realization.dark_interval_sample_count),1);
         end
 
+        function changingCameraGeometryAfterFreezingBlocksExecution(testCase)
+            outputRoot=tempname;
+            cleanup=onCleanup(@()remove_folder(outputRoot)); %#ok<NASGU>
+            [fovState,targets]=single_cell_fixture();
+            fovState=adaptive_optopatch.update_cell_calibration( ...
+                fovState,"cell_001","CommandVoltageV",1);
+            definition=adaptive_optopatch.generate_screen_protocol( ...
+                "PulseCount",1,"PulseDurationMs",5,"PreDelayMs",10, ...
+                "PostDelayMs",10,"ModulatorVoltage",1);
+            manifest=adaptive_optopatch.build_manifest(fovState.reference, ...
+                targets,definition,"Mode","1p_dmd","FovState",fovState, ...
+                "GuiDefaults",gui_defaults());
+            roi=targets.reference_camera.roi;
+            sim=adaptive_optopatch.testing.make_simulated_luminos( ...
+                "SimulationOutputRoot",outputRoot,"CameraRoi",roi);
+
+            run=adaptive_optopatch.run_1p_manifest(manifest,targets,sim, ...
+                "ConfirmLiveOutput",true,"ShutterSettleTimeS",0);
+            testCase.verifyEqual(run.trials.acquisition_status,"completed");
+            testCase.verifyTrue(run.camera_geometry.passed);
+            acquisitions=numel(sim.AcquisitionHistory);
+
+            % Rebinning the voltage camera after freezing changes what a
+            % frozen camera pixel means, so execution must stop before any
+            % light is delivered rather than recording an unusable movie.
+            camera=sim.getDevice("Camera");
+            camera.bin=2;
+            testCase.verifyError(@()adaptive_optopatch.run_1p_manifest( ...
+                manifest,targets,sim,"ConfirmLiveOutput",true, ...
+                "ShutterSettleTimeS",0,"Resume",false), ...
+                "adaptive_optopatch:CameraGeometryChangedSinceFreeze");
+            camera.bin=1;
+            camera.ROI=roi+[7 0 0 0];
+            testCase.verifyError(@()adaptive_optopatch.run_1p_manifest( ...
+                manifest,targets,sim,"ConfirmLiveOutput",true, ...
+                "ShutterSettleTimeS",0,"Resume",false), ...
+                "adaptive_optopatch:CameraGeometryChangedSinceFreeze");
+            testCase.verifyEqual(numel(sim.AcquisitionHistory),acquisitions, ...
+                "No acquisition may start once the frozen grid is invalid.");
+        end
+
         function dmdAdvanceTriggerMustNotOverlapLight(testCase)
             [plan,protocol]=screen_sequence_plan();
             profile=adaptive_optopatch.virtual_upright_1p_profile();
@@ -161,4 +202,8 @@ function defaults=gui_defaults()
 defaults=struct("command_voltage_v",1,"pulse_duration_s",0.005, ...
     "blue_mask_adjustment_pixels",0,"orange_expansion_pixels",2, ...
     "spiral_radius_um",2,"spiral_density_points_per_volt",10);
+end
+
+function remove_folder(folder)
+if isfolder(folder), rmdir(folder,"s"); end
 end

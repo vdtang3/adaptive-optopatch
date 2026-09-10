@@ -352,3 +352,27 @@ already enforced (`resolve_luminos_2p_hardware` requires the profile rate and
 `build_luminos_2p_waveform_config` rejects a mismatch), so no check was added;
 the waveform builder is now simply given the resolved rate instead of keeping
 its own copy of the constant.
+
+## 2026-09-09 — The frozen camera grid is part of the frozen geometry
+
+Canonical ROIs, Blue and Orange masks, and every camera-pixel target
+coordinate live on the reference snapshot's pixel grid, but nothing compared
+that grid with the camera actually acquiring. Rebinning Camera 1 or moving its
+sub-ROI after freezing changes what a frozen camera pixel means, so the
+recorded traces could no longer be attributed to the canonical cells.
+`extract_roi_traces` already refused such a movie, but only after the
+acquisition had been spent.
+
+`build_target_bundle` now freezes that grid as `targets.reference_camera`
+(frame size, sensor origin, binning, world limits), and
+`validate_camera_geometry` compares it with the live voltage camera in both
+runners and in the unified preflight, before any output. The check is not
+cosmetic: only sensor origin, frame size, and binning matter, because those
+are what make pixel (r,c) of an acquired frame the same sensor region as pixel
+(r,c) of the reference. A bundle that predates the frozen grid is rejected
+with a regenerate message rather than silently skipping the invariant.
+
+A simulated rig has no sensor, so `make_simulated_luminos` gained explicit
+`CameraRoi`/`CameraBin` options and the bundle-based simulated launchers adopt
+the grid recorded in the bundle they replay. Simulation therefore exercises the
+same invariant as hardware instead of being exempted from it.

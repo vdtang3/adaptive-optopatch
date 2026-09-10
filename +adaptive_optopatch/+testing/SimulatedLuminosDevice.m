@@ -13,6 +13,8 @@ classdef SimulatedLuminosDevice < handle
         master_clock_task_index = []
         buffered_tasks = struct([])
         cam_id string = ""
+        % [left width top height] on the sensor, as Luminos reports it.
+        ROI double = [0 2048 0 2048]
         bin double = 1
         frames_requested double = 1
         frametrigger_source string = "DAQ"

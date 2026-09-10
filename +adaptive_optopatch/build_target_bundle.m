@@ -108,6 +108,7 @@ targets.schema_version = "2.0.0";
 targets.fov_id = reference.fov_id;
 targets.coordinate_space = "voltage_camera_full_sensor_pixels";
 targets.preview_coordinate_space="snapshot_intrinsic_pixels";
+targets.reference_camera = reference_camera_geometry(reference);
 targets.blank_dmd_mask = false(reference.image_size);
 targets.canonical_roi_masks=logical(reference.roi_masks);
 targets.blue_camera_masks = blueMasks;
@@ -129,6 +130,38 @@ targets.parameters = struct( ...
     "orange_expansion_pixels",options.OrangeExpansionPixels, ...
     "blue_mask_adjustment_pixels",options.BlueMaskAdjustmentPixels, ...
     "edge_margin_pixels", options.EdgeMarginPixels);
+end
+
+function geometry=reference_camera_geometry(reference)
+%REFERENCE_CAMERA_GEOMETRY Freeze the grid every camera coordinate lives on.
+%   Every mask and camera-pixel target below is expressed on the reference
+%   snapshot's pixel grid, so the runners must be able to confirm that the
+%   live camera still acquires on that grid.
+camera=reference.voltage_camera;
+imageSize=double(reference.image_size(1:2));
+origin=[0 0];
+if isfield(camera,"x_world_limits") && numel(camera.x_world_limits)==2
+    origin(1)=double(camera.x_world_limits(1));
+end
+if isfield(camera,"y_world_limits") && numel(camera.y_world_limits)==2
+    origin(2)=double(camera.y_world_limits(1));
+end
+bin=1;
+if isfield(camera,"bin") && isscalar(camera.bin) && isfinite(double(camera.bin)) && ...
+        double(camera.bin)>0
+    bin=double(camera.bin);
+end
+geometry=struct("schema_version","1.0.0", ...
+    "name",string(field_or(camera,"name","")), ...
+    "image_size",imageSize,"origin_xy",origin,"bin",bin, ...
+    "roi",[origin(1) imageSize(2)*bin origin(2) imageSize(1)*bin], ...
+    "x_world_limits",double(field_or(camera,"x_world_limits",[0 imageSize(2)])), ...
+    "y_world_limits",double(field_or(camera,"y_world_limits",[0 imageSize(1)])));
+end
+
+function value=field_or(record,name,default)
+if isfield(record,name) && ~isempty(record.(name)), value=record.(name);
+else, value=default; end
 end
 
 function value=cell_flag(cellRecord,name,default)

@@ -2,6 +2,11 @@ function app=make_simulated_luminos(options)
 %MAKE_SIMULATED_LUMINOS Construct the local, no-hardware Luminos test double.
 arguments
     options.CameraFrameRateHz (1,1) double {mustBePositive} = 1000
+    % Simulated Camera 1 acquisition geometry, [left width top height] on the
+    % sensor plus binning. A simulated rig has no real sensor, so this is how
+    % a caller states the grid the replayed experiment was planned on.
+    options.CameraRoi (1,4) double = [0 2048 0 2048]
+    options.CameraBin (1,1) double {mustBePositive} = 1
     options.LaserPowerMw (1,1) double {mustBeNonnegative} = 10
     options.SimulationOutputRoot (1,1) string = ""
     options.GalvoCalibration (1,1) struct = struct
@@ -38,6 +43,8 @@ end
 
 camera=device("Camera",profile1p.camera.name);
 camera.cam_id="S/N: 001125";
+camera.ROI=options.CameraRoi;
+camera.bin=options.CameraBin;
 camera.frametrigger_source="DAQ";
 camera.daqtrig_period_ms=1000/options.CameraFrameRateHz;
 camera.maximum_frame_rate_hz=max(options.CameraFrameRateHz/0.85, ...

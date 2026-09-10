@@ -62,7 +62,10 @@ classdef TestFovWorkflowCleanup < matlab.unittest.TestCase
         function previewValidateAndFreezeNeedNoManualPlanSave(testCase)
             root=tempname; mkdir(root);
             cleanup=onCleanup(@()remove_if_present(root));
-            [app,~]=launch_simulated_adaptive_optopatch_gui("Visible","off","RunRoot",root);
+            % Preflight compares the live camera grid with the frozen one,
+            % so the simulated camera acquires on test_info's grid.
+            [app,~]=launch_simulated_adaptive_optopatch_gui( ...
+                "CameraRoi",[979 90 989 70],"Visible","off","RunRoot",root);
             appCleanup=onCleanup(@()delete(app));
             app.setReferenceData(ones(70,90),test_info(root),test_polygon());
             app.setPulseProtocol(adaptive_optopatch.generate_screen_protocol( ...

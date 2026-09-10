@@ -197,7 +197,8 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                             "MaximumVelocityVPerS",app.MaximumVelocity.Value, ...
                             "MaximumAccelerationVPerS2",app.MaximumAcceleration.Value, ...
                             "AllowCalibrationExtrapolation", ...
-                            app.AllowCalibrationExtrapolation.Value);
+                            app.AllowCalibrationExtrapolation.Value, ...
+                            "TargetingTransform",plan_targeting_transform(plan));
                         [globalProps,~,~]= ...
                             adaptive_optopatch.build_luminos_2p_waveform_config( ...
                             hardware.daq.global_props,hardware.daq.wfm_data, ...
@@ -245,7 +246,8 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                     "MaximumVelocityVPerS",app.MaximumVelocity.Value, ...
                     "MaximumAccelerationVPerS2",app.MaximumAcceleration.Value, ...
                     "AllowCalibrationExtrapolation", ...
-                    app.AllowCalibrationExtrapolation.Value);
+                    app.AllowCalibrationExtrapolation.Value, ...
+                    "TargetingTransform",plan_targeting_transform(plan));
                 waveforms=preview.waveforms;
                 time=(0:numel(waveforms.x_v)-1)'/waveforms.sample_rate_hz;
                 step=max(1,ceil(numel(time)/50000)); index=1:step:numel(time);
@@ -396,6 +398,16 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
     end
 
     methods (Access=protected)
+        function protocols=previewResolvedProtocols(app,~)
+            % The unified app resolves an explicit protocol, so its target
+            % preview shows the resolved per-event Blue adjustments, the
+            % resolved Orange expansion, and the resolved 2P spiral geometry
+            % rather than the bundle's default values.
+            protocols={};
+            if isempty(app.PulseProtocol), return; end
+            protocols=app.buildCurrentPlan().resolved_protocols;
+        end
+
         function value=showPlanningBundleControl(~)
             value=false;
         end
@@ -919,5 +931,15 @@ elseif isfield(saved,"protocol_set") && ...
 else
     error("adaptive_optopatch:InvalidFrozenProtocolArchive", ...
         "Frozen pulse_protocol.mat has no resolved protocol archive.");
+end
+end
+
+function transform=plan_targeting_transform(plan)
+% The transform this plan will be executed with once frozen, so preview
+% draws the trajectory the galvos will actually follow.
+transform=[];
+if isfield(plan,"reference") && isfield(plan.reference,"scanner") && ...
+        isfield(plan.reference.scanner,"tform")
+    transform=plan.reference.scanner.tform;
 end
 end

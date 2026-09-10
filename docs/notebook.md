@@ -395,3 +395,28 @@ pulse voltage is the frozen per-pulse command. `run_manifest` keeps
 `ModulatorVoltageOverride` only for the staged 2P path, where it is the
 commissioning command that is genuinely executed. OBIS power override remains,
 because it does reach the hardware.
+
+## 2026-09-09 — Preview draws the resolved run, not the bundle defaults
+
+`previewTargets` drew `blue_camera_masks` and `orange_camera_masks` straight
+from the target bundle and reported the spiral radius, density, and pulse
+duration from the GUI controls. Those are the bundle's *default* values.
+Schema 3 lets a resolved event override the Blue-mask adjustment per pulse and
+lets an acquisition override the Orange expansion and the 2P spiral geometry,
+so the operator could be shown a mask no pulse uses and a spiral whose radius
+and density the run does not have. Two of the values it printed came from
+`PulseDuration` and `SpiralDensity`, controls the unified GUI hides.
+
+`build_target_preview` is the one place preview geometry is derived. Given
+resolved acquisitions it produces, through the same primitives execution uses,
+the distinct per-event Blue masks (`apply_blue_mask_adjustment`), the resolved
+Orange masks and 2P spiral geometry (`apply_acquisition_parameters`), and the
+resolved pulse duration for the spiral-cycle metrics. It is not a second
+resolver: it consumes the resolved acquisitions the plan already contains.
+Without them - the standalone planner, which has no protocol artifact - it
+returns the bundle defaults and says so in the status text.
+
+The 2P waveform preview also now draws the targeting transform the plan will
+be executed with (`reference.scanner.tform`, passed as
+`build_2p_plan_preview`'s `TargetingTransform`) instead of whatever
+calibration happens to be active.

@@ -109,6 +109,7 @@ targets.fov_id = reference.fov_id;
 targets.coordinate_space = "voltage_camera_full_sensor_pixels";
 targets.preview_coordinate_space="snapshot_intrinsic_pixels";
 targets.reference_camera = reference_camera_geometry(reference);
+targets.scanner_transform = scannerTransform;
 targets.blank_dmd_mask = false(reference.image_size);
 targets.canonical_roi_masks=logical(reference.roi_masks);
 targets.blue_camera_masks = blueMasks;

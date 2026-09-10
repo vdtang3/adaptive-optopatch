@@ -50,6 +50,11 @@ classdef ReferencePreparationApp < handle
             if ~isempty(app.Figure) && isvalid(app.Figure), delete(app.Figure); end
         end
 
+        function value=statusText(app)
+            %STATUSTEXT Current status lines as one string array.
+            value=reshape(string(app.Status.Value),[],1);
+        end
+
         function fovState=saveCurrentFov(app,path)
             [reference,~]=app.buildSpatialArtifacts();
             positions=cellfun(@(roi)double(roi.Position),app.RoiObjects, ...
@@ -637,71 +642,39 @@ classdef ReferencePreparationApp < handle
 
         function previewTargets(app)
             try
-                [~,targets,~]=app.buildArtifacts(); app.deletePreview(); hold(app.Axes,"on");
+                [~,targets,~]=app.buildArtifacts();
+                mode=string(app.Mode.Value);
+                preview=adaptive_optopatch.build_target_preview(targets,mode, ...
+                    "ResolvedProtocols",app.previewResolvedProtocols(targets), ...
+                    "ScannerTransform",app.previewScannerTransform(targets), ...
+                    "ScannerSampleRateHz",targets.parameters.scanner_sample_rate_hz);
+                app.deletePreview(); hold(app.Axes,"on");
                 theta=linspace(0,2*pi,100);
-                for k=1:numel(targets.targets)
-                    if app.Mode.Value=="2p_spiral"
-                        c=targets.targets(k).spiral_preview_center_xy;
-                        r=targets.targets(k).spiral_preview_radius_pixels;
-                        plot(app.Axes,c(1)+r*cos(theta),c(2)+r*sin(theta),"c--", ...
-                            "LineWidth",1.2,"Tag","TargetPreview");
-                        spiral=adaptive_optopatch.generate_spiral_preview(c,r, ...
-                            targets.targets(k).spiral_density_points_per_volt);
-                        plot(app.Axes,spiral(:,1),spiral(:,2),"c-", ...
-                            "LineWidth",1.1,"Tag","TargetPreview");
-                        park=targets.targets(k).parking_preview_point_xy;
-                        plot(app.Axes,park(1),park(2),"mo","MarkerFaceColor","m", ...
-                            "MarkerSize",7,"Tag","TargetPreview");
-                        plot(app.Axes,[c(1) park(1)],[c(2) park(2)],"m--", ...
-                            "LineWidth",1,"Tag","TargetPreview");
-                    else
-                        boundaries=bwboundaries(targets.orange_camera_masks(:,:,k));
-                        for j=1:numel(boundaries)
-                            p=boundaries{j}; plot(app.Axes,p(:,2),p(:,1),"-", ...
-                                "Color",[1 0.45 0],"LineWidth",1.5,"Tag","TargetPreview");
-                        end
-                        boundaries=bwboundaries(targets.blue_camera_masks(:,:,k));
-                        for j=1:numel(boundaries)
-                            p=boundaries{j}; plot(app.Axes,p(:,2),p(:,1),"c-", ...
-                                "LineWidth",1.5,"Tag","TargetPreview");
-                        end
-                    end
+                for k=1:numel(preview.orange)
+                    plot_boundaries(app.Axes,preview.orange(k).mask,[1 0.45 0]);
+                end
+                for k=1:numel(preview.blue)
+                    plot_boundaries(app.Axes,preview.blue(k).mask,[0 1 1]);
+                end
+                for k=1:numel(preview.spiral)
+                    s=preview.spiral(k);
+                    c=s.center_xy; r=s.radius_pixels;
+                    plot(app.Axes,c(1)+r*cos(theta),c(2)+r*sin(theta),"c--", ...
+                        "LineWidth",1.2,"Tag","TargetPreview");
+                    spiral=adaptive_optopatch.generate_spiral_preview(c,r, ...
+                        s.density_points_per_volt);
+                    plot(app.Axes,spiral(:,1),spiral(:,2),"c-", ...
+                        "LineWidth",1.1,"Tag","TargetPreview");
+                    park=s.parking_xy;
+                    plot(app.Axes,park(1),park(2),"mo","MarkerFaceColor","m", ...
+                        "MarkerSize",7,"Tag","TargetPreview");
+                    plot(app.Axes,[c(1) park(1)],[c(2) park(2)],"m--", ...
+                        "LineWidth",1,"Tag","TargetPreview");
                 end
                 hold(app.Axes,"off");
                 app.TargetsVisible=true;
                 app.updateTargetVisibility();
-                if app.Mode.Value=="2p_spiral"
-                    warningLines=double(strlength(app.ScannerWarning)>0);
-                    lines=strings(numel(targets.targets)+2+warningLines,1);
-                    lines(1)=sprintf(['Cyan = double-spiral preview; magenta = automatic ' ...
-                        'off-cell parking point and dark transition.']);
-                    lines(2)=sprintf('Pulse duration %.3g ms; density %.3g points/V.', ...
-                        app.PulseDuration.Value,app.SpiralDensity.Value);
-                    offset=0;
-                    if warningLines
-                        lines(3)="WARNING: "+app.ScannerWarning;
-                        offset=1;
-                    end
-                    for k=1:numel(targets.targets)
-                        m=targets.targets(k).spiral_cycle_metrics;
-                        if m.calibrated
-                            lines(k+2+offset)=sprintf(['%s: %.3f cycles during pulse ' ...
-                                '(%d complete; %d started), %.3f ms/cycle.'], ...
-                                char(targets.targets(k).cell_id), ...
-                                m.fractional_cycles_during_pulse, ...
-                                m.complete_cycles_during_pulse, ...
-                                m.cycles_started_during_pulse,m.cycle_duration_ms);
-                        else
-                            lines(k+2+offset)=sprintf(['%s: exact spirals/pulse pending a ' ...
-                                'nonidentity scanner calibration.'], ...
-                                char(targets.targets(k).cell_id));
-                        end
-                    end
-                    app.Status.Value=lines;
-                else
-                    app.setStatus(["Target preview updated. ROI polygons are canonical; " ...
-                        "orange = expanded recording illumination; cyan = signed-adjusted Blue stimulation masks."]);
-                end
+                app.Status.Value=preview_status(preview,mode,app.ScannerWarning);
             catch exception
                 app.showError(exception);
             end
@@ -870,6 +843,23 @@ classdef ReferencePreparationApp < handle
             % Subclasses can restore additional planning-session state.
         end
 
+        function protocols=previewResolvedProtocols(~,~)
+            %PREVIEWRESOLVEDPROTOCOLS Resolved acquisitions the preview shows.
+            %   The standalone planner has no protocol artifact, so its
+            %   preview can only show the bundle's default values. Subclasses
+            %   that resolve a protocol return those acquisitions so the
+            %   preview draws what will actually run.
+            protocols={};
+        end
+
+        function transform=previewScannerTransform(~,targets)
+            %PREVIEWSCANNERTRANSFORM Transform used for spiral cycle metrics.
+            transform=[];
+            if isfield(targets,"scanner_transform")
+                transform=targets.scanner_transform;
+            end
+        end
+
         function value=showPlanningBundleControl(~)
             value=true;
         end
@@ -983,5 +973,57 @@ try
 catch exception
     warningMessage="Could not load persisted scanner calibration: "+ ...
         string(exception.message);
+end
+end
+
+function plot_boundaries(axesHandle,mask,color)
+boundaries=bwboundaries(mask);
+for j=1:numel(boundaries)
+    p=boundaries{j};
+    plot(axesHandle,p(:,2),p(:,1),"-","Color",color,"LineWidth",1.5, ...
+        "Tag","TargetPreview");
+end
+end
+
+function lines=preview_status(preview,mode,scannerWarning)
+if preview.source=="resolved_plan"
+    origin="resolved acquisition values";
+else
+    origin="bundle default values";
+end
+if mode~="2p_spiral"
+    lines=["Target preview updated from "+origin+". ROI polygons are canonical;";
+        "orange = expanded recording illumination; cyan = Blue stimulation masks."];
+    if ~isempty(preview.blue)
+        adjustments=unique([preview.blue.adjustment_pixels],"stable");
+        lines(end+1,1)="Blue mask adjustment(s): "+ ...
+            strjoin(string(adjustments),", ")+" px.";
+    end
+    if ~isempty(preview.orange)
+        lines(end+1,1)="Orange expansion: "+ ...
+            strjoin(unique(string([preview.orange.expansion_pixels]),"stable"),", ")+" px.";
+    end
+    return
+end
+lines=["Cyan = double-spiral preview; magenta = automatic off-cell parking " + ...
+    "point and dark transition.";"Drawn from "+origin+"."];
+if strlength(scannerWarning)>0
+    lines(end+1,1)="WARNING: "+scannerWarning;
+end
+for k=1:numel(preview.spiral)
+    s=preview.spiral(k); m=s.cycle_metrics;
+    if isfield(m,"calibrated") && m.calibrated
+        lines(end+1,1)=sprintf(['%s: radius %.3g px, density %.3g points/V, ' ...
+            'pulse %.3g ms; %.3f cycles during pulse (%d complete; %d started), ' ...
+            '%.3f ms/cycle.'],char(s.cell_id),s.radius_pixels, ...
+            s.density_points_per_volt,s.pulse_duration_ms, ...
+            m.fractional_cycles_during_pulse,m.complete_cycles_during_pulse, ...
+            m.cycles_started_during_pulse,m.cycle_duration_ms); %#ok<AGROW>
+    else
+        lines(end+1,1)=sprintf(['%s: radius %.3g px, density %.3g points/V, ' ...
+            'pulse %.3g ms; exact spirals/pulse pending a nonidentity ' ...
+            'scanner calibration.'],char(s.cell_id),s.radius_pixels, ...
+            s.density_points_per_volt,s.pulse_duration_ms); %#ok<AGROW>
+    end
 end
 end

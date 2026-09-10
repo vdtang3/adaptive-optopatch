@@ -420,3 +420,14 @@ The 2P waveform preview also now draws the targeting transform the plan will
 be executed with (`reference.scanner.tform`, passed as
 `build_2p_plan_preview`'s `TargetingTransform`) instead of whatever
 calibration happens to be active.
+
+## 2026-09-09 — "Freeze new run" is the operator's explicit run boundary
+
+Editable edits deliberately no longer replace an active frozen run, but the
+only way to start a new one was to call `freezeCurrentPlan` from the command
+line: from the GUI, a session's first frozen run stayed active forever.
+`Freeze new run` closes that gap. It is not a confirmation gate - nothing
+irreversible or physical happens - so it is a plain action whose label and
+result message make the consequence obvious: the new run becomes active, and
+the replaced run is named so the operator can see it is still on disk and
+still resumable.

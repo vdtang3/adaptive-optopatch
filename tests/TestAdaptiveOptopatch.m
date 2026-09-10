@@ -1720,11 +1720,16 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             app.setPlanParameter("blue_mask_adjustment_pixels",3);
             testCase.verifyEqual(app.ActiveRunFolder,firstFolder);
 
-            % An explicit request to start a new run may still replace the
-            % active frozen run.
-            app.freezeCurrentPlan();
+            % The operator's explicit "Freeze new run" action is the only
+            % way to replace the active frozen run, and it must be reachable
+            % from the GUI rather than only programmatically.
+            newRunButton=findall(app.Figure,"Text","Freeze new run");
+            testCase.verifyNotEmpty(newRunButton);
+            newRunButton.ButtonPushedFcn(newRunButton,[]);
 
             testCase.verifyNotEqual(app.ActiveRunFolder,firstFolder);
+            testCase.verifyTrue(any(contains(app.statusText(),firstFolder)), ...
+                "The replaced run must be named so it can still be resumed.");
             testCase.verifyEqual(app.PlanState,"FROZEN");
             testCase.verifyFalse(app.EditableStateChanged);
             secondManifest=load(fullfile(app.ActiveRunFolder,"trial_manifest.mat"),"manifest");

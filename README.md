@@ -152,6 +152,19 @@ Planning controls are disabled while the backend is running. `Resume run…`
 loads an existing frozen run and its checkpoint. The diagnostic configuration
 check runs the same preflight but is not a prerequisite for running.
 
+Once a run is frozen, `Run next` and `Run all` continue it: editable edits made
+between acquisitions - a per-cell calibration decision, say - never silently
+replace it. `Freeze new run` is the explicit way to finish with the active run
+and start another from the current editable state. It makes the new run active
+and reports the run it replaced; that run's frozen artifacts stay on disk and
+can still be continued with `Resume run…`.
+
+`Preview` shows the resolved experiment, not the planning defaults: Blue masks
+are drawn at each resolved per-event adjustment, Orange at the resolved
+expansion, and 2P spirals at the resolved radius, density, and pulse duration,
+using the targeting transform the run will be executed with. The status line
+says whether it is showing resolved or bundle-default values.
+
 For local development, open the same GUI with the no-hardware backend:
 
 ```matlab

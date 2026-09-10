@@ -316,6 +316,26 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 app.ActiveRunFolder);
         end
 
+        function paths=startNewRun(app,outputRoot)
+            %STARTNEWRUN Freeze current editable state as the active run.
+            %   Editable changes never replace an active frozen run on their
+            %   own, so this is the operator's explicit way to finish with
+            %   one run and begin another. The previous run's frozen
+            %   artifacts stay on disk and remain resumable.
+            arguments
+                app
+                outputRoot (1,1) string = ""
+            end
+            previousFolder=app.ActiveRunFolder;
+            paths=app.freezeCurrentPlan(outputRoot);
+            if strlength(previousFolder)>0
+                app.setStatus(["Froze a new run and made it active:"; ...
+                    app.ActiveRunFolder; ...
+                    "The previous run remains on disk and can be continued "+ ...
+                    "with Resume run…:";previousFolder]);
+            end
+        end
+
         function run=runNext(app)
             run=app.executeCurrentPlan(1);
         end
@@ -579,6 +599,12 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             reviewButton=uibutton(controls,"Text","Review completed Blue ramp…", ...
                 "ButtonPushedFcn",@(~,~)app.invoke(@()app.chooseRampReview()));
             reviewButton.Layout.Row=6; reviewButton.Layout.Column=[1 3];
+            newRunButton=uibutton(controls,"Text","Freeze new run", ...
+                "ButtonPushedFcn",@(~,~)app.invoke(@()app.startNewRun()), ...
+                "Tooltip",["Freeze the current editable state as a new run " ...
+                "and make it the active one. The previous frozen run's " ...
+                "artifacts stay on disk and remain resumable."]);
+            newRunButton.Layout.Row=6; newRunButton.Layout.Column=[4 5];
             app.WaveformAxes=uiaxes(runtime);
             title(app.WaveformAxes,"Waveform / DMD preview");
 

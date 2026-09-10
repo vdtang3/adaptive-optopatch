@@ -121,7 +121,8 @@ for k=1:n
     try
         row=run.trials(k,:);
         frozenProtocol=row.pulse_schedule{1};
-        protocol=stage_execution_protocol(frozenProtocol,staging,row.is_null);
+        protocol=adaptive_optopatch.stage_2p_execution_protocol( ...
+            frozenProtocol,staging,row.is_null);
         run.trials.executed_pulse_schedule{k}=protocol;
         if isfield(targets,"canonical_roi_masks")
             trialTargets=adaptive_optopatch.apply_acquisition_parameters( ...
@@ -258,40 +259,6 @@ run.finished_at=string(datetime("now","TimeZone","local")); save_checkpoint();
     end
 end
 
-function protocol=stage_execution_protocol(frozen,staging,isNull)
-%STAGE_EXECUTION_PROTOCOL Derive this call's schedule from the frozen one.
-protocol=adaptive_optopatch.normalize_protocol(frozen);
-if isfinite(staging.executed_event_count)
-    count=staging.executed_event_count;
-    postDelay=max(0,protocol.acquisition_duration_s-protocol.events.offset_s(end));
-    protocol.events=protocol.events(1:count,:);
-    protocol.acquisition_duration_s=protocol.events.offset_s(end)+postDelay;
-    protocol.protocol_id=protocol.protocol_id+"_"+staging.release_level;
-    protocol.staged_from_protocol_id=string(frozen.protocol_id);
-    protocol=adaptive_optopatch.normalize_protocol(protocol);
-end
-voltage=staging.command_voltage_v;
-if isNull, voltage=0; end
-protocol=override_protocol_voltage(protocol,voltage,staging.release_level);
-end
-
-function protocol=override_protocol_voltage(protocol,voltage,level)
-if ~isfinite(voltage), return; end
-protocol=adaptive_optopatch.normalize_protocol(protocol);
-if voltage==0
-    protocol.events.is_null(:)=true;
-    protocol.events.target_cell_id(:)="";
-    protocol.events.target_index(:)=0;
-    protocol.events.dmd_pattern_index(:)=0;
-    protocol.events.command_voltage_v(:)=0;
-    protocol.events.command_voltage_source(:)="release_"+level;
-else
-    selected=~protocol.events.is_null;
-    protocol.events.command_voltage_v(selected)=voltage;
-    protocol.events.command_voltage_v(~selected)=0;
-    protocol.events.command_voltage_source(selected)="release_"+level;
-end
-end
 function original=capture_state(hardware)
 original=struct("global_props",hardware.daq.global_props, ...
     "wfm_data",hardware.daq.wfm_data, ...

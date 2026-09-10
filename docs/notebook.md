@@ -283,3 +283,25 @@ verbatim to the executed schedule and reaches the Pockels waveform unchanged; no
 attenuation factor is inferred from the label. Conversely, `blocked_test`
 (0 V by definition) and `experimental`/`standard` (frozen resolved command) now
 reject a positive override rather than accepting and ignoring it.
+
+## 2026-09-09 — The standalone 2P runner consumes schema 3 instead of reimplementing it
+
+`TwoPhotonTestRunnerApp` had drifted to schema 2: it read `pulse_duration_ms`,
+`dark_interval_range_ms`, `pre_delay_ms`, `post_delay_ms`, and `pulse_count`
+off a resolved acquisition that no longer has them; it truncated the event
+table itself; it called `generate_screen_protocol`/`generate_stf_protocol` at
+run time and put the resulting *experiment definitions* into a manifest row
+that must hold *resolved acquisitions*; and it attached an inert
+`hardware_command_voltage` field. It also passed `default_stf_conditions` an
+option that does not exist. The simulated launcher still dispatches to it for
+every `2p_spiral` bundle, so it remains a supported commissioning interface and
+was rebuilt rather than removed.
+
+It now loads a frozen bundle and drives the canonical staged path:
+`plan_staged_2p_execution` chooses the subset, `stage_2p_execution_protocol`
+derives the executed schedule, and `run_2p_manifest` executes it. Preview and
+acquisition therefore come from one implementation. The GUI no longer
+synthesizes an STF protocol; `pilot_mixed_trains` runs a bundle frozen from an
+`stf_mixed_conditions` protocol designed in `pulse-protocols/`, keeping the
+protocol artifact canonical. When the bundle archives a scanner calibration,
+both preview and execution use that frozen targeting transform.

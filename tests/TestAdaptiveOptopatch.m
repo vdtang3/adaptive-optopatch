@@ -419,6 +419,65 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyTrue(isvalid(gui.Figure));
         end
 
+        function standaloneTwoPhotonRunnerExercisesFrozenSchema3Bundle(testCase)
+            root=tempname; mkdir(root);
+            cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
+            [app,~]=launch_simulated_adaptive_optopatch_gui( ...
+                "Visible","off","RunRoot",root);
+            appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
+            image=ones(80,100); image(10:15,10:15)=0;
+            app.setReferenceData(image,unified_test_info(root), ...
+                {[40 30;60 30;60 50;40 50]});
+            app.setPulseProtocol( ...
+                adaptive_optopatch.generate_screen_protocol("PulseCount",3));
+            app.freezeCurrentPlan();
+            folder=app.ActiveRunFolder;
+            frozen=load(fullfile(folder,"trial_manifest.mat"),"manifest");
+
+            [gui,~]=launch_simulated_2p_test_runner_gui(folder,"Visible","off");
+            guiCleanup=onCleanup(@()delete(gui)); %#ok<NASGU>
+            testCase.verifyTrue(isvalid(gui.Figure));
+
+            [staging,row,protocol]=gui.stagedExecution();
+            testCase.verifyEqual(staging.release_level,"blocked_test");
+            testCase.verifyEqual(height(protocol.events),1);
+            testCase.verifyEqual(height(row.pulse_schedule{1}.events),3);
+
+            previewResult=gui.preview();
+            testCase.verifyNotEmpty(previewResult, ...
+                char(strjoin(gui.statusText(),newline)));
+            testCase.verifyEqual(previewResult.targeting_transform_source, ...
+                "frozen_plan","Preview must use the frozen targeting transform.");
+            testCase.verifyEqual(max(abs(previewResult.waveforms.pockels_v)),0);
+
+            gui.setRunParameter("confirm_trajectory",true);
+            blockedRun=gui.run();
+            testCase.verifyNotEmpty(blockedRun, ...
+                char(strjoin(gui.statusText(),newline)));
+            index=blockedRun.staging.source_trial_index;
+            testCase.verifyEqual(blockedRun.trials.acquisition_status(index),"completed");
+            testCase.verifyEqual(blockedRun.trials.pulse_schedule, ...
+                frozen.manifest.trials.pulse_schedule, ...
+                "The standalone runner must not rewrite the frozen bundle.");
+
+            gui.setRunParameter("release_level","attenuated_test");
+            gui.setRunParameter("pockels_v",0.2);
+            gui.setRunParameter("confirm_live_output",true);
+            attenuatedRun=gui.run();
+            testCase.verifyNotEmpty(attenuatedRun, ...
+                char(strjoin(gui.statusText(),newline)));
+            executed=attenuatedRun.trials.executed_pulse_schedule{index};
+            testCase.verifyEqual(executed.events.command_voltage_v,0.2);
+            saved=load(fullfile(attenuatedRun.trials.experiment_directory(index), ...
+                "adaptive_optopatch_2p_waveforms.mat"),"actual_waveforms");
+            testCase.verifyEqual(max(saved.actual_waveforms.pockels_v),0.2, ...
+                "AbsTol",1e-12);
+
+            reloaded=load(fullfile(folder,"trial_manifest.mat"),"manifest");
+            testCase.verifyEqual(reloaded.manifest.trials.pulse_schedule, ...
+                frozen.manifest.trials.pulse_schedule);
+        end
+
         function evaluatesConservativeGalvoLimits(testCase)
             t=linspace(0,2*pi,4001)';
             x=0.05*cos(t); y=0.05*sin(t);

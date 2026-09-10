@@ -1,5 +1,11 @@
 classdef TwoPhotonTestRunnerApp < handle
-    %TWOPHOTONTESTRUNNERAPP Guarded staged and production-pilot 2P runner.
+    %TWOPHOTONTESTRUNNERAPP Standalone commissioning runner for a frozen 2P run.
+    %   This is the operator interface for the staged blocked/attenuated/pilot
+    %   sequence documented in the README. It never designs an experiment: it
+    %   loads a frozen schema-3 planning bundle and drives the canonical staged
+    %   execution path, so preview and acquisition derive the same physical
+    %   schedule through adaptive_optopatch.plan_staged_2p_execution and
+    %   adaptive_optopatch.stage_2p_execution_protocol.
     properties (SetAccess=private)
         Figure
     end
@@ -8,9 +14,10 @@ classdef TwoPhotonTestRunnerApp < handle
         BundleFolder string
         Manifest
         Targets
+        ScannerCalibration struct = struct([])
+        CalibrationSource string = "live_active_calibration"
         ReleaseLevel
         PulseCount
-        RepeatsPerCondition
         Voltage
         MaxVelocity
         MaxAcceleration
@@ -18,6 +25,7 @@ classdef TwoPhotonTestRunnerApp < handle
         LightConfirmed
         AllowCalibrationExtrapolation
         AllowCameraRateOverride
+        SelectionLabel
         Status
         Axes
     end
@@ -35,11 +43,105 @@ classdef TwoPhotonTestRunnerApp < handle
                 bundleFolder=string(selected);
             end
             gui.loadBundle(bundleFolder); gui.buildUI(options.Visible);
+            gui.describeSelection();
         end
         function delete(gui)
             if ~isempty(gui.Figure) && isvalid(gui.Figure)
                 gui.Figure.CloseRequestFcn=[]; delete(gui.Figure);
             end
+        end
+
+        function setRunParameter(gui,name,value)
+            %SETRUNPARAMETER Set one operator control by name.
+            name=lower(string(name));
+            mapping=struct("release_level",gui.ReleaseLevel, ...
+                "test_pulses",gui.PulseCount,"pockels_v",gui.Voltage, ...
+                "maximum_velocity",gui.MaxVelocity, ...
+                "maximum_acceleration",gui.MaxAcceleration, ...
+                "confirm_trajectory",gui.TrajectoryConfirmed, ...
+                "confirm_live_output",gui.LightConfirmed, ...
+                "allow_calibration_extrapolation",gui.AllowCalibrationExtrapolation, ...
+                "allow_camera_rate_override",gui.AllowCameraRateOverride);
+            key=char(name);
+            if ~isfield(mapping,key)
+                error("adaptive_optopatch:UnknownRunParameter", ...
+                    "Unknown 2P runner control: %s",name);
+            end
+            mapping.(key).Value=value;
+            gui.describeSelection();
+        end
+
+        function [staging,row,protocol]=stagedExecution(gui)
+            %STAGEDEXECUTION Describe the acquisition the current controls run.
+            level=string(gui.ReleaseLevel.Value);
+            count=gui.PulseCount.Value;
+            if fix(count)~=count || count<1
+                error("adaptive_optopatch:InvalidPulseCount", ...
+                    "Test pulses must be a positive integer.");
+            end
+            staging=adaptive_optopatch.plan_staged_2p_execution( ...
+                gui.Manifest,level,"TestPulseCount",count, ...
+                "ModulatorVoltageOverride",gui.Voltage.Value);
+            row=gui.Manifest.trials(staging.source_trial_index,:);
+            protocol=adaptive_optopatch.stage_2p_execution_protocol( ...
+                row.pulse_schedule{1},staging,row.is_null);
+        end
+
+        function result=preview(gui)
+            %PREVIEW Build and plot the exact waveforms this call would run.
+            result=struct([]);
+            try
+                [hardware,protocol,target,staging]=gui.preparePreview();
+                previewOptions={"ReleaseLevel",string(gui.ReleaseLevel.Value), ...
+                    "MaximumVelocityVPerS",gui.MaxVelocity.Value, ...
+                    "MaximumAccelerationVPerS2",gui.MaxAcceleration.Value, ...
+                    "AllowCalibrationExtrapolation", ...
+                    gui.AllowCalibrationExtrapolation.Value};
+                if gui.CalibrationSource=="frozen_plan"
+                    previewOptions=[previewOptions, ...
+                        {"TargetingTransform",gui.ScannerCalibration.tform}];
+                end
+                result=adaptive_optopatch.build_2p_plan_preview( ...
+                    protocol,target,hardware,previewOptions{:});
+                gui.plotPreview(result,protocol,staging,hardware);
+            catch exception
+                gui.showError(exception);
+            end
+        end
+
+        function result=run(gui)
+            %RUN Execute one staged acquisition from the frozen bundle.
+            result=struct([]);
+            try
+                gui.preview(); drawnow;
+                runOptions={"ReleaseLevel",string(gui.ReleaseLevel.Value), ...
+                    "OutputDirectory",gui.BundleFolder, ...
+                    "ConfirmTrajectoryTest",gui.TrajectoryConfirmed.Value, ...
+                    "ConfirmLiveOutput",gui.LightConfirmed.Value, ...
+                    "ModulatorVoltageOverride",gui.Voltage.Value, ...
+                    "MaximumVelocityVPerS",gui.MaxVelocity.Value, ...
+                    "MaximumAccelerationVPerS2",gui.MaxAcceleration.Value, ...
+                    "TestPulseCount",gui.PulseCount.Value, ...
+                    "AllowCalibrationExtrapolation", ...
+                    gui.AllowCalibrationExtrapolation.Value, ...
+                    "AllowCameraRateOverride",gui.AllowCameraRateOverride.Value};
+                if gui.CalibrationSource=="frozen_plan"
+                    runOptions=[runOptions, ...
+                        {"ScannerCalibration",gui.ScannerCalibration}];
+                end
+                result=adaptive_optopatch.run_2p_manifest( ...
+                    gui.Manifest,gui.Targets,gui.LuminosApp,runOptions{:});
+                index=result.staging.source_trial_index;
+                gui.setStatus("Test acquisition completed: "+ ...
+                    string(result.trials.experiment_directory(index)));
+            catch exception
+                gui.showError(exception);
+            end
+        end
+
+        function value=statusText(gui)
+            %STATUSTEXT Current status lines as one string array.
+            value=string(gui.Status.Value);
         end
     end
     methods (Access=private)
@@ -61,6 +163,19 @@ classdef TwoPhotonTestRunnerApp < handle
                 error('adaptive_optopatch:OutdatedTwoPhotonBundle','%s',message);
             end
             gui.BundleFolder=folder; gui.Targets=a.targets; gui.Manifest=b.manifest;
+            % A frozen run archives the targeting transform it was planned
+            % with. Execute that transform rather than whatever calibration
+            % happens to be active now; fall back to the active calibration
+            % only for bundles that carry none.
+            referencePath=fullfile(folder,"reference_model.mat");
+            if isfile(referencePath)
+                saved=load(referencePath,"reference");
+                if isfield(saved,"reference") && isfield(saved.reference,"scanner") && ...
+                        isfield(saved.reference.scanner,"tform")
+                    gui.ScannerCalibration=saved.reference.scanner;
+                    gui.CalibrationSource="frozen_plan";
+                end
+            end
         end
         function buildUI(gui,visible)
             simulation=isa(gui.LuminosApp, ...
@@ -84,9 +199,9 @@ classdef TwoPhotonTestRunnerApp < handle
             gui.ReleaseLevel=uidropdown(controls, ...
                 "Items",["blocked_test","attenuated_test", ...
                 "pilot_single","pilot_mixed_trains"], ...
-                "Value","blocked_test");
-            add("Screen/test pulses","PulseCount",1);
-            add("STF repeats/condition","RepeatsPerCondition",50);
+                "Value","blocked_test", ...
+                "ValueChangedFcn",@(~,~)gui.describeSelection());
+            add("Test pulses (screen only)","PulseCount",1);
             add("Pockels (V)","Voltage",0);
             add("Max velocity (V/s)","MaxVelocity",1000);
             add("Max acceleration (V/s²)","MaxAcceleration",6e6);
@@ -107,6 +222,8 @@ classdef TwoPhotonTestRunnerApp < handle
                 "Tooltip",["Use the configured DAQ trigger period even when " ...
                 "the Luminos ROI-rate estimate is unavailable or below it."]);
             gui.AllowCameraRateOverride.Layout.Column=[1 2];
+            gui.SelectionLabel=uilabel(controls,"Text","","WordWrap","on");
+            gui.SelectionLabel.Layout.Column=[1 2];
             uibutton(controls,"Text","Validate + preview", ...
                 "ButtonPushedFcn",@(~,~)gui.preview());
             uibutton(controls,"Text","Run one test acquisition", ...
@@ -115,149 +232,78 @@ classdef TwoPhotonTestRunnerApp < handle
             gui.Status=uitextarea(root,"Editable","off");
             gui.Status.Layout.Row=4; gui.Status.Layout.Column=[1 2];
             gui.Status.Value=["Start with blocked_test and Pockels = 0 V."; ...
-                "Choose pilot_single or pilot_mixed_trains for production pilots."];
+                "pilot_mixed_trains runs a bundle frozen from an STF protocol."];
             function add(label,name,value)
                 uilabel(controls,"Text",label);
-                gui.(name)=uieditfield(controls,"numeric","Value",value);
+                gui.(name)=uieditfield(controls,"numeric","Value",value, ...
+                    "ValueChangedFcn",@(~,~)gui.describeSelection());
             end
         end
-        function manifest=prepareSelectedManifest(gui)
-            manifest=gui.Manifest;
-            idx=find(~manifest.trials.is_null,1);
-            if isempty(idx)
-                error("adaptive_optopatch:NoStimulatedTrial", ...
-                    "No non-null 2P trial was found.");
-            end
-            manifest.trials=manifest.trials(idx,:);
-            if string(gui.ReleaseLevel.Value)=="pilot_mixed_trains"
-                repeats=gui.RepeatsPerCondition.Value;
-                if fix(repeats)~=repeats || repeats<1
-                    error("adaptive_optopatch:InvalidStfRepeats", ...
-                        "STF repeats per condition must be a positive integer.");
-                end
-                source=manifest.trials.pulse_schedule{1};
-                pulseDurationMs=5;
-                if isfield(source,"events") && ~isempty(source.events) && ...
-                        ismember("duration_s",string(source.events.Properties.VariableNames))
-                    pulseDurationMs=1000*double(source.events.duration_s(1));
-                end
-                conditions=adaptive_optopatch.default_stf_conditions( ...
-                    "RepeatsPerCondition",repeats,"PulsesPerTrain",10, ...
-                    "PulseDurationMs",pulseDurationMs, ...
-                    "ModulatorVoltage",max(0,gui.Voltage.Value));
-                protocol=adaptive_optopatch.generate_stf_protocol(conditions, ...
-                    "EventDarkIntervalMs",[450 550],"PreDelayMs",100, ...
-                    "PostDelayMs",100,"RandomSeed",1001);
-                manifest.trials.pulse_schedule={protocol};
-                manifest.trials.acquisition_duration_s=protocol.acquisition_duration_s;
-                manifest.trials.output_tag=string(manifest.trials.output_tag)+"_stf";
+
+        function describeSelection(gui)
+            if isempty(gui.SelectionLabel) || ~isvalid(gui.SelectionLabel), return; end
+            try
+                [~,row,protocol]=gui.stagedExecution();
+                gui.SelectionLabel.Text=sprintf( ...
+                    ['Trial %g (%s), %s: %d of %d frozen events, %.3f s. ' ...
+                     'Targeting transform: %s.'], ...
+                    row.trial_id,char(string(row.target_cell_id)), ...
+                    char(string(row.pulse_schedule{1}.protocol_type)), ...
+                    height(protocol.events), ...
+                    height(row.pulse_schedule{1}.events), ...
+                    protocol.acquisition_duration_s, ...
+                    char(gui.CalibrationSource));
+            catch exception
+                gui.SelectionLabel.Text=char(string(exception.message));
             end
         end
-        function [hardware,protocol,target,manifest]=preparePreview(gui)
+
+        function [hardware,protocol,target,staging]=preparePreview(gui)
             hardware=adaptive_optopatch.resolve_luminos_2p_hardware( ...
                 gui.LuminosApp,"ApplyCalibration",false);
-            manifest=gui.prepareSelectedManifest();
-            trial=manifest.trials(1,:);
-            protocol=trial.pulse_schedule{1};
-            if string(gui.ReleaseLevel.Value)~="pilot_mixed_trains"
-                count=gui.PulseCount.Value;
-                if fix(count)~=count || count<1
-                    error("adaptive_optopatch:InvalidPulseCount", ...
-                        "Pulse count must be a positive integer.");
-                end
-                if count>height(protocol.events)
-                    protocol=adaptive_optopatch.generate_screen_protocol( ...
-                        "PulseCount",count, ...
-                        "PulseDurationMs",protocol.pulse_duration_ms, ...
-                        "DarkIntervalMs",protocol.dark_interval_range_ms, ...
-                        "PreDelayMs",protocol.pre_delay_ms, ...
-                        "PostDelayMs",protocol.post_delay_ms, ...
-                        "ModulatorVoltage",max(0,gui.Voltage.Value), ...
-                        "RandomSeed",protocol.random_seed);
-                else
-                    protocol.events=protocol.events(1:count,:);
-                    protocol.pulse_count=count;
-                    protocol.total_light_on_s=sum(protocol.events.duration_s);
-                    protocol.acquisition_duration_s=protocol.events.offset_s(end)+ ...
-                        protocol.post_delay_ms/1000;
-                end
-                manifest.trials.pulse_schedule={protocol};
-                manifest.trials.acquisition_duration_s=protocol.acquisition_duration_s;
-            end
-            voltage=gui.Voltage.Value;
-            if string(gui.ReleaseLevel.Value)=="blocked_test", voltage=0; end
-            protocol=adaptive_optopatch.normalize_protocol(protocol);
-            protocol.hardware_command_voltage=voltage;
-            manifest.trials.pulse_schedule={protocol};
-            target=gui.Targets.targets(trial.target_index);
+            [staging,row,protocol]=gui.stagedExecution();
+            target=adaptive_optopatch.resolve_trial_target(gui.Targets,row);
         end
-        function preview(gui)
-            try
-                [hardware,protocol,target]=gui.preparePreview();
-                preview=adaptive_optopatch.build_2p_plan_preview( ...
-                    protocol,target,hardware, ...
-                    "ReleaseLevel",string(gui.ReleaseLevel.Value), ...
-                    "MaximumVelocityVPerS",gui.MaxVelocity.Value, ...
-                    "MaximumAccelerationVPerS2",gui.MaxAcceleration.Value, ...
-                    "AllowCalibrationExtrapolation", ...
-                    gui.AllowCalibrationExtrapolation.Value);
-                w=preview.waveforms;
-                coverage=preview.calibration_coverage;
-                t=(0:numel(w.x_v)-1)'/w.sample_rate_hz;
-                plotStep=max(1,ceil(numel(t)/200000));
-                plotIndex=1:plotStep:numel(t);
-                cla(gui.Axes); yyaxis(gui.Axes,"left");
-                plot(gui.Axes,t(plotIndex),w.x_v(plotIndex), ...
-                    t(plotIndex),w.y_v(plotIndex)); ylabel(gui.Axes,"Galvo (V)");
-                yyaxis(gui.Axes,"right");
-                plot(gui.Axes,t(plotIndex),w.pockels_v(plotIndex),"k-");
-                ylabel(gui.Axes,"Pockels (V)"); xlabel(gui.Axes,"Time (s)");
-                extensionText="";
-                if w.automatic_extension_s>0
-                    extensionText=sprintf([ ...
-                        '\\nAcquisition tail extended by %.3f s so the final spiral ' ...
-                        'can finish and park safely.'],w.automatic_extension_s);
-                end
-                coverageText="";
-                if ~coverage.passed
-                    coverageText=sprintf( ...
-                        '\\nWARNING: calibration extrapolation enabled: %s', ...
-                        strjoin(coverage.issues," "));
-                end
-                gui.setStatus(sprintf([ ...
-                    'PASS: calibration %s. %d samples, %.3f s.\\n' ...
-                    'Velocity %.3g V/s; acceleration %.3g V/s^2; parking [%.4g %.4g] V.%s%s'], ...
-                    hardware.calibration.calibration_id,numel(w.x_v),numel(w.x_v)/w.sample_rate_hz, ...
-                    w.preflight.max_command_velocity_volts_per_s, ...
-                    w.preflight.max_command_acceleration_volts_per_s2,w.parking_v, ...
-                    extensionText,coverageText));
-            catch exception
-                gui.showError(exception);
+
+        function plotPreview(gui,result,protocol,staging,hardware)
+            w=result.waveforms; coverage=result.calibration_coverage;
+            t=(0:numel(w.x_v)-1)'/w.sample_rate_hz;
+            plotStep=max(1,ceil(numel(t)/200000));
+            plotIndex=1:plotStep:numel(t);
+            cla(gui.Axes); yyaxis(gui.Axes,"left");
+            plot(gui.Axes,t(plotIndex),w.x_v(plotIndex), ...
+                t(plotIndex),w.y_v(plotIndex)); ylabel(gui.Axes,"Galvo (V)");
+            yyaxis(gui.Axes,"right");
+            plot(gui.Axes,t(plotIndex),w.pockels_v(plotIndex),"k-");
+            ylabel(gui.Axes,"Pockels (V)"); xlabel(gui.Axes,"Time (s)");
+            extensionText="";
+            if w.automatic_extension_s>0
+                extensionText=sprintf([ ...
+                    '\nAcquisition tail extended by %.3f s so the final spiral ' ...
+                    'can finish and park safely.'],w.automatic_extension_s);
             end
-        end
-        function run(gui)
-            try
-                gui.preview(); drawnow;
-                [~,~,~,selectedManifest]=gui.preparePreview();
-                result=adaptive_optopatch.run_2p_manifest( ...
-                    selectedManifest,gui.Targets,gui.LuminosApp, ...
-                    "ReleaseLevel",string(gui.ReleaseLevel.Value), ...
-                    "OutputDirectory",gui.BundleFolder, ...
-                    "ConfirmTrajectoryTest",gui.TrajectoryConfirmed.Value, ...
-                    "ConfirmLiveOutput",gui.LightConfirmed.Value, ...
-                    "ModulatorVoltageOverride",gui.Voltage.Value, ...
-                    "MaximumVelocityVPerS",gui.MaxVelocity.Value, ...
-                    "MaximumAccelerationVPerS2",gui.MaxAcceleration.Value, ...
-                    "TestPulseCount",gui.PulseCount.Value, ...
-                    "AllowCalibrationExtrapolation", ...
-                    gui.AllowCalibrationExtrapolation.Value, ...
-                    "AllowCameraRateOverride",gui.AllowCameraRateOverride.Value);
-                gui.setStatus("Test acquisition completed: "+ ...
-                    string(result.trials.experiment_directory(1)));
-            catch exception
-                gui.showError(exception);
+            coverageText="";
+            if ~coverage.passed
+                coverageText=sprintf( ...
+                    '\nWARNING: calibration extrapolation enabled: %s', ...
+                    strjoin(coverage.issues," "));
             end
+            gui.describeSelection();
+            gui.setStatus(sprintf([ ...
+                'PASS: %s executing %d event(s) at %.4g V command.\n' ...
+                'Targeting transform: %s; active calibration %s.\n' ...
+                '%d samples, %.3f s. Velocity %.3g V/s; acceleration ' ...
+                '%.3g V/s^2; parking [%.4g %.4g] V.%s%s'], ...
+                char(staging.release_level),height(protocol.events), ...
+                max(protocol.events.command_voltage_v), ...
+                char(result.targeting_transform_source), ...
+                char(string(hardware.calibration.calibration_id)), ...
+                numel(w.x_v),numel(w.x_v)/w.sample_rate_hz, ...
+                w.preflight.max_command_velocity_volts_per_s, ...
+                w.preflight.max_command_acceleration_volts_per_s2,w.parking_v, ...
+                extensionText,coverageText));
         end
+
         function setStatus(gui,message), gui.Status.Value=splitlines(string(message)); end
         function showError(gui,exception)
             gui.setStatus("ERROR: "+string(exception.message));

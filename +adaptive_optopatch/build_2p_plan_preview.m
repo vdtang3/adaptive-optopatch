@@ -8,6 +8,11 @@ arguments
     options.MaximumVelocityVPerS (1,1) double {mustBePositive} = 1000
     options.MaximumAccelerationVPerS2 (1,1) double {mustBePositive} = 6e6
     options.AllowCalibrationExtrapolation (1,1) logical = false
+    % A frozen run executes the targeting transform archived with it. Preview
+    % must draw the same trajectory, so callers that will execute a frozen
+    % plan pass that transform here instead of letting the preview fall back
+    % to whatever calibration is active now.
+    options.TargetingTransform = []
 end
 motion=adaptive_optopatch.validate_provisional_2p_motion_limits( ...
     options.MaximumVelocityVPerS,options.MaximumAccelerationVPerS2);
@@ -25,16 +30,24 @@ if ~coverage.passed && ~options.AllowCalibrationExtrapolation
 end
 minimumRadiusFraction=0.95;
 if options.ReleaseLevel=="blocked_test", minimumRadiusFraction=eps; end
-tform=hardware.scanner.tform;
-if isfield(hardware,"calibration") && isfield(hardware.calibration,"calibration") && ...
-        isfield(hardware.calibration.calibration,"tform")
-    tform=hardware.calibration.calibration.tform;
+if ~isempty(options.TargetingTransform)
+    tform=options.TargetingTransform;
+    targetingSource="frozen_plan";
+else
+    tform=hardware.scanner.tform;
+    targetingSource="live_scanner";
+    if isfield(hardware,"calibration") && isfield(hardware.calibration,"calibration") && ...
+            isfield(hardware.calibration.calibration,"tform")
+        tform=hardware.calibration.calibration.tform;
+        targetingSource="active_calibration";
+    end
 end
 waveforms=adaptive_optopatch.build_2p_trial_waveforms( ...
     protocol,target,tform, ...
     "MaximumVelocityVPerS",options.MaximumVelocityVPerS, ...
     "MaximumAccelerationVPerS2",options.MaximumAccelerationVPerS2, ...
     "MinimumIlluminatedRadiusFraction",minimumRadiusFraction);
-preview=struct("schema_version","0.1.0","waveforms",waveforms, ...
-    "calibration_coverage",coverage,"motion_validation",motion);
+preview=struct("schema_version","0.2.0","waveforms",waveforms, ...
+    "calibration_coverage",coverage,"motion_validation",motion, ...
+    "targeting_tform",tform,"targeting_transform_source",targetingSource);
 end

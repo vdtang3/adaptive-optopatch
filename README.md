@@ -860,16 +860,24 @@ which command voltage, is execution state:
   commissioning acquisition never marks an experimental trial complete in the
   run's own `run_2p_checkpoint.mat`.
 
-The release-level selector chooses the production protocol:
+The runner never designs an experiment. It executes the frozen schema-3
+acquisition already archived in the bundle, so the release-level selector
+chooses only how much of it runs:
 
-- `pilot_single` uses the bundle's randomized connectivity schedule. Set
-  **Screen/test pulses** to the desired count.
-- `pilot_mixed_trains` randomizes single-pulse controls, ten-pulse
-  50 Hz trains, and ten-pulse 100 Hz trains in one acquisition. It uses the
-  bundle pulse duration, 450--550 ms end-to-start dark intervals between
-  events, and the **STF repeats/condition** value. The default 50 repeats gives
-  150 randomized events and 1,050 individual light pulses. There is no software
-  maximum for repeats per condition.
+- `blocked_test` and `attenuated_test` require a `connectivity_screen`
+  acquisition and run the first **Test pulses** events of it.
+- `pilot_single` runs the bundle's complete `connectivity_screen` acquisition.
+- `pilot_mixed_trains` runs a bundle frozen from an `stf_mixed_conditions`
+  protocol. Design that protocol in `pulse-protocols/` (repeats per condition,
+  pulses per train, frequencies, dark intervals), load it in the unified GUI,
+  and freeze a run; the earlier behavior, where the runner synthesized its own
+  STF protocol from a **STF repeats/condition** field, has been removed because
+  it bypassed the canonical protocol artifact.
+
+If the bundle contains `reference_model.mat` with an archived scanner
+calibration, both the preview and the acquisition use that frozen targeting
+transform rather than whatever calibration is active now; the preview status
+line reports which transform it drew.
 
 Single-pulse and connectivity-screen pulse duration may be any positive number
 of milliseconds; the earlier 5--10 ms software range has been removed. Train
@@ -948,21 +956,24 @@ modulator range. Because `blocked_test`, `experimental`, and `standard` do not
 use it — they command `0 V` and the frozen resolved voltage respectively — a
 positive Pockels override is rejected there instead of being silently discarded.
 
-After the single- and ten-pulse attenuated tests pass, run a 200-pulse pilot:
+After the single- and ten-pulse attenuated tests pass, run the full screen
+pilot:
 
 1. Select `pilot_single`.
-2. Set **Screen/test pulses** to `200`.
-3. Enter the independently tested Pockels voltage.
-4. Click **Validate + preview** and inspect the complete acquisition.
-5. Check both confirmation boxes.
-6. Run the one-target acquisition.
+2. Enter the independently tested Pockels voltage.
+3. Click **Validate + preview** and inspect the complete acquisition.
+4. Check both confirmation boxes.
+5. Run the one-target acquisition.
 
-For the mixed train pilot, select `pilot_mixed_trains` and set **STF
-repeats/condition** to the desired positive integer. The intended production setting is 50.
-The **Screen/test pulses** field is ignored in this mode. During a train the
-galvos follow a continuous spiral while the Pockels waveform gates the ten
-pulses; the scanner finishes its cycle and returns to the dark parking point
-only after the train.
+`pilot_single` runs every event of the frozen `connectivity_screen`
+acquisition, so the **Test pulses** field is ignored; freeze a bundle from a
+protocol with the intended pulse count instead.
+
+For the mixed train pilot, freeze a run from an `stf_mixed_conditions` protocol
+and select `pilot_mixed_trains`. **Test pulses** is ignored in this mode too.
+During a train the galvos follow a continuous spiral while the Pockels waveform
+gates the pulses; the scanner finishes its cycle and returns to the dark
+parking point only after the train.
 
 To deliberately target outside the accepted calibration hull, check **Allow
 calibration extrapolation** before previewing. The preview displays a warning,

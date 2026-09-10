@@ -8,8 +8,10 @@ arguments
     options.ConfirmLiveOutput (1,1) logical = false
     options.ModulatorVoltageOverride (1,1) double = NaN
     options.HardwareValidationRecord (1,1) string = ""
+    options.TrialIndex (1,1) double {mustBePositive,mustBeInteger} = 1
 end
 issues=strings(0,1);
+trialIndex=options.TrialIndex;
 if ~isfield(manifest,"trials") || isempty(manifest.trials)
     issues(end+1)="Manifest has no trials.";
 else
@@ -17,31 +19,49 @@ else
     if any(string(trials.stimulation_mode)~="2p_spiral")
         issues(end+1)="The staged 2P runner accepts only 2p_spiral trials.";
     end
+    if trialIndex>height(trials)
+        issues(end+1)="The selected trial index is outside the manifest.";
+        trialIndex=1;
+    end
 end
 if level~="standard" && ~options.ConfirmTrajectoryTest
     issues(end+1)="Blocked trajectory review has not been confirmed.";
 end
-if level=="attenuated_test" || ...
-        ismember(level,["pilot_single","pilot_mixed_trains"])
+% The explicit Pockels voltage is the command these light-on commissioning
+% acquisitions physically execute at (run_2p_manifest applies it verbatim), so
+% it is required here and rejected where it would otherwise be discarded.
+profile=adaptive_optopatch.virtual_upright_2p_profile();
+if ismember(level,["attenuated_test","pilot_single","pilot_mixed_trains"])
     if ~options.ConfirmLiveOutput
         issues(end+1)="Live 2P output has not been explicitly armed.";
     end
     if ~isfinite(options.ModulatorVoltageOverride) || ...
             options.ModulatorVoltageOverride<=0
         issues(end+1)="This light-on mode requires an explicit positive Pockels voltage.";
+    elseif options.ModulatorVoltageOverride>profile.modulator.maximum_v
+        issues(end+1)=sprintf( ...
+            "The requested %.4g V test command exceeds the %.4g V 2P modulator limit.", ...
+            options.ModulatorVoltageOverride,profile.modulator.maximum_v);
     end
     if isfield(manifest,"trials") && ~isempty(manifest.trials)
-        if level=="pilot_single" && ...
-                string(manifest.trials.pulse_schedule{1}.protocol_type)~= ...
-                "connectivity_screen"
+        selectedType=string(manifest.trials.pulse_schedule{trialIndex}.protocol_type);
+        if level=="pilot_single" && selectedType~="connectivity_screen"
             issues(end+1)="pilot_single requires a connectivity-screen protocol.";
-        elseif level=="pilot_mixed_trains" && ...
-                string(manifest.trials.pulse_schedule{1}.protocol_type)~= ...
-                "stf_mixed_conditions"
+        elseif level=="pilot_mixed_trains" && selectedType~="stf_mixed_conditions"
             issues(end+1)="pilot_mixed_trains requires a mixed STF protocol.";
         end
     end
-elseif level=="experimental"
+elseif isfinite(options.ModulatorVoltageOverride) && ...
+        options.ModulatorVoltageOverride>0
+    if level=="blocked_test"
+        issues(end+1)="blocked_test commands 0 V. Remove the Pockels voltage "+ ...
+            "or select a light-on release level.";
+    else
+        issues(end+1)=level+" executes the frozen resolved command voltage. "+ ...
+            "Remove the Pockels override or select a staged release level.";
+    end
+end
+if level=="experimental"
     if ~options.ConfirmLiveOutput
         issues(end+1)="Experimental light output has not been explicitly armed.";
     end

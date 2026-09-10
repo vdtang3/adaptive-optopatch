@@ -253,3 +253,33 @@ the boundary for cherry-picking into `main`; passing tests alone never triggers
 integration. Conflicts and post-pick test failures deliberately stop for human
 judgment. This keeps the successful isolated-worker workflow reproducible while
 avoiding an autonomous layer that could make experimental policy decisions.
+
+## 2026-09-09 — Staged 2P execution is execution state, not a rewritten manifest
+
+`run_2p_manifest` previously implemented staged and pilot release levels by
+rewriting the frozen manifest in place: it reduced the trial table to the single
+selected trial, truncated that trial's resolved event table, renamed the
+protocol and output tag, and reset the acquisition status. The frozen manifest
+is archived acquisition truth, so a commissioning mode must not turn it into a
+different experiment, and the rewritten table was what reached the run record
+and the checkpoint.
+
+The staged selection is now computed by `plan_staged_2p_execution` as pure
+metadata (`run.staging`): release level, selected trial index/id, executed event
+count, output-tag suffix, and command-voltage policy. The runner iterates the
+unchanged frozen trial table, executes only the selected row, and derives that
+row's execution schedule from a working copy. Both survive in provenance —
+`executed_pulse_schedule` beside `pulse_schedule`, and `frozen_pulse_schedule`
+beside `pulse_schedule` in `adaptive_optopatch_record`. Staged levels checkpoint
+to `run_2p_checkpoint_<level>.mat` so a commissioning acquisition cannot mark an
+experimental trial complete.
+
+`attenuated_test` and the pilot levels already required an explicitly confirmed
+positive Pockels voltage, and the README already documented it as the voltage to
+run at, but the runner discarded it and executed the frozen experimental
+command. Software semantics and physical execution therefore disagreed on the
+one axis where that is most dangerous. The confirmed voltage is now applied
+verbatim to the executed schedule and reaches the Pockels waveform unchanged; no
+attenuation factor is inferred from the label. Conversely, `blocked_test`
+(0 V by definition) and `experimental`/`standard` (frozen resolved command) now
+reject a positive override rather than accepting and ignoring it.

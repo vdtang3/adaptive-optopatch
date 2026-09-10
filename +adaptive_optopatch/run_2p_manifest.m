@@ -1,5 +1,10 @@
 function run=run_2p_manifest(manifest,targets,app,options)
 %RUN_2P_MANIFEST Execute guarded Chameleon spiral acquisitions through Luminos.
+%   The manifest passed in is immutable acquisition truth and is never
+%   rewritten here. A staged or pilot release level selects which subset of it
+%   is exercised right now and which command voltage that commissioning
+%   acquisition uses; that selection lives in run.staging and in the per-trial
+%   executed_pulse_schedule beside the unchanged frozen pulse_schedule.
 arguments
     manifest (1,1) struct
     targets (1,1) struct
@@ -32,16 +37,15 @@ if ~bundleValidation.passed
         'the Camera 1 Snap using the updated planning GUI. Details: %s'],details);
     error('adaptive_optopatch:OutdatedTwoPhotonBundle','%s',message);
 end
-if ismember(options.ReleaseLevel,["blocked_test","attenuated_test"])
-    manifest=make_staged_manifest(manifest,options.TestPulseCount,options.ReleaseLevel);
-elseif ismember(options.ReleaseLevel,["pilot_single","pilot_mixed_trains"])
-    manifest=make_pilot_manifest(manifest,options.ReleaseLevel);
-end
+staging=adaptive_optopatch.plan_staged_2p_execution(manifest, ...
+    options.ReleaseLevel,"TestPulseCount",options.TestPulseCount, ...
+    "ModulatorVoltageOverride",options.ModulatorVoltageOverride);
 release=adaptive_optopatch.validate_2p_release_level(manifest, ...
     options.ReleaseLevel,"ConfirmTrajectoryTest",options.ConfirmTrajectoryTest, ...
     "ConfirmLiveOutput",options.ConfirmLiveOutput, ...
     "ModulatorVoltageOverride",options.ModulatorVoltageOverride, ...
-    "HardwareValidationRecord",options.HardwareValidationRecord);
+    "HardwareValidationRecord",options.HardwareValidationRecord, ...
+    "TrialIndex",staging.source_trial_index);
 if ~release.passed
     error("adaptive_optopatch:TwoPhotonReleaseRejected","%s", ...
         strjoin(release.issues,newline));
@@ -74,11 +78,18 @@ trials=manifest.trials; n=height(trials);
 trials=ensure_column(trials,"settings_snapshot",cell(n,1));
 trials=ensure_column(trials,"waveform_summary",cell(n,1));
 trials=ensure_column(trials,"orange_configuration",cell(n,1));
+trials=ensure_column(trials,"executed_pulse_schedule",cell(n,1));
 trials=ensure_column(trials,"error_message",repmat("",n,1));
 checkpoint="";
 if strlength(options.OutputDirectory)>0
     if ~isfolder(options.OutputDirectory), mkdir(options.OutputDirectory); end
-    checkpoint=fullfile(options.OutputDirectory,"run_2p_checkpoint.mat");
+    % Commissioning execution state is kept in its own checkpoint so a staged
+    % test never marks a real experimental acquisition as already completed.
+    checkpointName="run_2p_checkpoint.mat";
+    if staging.staged
+        checkpointName="run_2p_checkpoint_"+options.ReleaseLevel+".mat";
+    end
+    checkpoint=fullfile(options.OutputDirectory,checkpointName);
     if options.Resume && isfile(checkpoint)
         saved=load(checkpoint,"run");
         if isfield(saved,"run") && height(saved.run.trials)==n
@@ -90,9 +101,10 @@ simulation=isa(app,"adaptive_optopatch.testing.SimulatedLuminosApp");
 calibrationMismatch=usingFrozenCalibration && isfield(hardware.calibration,"calibration_id") && ...
     isfield(options.ScannerCalibration,"calibration_id") && ...
     string(hardware.calibration.calibration_id)~=string(options.ScannerCalibration.calibration_id);
-run=struct("schema_version","0.1.0","mode","live_2p_spiral", ...
+run=struct("schema_version","0.2.0","mode","live_2p_spiral", ...
     "simulation",simulation,"backend",string(class(app)), ...
     "release_level",options.ReleaseLevel,"release_report",release, ...
+    "staging",staging, ...
     "hardware_profile",profile,"calibration",hardware.calibration, ...
     "targeting_calibration",options.ScannerCalibration, ...
     "used_frozen_targeting_calibration",usingFrozenCalibration, ...
@@ -101,17 +113,19 @@ run=struct("schema_version","0.1.0","mode","live_2p_spiral", ...
     "started_at",string(datetime("now","TimeZone","local")),"trials",trials);
 completedThisCall=0;
 for k=1:n
+    if staging.staged && k~=staging.source_trial_index, continue; end
     if options.Resume && ismember(string(run.trials.acquisition_status(k)), ...
             ["completed","analyzed"]), continue; end
     if options.StopAfterTrial>0 && completedThisCall>=options.StopAfterTrial, break; end
-    if ~ismember(options.ReleaseLevel,["experimental","standard"]) && ...
-            completedThisCall>=1, break; end
+    if staging.staged && completedThisCall>=1, break; end
     try
         row=run.trials(k,:);
-        sourceProtocol=row.pulse_schedule{1};
+        frozenProtocol=row.pulse_schedule{1};
+        protocol=stage_execution_protocol(frozenProtocol,staging,row.is_null);
+        run.trials.executed_pulse_schedule{k}=protocol;
         if isfield(targets,"canonical_roi_masks")
             trialTargets=adaptive_optopatch.apply_acquisition_parameters( ...
-                targets,sourceProtocol);
+                targets,protocol);
             run.trials.orange_configuration{k}= ...
                 adaptive_optopatch.prepare_luminos_orange_mask(app,trialTargets, ...
                 "DryRun",false);
@@ -134,10 +148,6 @@ for k=1:n
             options.AllowCalibrationExtrapolation;
         calibrationCoverage.extrapolation_used= ...
             ~calibrationCoverage.passed && options.AllowCalibrationExtrapolation;
-        protocol=sourceProtocol;
-        voltage=NaN;
-        if options.ReleaseLevel=="blocked_test" || row.is_null, voltage=0; end
-        protocol=override_protocol_voltage(protocol,voltage);
         minimumRadiusFraction=0.95;
         if options.ReleaseLevel=="blocked_test"
             minimumRadiusFraction=eps;
@@ -161,17 +171,19 @@ for k=1:n
             "AllowRateLimitOverride",options.AllowCameraRateOverride);
         summary.camera_frame_plan=cameraFramePlan;
         summary.calibration_coverage=calibrationCoverage;
+        summary.staging=staging;
         run.trials.waveform_summary{k}=summary;
         app.acquisition_active=true;
         run.trials.acquisition_status(k)="acquiring"; save_checkpoint();
         bins=arrayfun(@(camera)camera.bin,hardware.cameras);
+        outputTag=char(string(row.output_tag)+staging.output_tag_suffix);
         if strlength(options.OutputRoot)>0
             adaptive_optopatch.execute_waveform_camera_sync( ...
-                app,bins,"tag",char(row.output_tag), ...
+                app,bins,"tag",outputTag, ...
                 "fullpath",char(options.OutputRoot));
         else
             adaptive_optopatch.execute_waveform_camera_sync( ...
-                app,bins,"tag",char(row.output_tag));
+                app,bins,"tag",outputTag);
         end
         wait_for_completion(globalProps.total_time+options.TimeoutMarginS);
         hardware.modulator.level=profile.modulator.dark_v;
@@ -220,10 +232,10 @@ run.finished_at=string(datetime("now","TimeZone","local")); save_checkpoint();
         if ~isfinite(frameRate)
             frameRate=double(hardware.voltage_camera.calculate_framerate());
         end
-        record=struct("schema_version","0.1.0", ...
+        record=struct("schema_version","0.2.0", ...
             "simulation",simulation,"backend",string(class(app)),"created_at", ...
             string(datetime("now","TimeZone","local")), ...
-            "release_level",options.ReleaseLevel,"trial",row, ...
+            "release_level",options.ReleaseLevel,"staging",staging,"trial",row, ...
             "hardware_profile",profile,"calibration",hardware.calibration, ...
             "targeting_tform",targetingTform, ...
             "used_frozen_targeting_calibration",usingFrozenCalibration, ...
@@ -233,6 +245,7 @@ run.finished_at=string(datetime("now","TimeZone","local")); save_checkpoint();
             "galvo_feedback_passed",galvo_feedback.passed, ...
             "waveform_file",string(fullfile(folder,"adaptive_optopatch_2p_waveforms.mat")), ...
             "parking_v",waveforms.parking_v, ...
+            "frozen_pulse_schedule",row.pulse_schedule{1}, ...
             "pulse_schedule",protocol, ...
             "realized_pulses",pulses, ...
             "expected_frame_map",table(pulses.pulse_id,pulses.onset_s, ...
@@ -245,55 +258,24 @@ run.finished_at=string(datetime("now","TimeZone","local")); save_checkpoint();
     end
 end
 
-function manifest=make_staged_manifest(manifest,pulseCount,level)
-trials=manifest.trials;
-idx=find(~trials.is_null,1);
-if isempty(idx), error("adaptive_optopatch:NoStimulatedTrial","No non-null 2P trial was found."); end
-trials=trials(idx,:);
-protocol=trials.pulse_schedule{1};
-if ~isfield(protocol,"protocol_type") || ...
-        string(protocol.protocol_type)~="connectivity_screen"
-    error("adaptive_optopatch:StagedScreenProtocolRequired", ...
-        "Blocked and attenuated tests currently require a connectivity-screen protocol.");
+function protocol=stage_execution_protocol(frozen,staging,isNull)
+%STAGE_EXECUTION_PROTOCOL Derive this call's schedule from the frozen one.
+protocol=adaptive_optopatch.normalize_protocol(frozen);
+if isfinite(staging.executed_event_count)
+    count=staging.executed_event_count;
+    postDelay=max(0,protocol.acquisition_duration_s-protocol.events.offset_s(end));
+    protocol.events=protocol.events(1:count,:);
+    protocol.acquisition_duration_s=protocol.events.offset_s(end)+postDelay;
+    protocol.protocol_id=protocol.protocol_id+"_"+staging.release_level;
+    protocol.staged_from_protocol_id=string(frozen.protocol_id);
+    protocol=adaptive_optopatch.normalize_protocol(protocol);
 end
-count=pulseCount;
-if count>height(protocol.events)
-    error("adaptive_optopatch:TestPulseCountExceedsFrozenSchedule", ...
-        "The staged test requests %d pulses, but the frozen acquisition contains only %d.", ...
-        count,height(protocol.events));
-end
-postDelay=max(0,protocol.acquisition_duration_s-protocol.events.offset_s(end));
-protocol.events=protocol.events(1:count,:);
-protocol.acquisition_duration_s=protocol.events.offset_s(end)+postDelay;
-protocol.protocol_id=protocol.protocol_id+"_"+level;
-protocol=adaptive_optopatch.normalize_protocol(protocol);
-trials.pulse_schedule={protocol};
-trials.acquisition_duration_s=protocol.acquisition_duration_s;
-trials.output_tag=string(trials.output_tag)+"_"+level;
-trials.acquisition_status="planned";
-trials.experiment_directory="";
-manifest.trials=trials;
-manifest.staged_from_trial_id=trials.trial_id;
-manifest.release_level=level;
+voltage=staging.command_voltage_v;
+if isNull, voltage=0; end
+protocol=override_protocol_voltage(protocol,voltage,staging.release_level);
 end
 
-function manifest=make_pilot_manifest(manifest,level)
-trials=manifest.trials;
-idx=find(~trials.is_null,1);
-if isempty(idx)
-    error("adaptive_optopatch:NoStimulatedTrial", ...
-        "No non-null 2P trial was found.");
-end
-trials=trials(idx,:);
-trials.output_tag=string(trials.output_tag)+"_"+level;
-trials.acquisition_status="planned";
-trials.experiment_directory="";
-manifest.trials=trials;
-manifest.staged_from_trial_id=trials.trial_id;
-manifest.release_level=level;
-end
-
-function protocol=override_protocol_voltage(protocol,voltage)
+function protocol=override_protocol_voltage(protocol,voltage,level)
 if ~isfinite(voltage), return; end
 protocol=adaptive_optopatch.normalize_protocol(protocol);
 if voltage==0
@@ -302,9 +284,12 @@ if voltage==0
     protocol.events.target_index(:)=0;
     protocol.events.dmd_pattern_index(:)=0;
     protocol.events.command_voltage_v(:)=0;
+    protocol.events.command_voltage_source(:)="release_"+level;
 else
-    protocol.events.command_voltage_v(~protocol.events.is_null)=voltage;
-    protocol.events.command_voltage_v(protocol.events.is_null)=0;
+    selected=~protocol.events.is_null;
+    protocol.events.command_voltage_v(selected)=voltage;
+    protocol.events.command_voltage_v(~selected)=0;
+    protocol.events.command_voltage_source(selected)="release_"+level;
 end
 end
 function original=capture_state(hardware)

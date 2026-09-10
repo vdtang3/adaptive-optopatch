@@ -376,9 +376,23 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
                 "ModulatorVoltageOverride",0.1);
             testCase.verifyTrue(unlimitedTest.passed);
             standard=adaptive_optopatch.validate_2p_release_level( ...
-                pilotManifest,"standard","ModulatorVoltageOverride",0.1);
+                pilotManifest,"standard");
             testCase.verifyTrue(standard.passed);
             testCase.verifyEqual(standard.maximum_trials_this_call,Inf);
+
+            % A Pockels command that execution would silently discard is
+            % rejected rather than accepted and ignored.
+            discarded=adaptive_optopatch.validate_2p_release_level( ...
+                pilotManifest,"standard","ModulatorVoltageOverride",0.1);
+            testCase.verifyFalse(discarded.passed);
+            blockedWithVoltage=adaptive_optopatch.validate_2p_release_level( ...
+                manifest,"blocked_test","ConfirmTrajectoryTest",true, ...
+                "ModulatorVoltageOverride",0.1);
+            testCase.verifyFalse(blockedWithVoltage.passed);
+            aboveLimit=adaptive_optopatch.validate_2p_release_level( ...
+                manifest,"attenuated_test","ConfirmTrajectoryTest",true, ...
+                "ConfirmLiveOutput",true,"ModulatorVoltageOverride",6);
+            testCase.verifyFalse(aboveLimit.passed);
         end
 
         function constructsTwoPhotonTestRunnerGui(testCase)
@@ -1051,6 +1065,90 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyTrue(saved.adaptive_optopatch_record.simulation);
             testCase.verifyTrue(feedback.galvo_feedback.simulated);
             testCase.verifyTrue(feedback.galvo_feedback.passed);
+        end
+
+        function stagedTwoPhotonRunLeavesFrozenManifestUnchanged(testCase)
+            outputDirectory=tempname; mkdir(outputDirectory);
+            cleanup=onCleanup(@()remove_if_present(outputDirectory)); %#ok<NASGU>
+            [trials,targets,sim]=make_multi_trial_2p_fixture(2,tempname);
+            cleanup2=onCleanup(@()remove_if_present(sim.SimulationOutputRoot)); %#ok<NASGU>
+            definition=adaptive_optopatch.generate_screen_protocol( ...
+                "PulseCount",4,"PulseDurationMs",5,"DarkIntervalMs",[50 50], ...
+                "PreDelayMs",100,"PostDelayMs",100,"ModulatorVoltage",1);
+            protocol=resolve_for_test(definition,"2p_spiral");
+            trials.pulse_schedule=repmat({protocol},height(trials),1);
+            trials.acquisition_duration_s(:)=protocol.acquisition_duration_s;
+            manifest=struct("trials",trials);
+            frozen=manifest;
+
+            run=adaptive_optopatch.run_2p_manifest(manifest,targets,sim, ...
+                "ReleaseLevel","blocked_test","ConfirmTrajectoryTest",true, ...
+                "TestPulseCount",2,"OutputDirectory",outputDirectory);
+
+            testCase.verifyEqual(manifest,frozen, ...
+                "Staged execution must not mutate the frozen manifest.");
+            testCase.verifyEqual(height(run.trials),height(frozen.trials));
+            testCase.verifyEqual(run.trials.pulse_schedule,frozen.trials.pulse_schedule, ...
+                "The archived pulse schedules must survive a staged run unchanged.");
+            testCase.verifyEqual(run.trials.output_tag,frozen.trials.output_tag);
+            testCase.verifyEqual(run.trials.acquisition_duration_s, ...
+                frozen.trials.acquisition_duration_s);
+            testCase.verifyTrue(run.staging.staged);
+            testCase.verifyEqual(run.staging.source_trial_index,1);
+            testCase.verifyEqual(run.staging.executed_event_count,2);
+            executed=run.trials.executed_pulse_schedule{1};
+            testCase.verifyEqual(height(executed.events),2);
+            testCase.verifyEqual(height(frozen.trials.pulse_schedule{1}.events),4);
+
+            % Commissioning execution state stays out of the experimental
+            % run's own checkpoint, so a staged test never marks a real
+            % acquisition complete.
+            testCase.verifyTrue(isfile(fullfile(outputDirectory, ...
+                "run_2p_checkpoint_blocked_test.mat")));
+            testCase.verifyFalse(isfile(fullfile(outputDirectory, ...
+                "run_2p_checkpoint.mat")));
+        end
+
+        function attenuatedTestExecutesTheExplicitPockelsCommand(testCase)
+            [trials,targets,sim]=make_multi_trial_2p_fixture(1,tempname);
+            cleanup=onCleanup(@()remove_if_present(sim.SimulationOutputRoot)); %#ok<NASGU>
+            frozenVoltage=trials.pulse_schedule{1}.events.command_voltage_v(1);
+            testCase.verifyEqual(frozenVoltage,1);
+
+            run=adaptive_optopatch.run_2p_manifest( ...
+                struct("trials",trials),targets,sim, ...
+                "ReleaseLevel","attenuated_test","ConfirmTrajectoryTest",true, ...
+                "ConfirmLiveOutput",true,"ModulatorVoltageOverride",0.2);
+            testCase.verifyEqual(run.trials.acquisition_status,"completed");
+
+            executed=run.trials.executed_pulse_schedule{1};
+            testCase.verifyEqual(executed.events.command_voltage_v,0.2);
+            testCase.verifyEqual(run.trials.pulse_schedule{1}.events.command_voltage_v, ...
+                frozenVoltage,"The frozen schedule must keep its own command.");
+
+            saved=load(fullfile(run.trials.experiment_directory, ...
+                "adaptive_optopatch_2p_waveforms.mat"),"actual_waveforms");
+            pockels=saved.actual_waveforms.pockels_v;
+            testCase.verifyEqual(max(pockels),0.2,"AbsTol",1e-12, ...
+                "The physical Pockels command must equal the confirmed test voltage.");
+
+            record=load(fullfile(run.trials.experiment_directory, ...
+                "output_data.mat"),"adaptive_optopatch_record");
+            record=record.adaptive_optopatch_record;
+            testCase.verifyEqual( ...
+                record.frozen_pulse_schedule.events.command_voltage_v,frozenVoltage);
+            testCase.verifyEqual(record.pulse_schedule.events.command_voltage_v,0.2);
+        end
+
+        function blockedTestStillCommandsZeroVolts(testCase)
+            [trials,targets,sim]=make_multi_trial_2p_fixture(1,tempname);
+            cleanup=onCleanup(@()remove_if_present(sim.SimulationOutputRoot)); %#ok<NASGU>
+            run=adaptive_optopatch.run_2p_manifest( ...
+                struct("trials",trials),targets,sim, ...
+                "ReleaseLevel","blocked_test","ConfirmTrajectoryTest",true);
+            saved=load(fullfile(run.trials.experiment_directory, ...
+                "adaptive_optopatch_2p_waveforms.mat"),"actual_waveforms");
+            testCase.verifyEqual(max(abs(saved.actual_waveforms.pockels_v)),0);
         end
 
         function runsAllSimulatedTwoPhotonAcquisitionsWithoutStopRequest(testCase)

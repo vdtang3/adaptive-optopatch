@@ -843,7 +843,22 @@ runner = launch_2p_test_runner_gui( ...
 The runner uses the first non-null cell in the planning bundle. Blocked and
 attenuated modes truncate its connectivity-screen schedule to the requested
 number of test pulses. Both pilot modes run one target without a software
-pulse-count or event-count ceiling. They do not modify the saved planning bundle.
+pulse-count or event-count ceiling.
+
+A staged or pilot level never rewrites the frozen manifest. The manifest, its
+per-trial resolved pulse schedules, output tags, and durations are archived
+acquisition truth and are returned unchanged. Which subset runs now, and at
+which command voltage, is execution state:
+
+- `run.staging` records the release level, the selected trial, the executed
+  event count, the output-tag suffix, and the command-voltage policy;
+- `run.trials.executed_pulse_schedule{k}` holds the schedule that physically
+  ran, beside the untouched `run.trials.pulse_schedule{k}`;
+- `adaptive_optopatch_record` saves both `frozen_pulse_schedule` and the
+  executed `pulse_schedule`;
+- staged levels checkpoint to `run_2p_checkpoint_<level>.mat`, so a
+  commissioning acquisition never marks an experimental trial complete in the
+  run's own `run_2p_checkpoint.mat`.
 
 The release-level selector chooses the production protocol:
 
@@ -924,6 +939,14 @@ confirmation checkboxes and an explicit positive Pockels voltage, and retain all
 camera-rate, motion, waveform, and cleanup checks. Full multi-target
 `experimental` manifests are not exposed in this GUI; they require a separate
 galvo hardware-validation record.
+
+The Pockels voltage entered for `attenuated_test`, `pilot_single`, and
+`pilot_mixed_trains` is the command those acquisitions physically execute at: it
+replaces the frozen resolved command in the executed schedule and appears
+verbatim in the saved Pockels waveform. It must lie within the declared 2P
+modulator range. Because `blocked_test`, `experimental`, and `standard` do not
+use it — they command `0 V` and the frozen resolved voltage respectively — a
+positive Pockels override is rejected there instead of being silently discarded.
 
 After the single- and ten-pulse attenuated tests pass, run a 200-pulse pilot:
 

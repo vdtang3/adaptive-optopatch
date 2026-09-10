@@ -19,7 +19,6 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
         ProtocolSummaryArea
         LoadProtocolButton
         CommandVoltageLabel
-        CommandVoltageNote
         MaximumVelocity
         MaximumAcceleration
         AllowCalibrationExtrapolation
@@ -548,9 +547,15 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             runtime=uigridlayout(root,[1 2]);
             runtime.Layout.Row=3; runtime.Layout.Column=[1 3];
             runtime.ColumnWidth={920,"1x"}; runtime.Padding=[4 4 4 4];
-            controls=uigridlayout(runtime,[6 8]);
-            controls.RowHeight={30,45,30,30,38,30};
+            % Five rows, not six. The panel is given 250 px by the root
+            % grid, and a sixth row overflowed it and clipped the buttons
+            % sitting on it. Spacing and padding are stated explicitly so
+            % the fit is a decision rather than an inherited default.
+            controls=uigridlayout(runtime,[5 8]);
+            controls.RowHeight={30,45,30,38,30};
             controls.ColumnWidth={105,100,115,105,115,105,115,"1x"};
+            controls.RowSpacing=6; controls.ColumnSpacing=6;
+            controls.Padding=[6 6 6 6];
             app.StateLabel=uilabel(controls,"Text","Editable — current settings run", ...
                 "FontWeight","bold","FontColor",[0 0.35 0.65]);
             app.StateLabel.Layout.Row=1; app.StateLabel.Layout.Column=[1 2];
@@ -566,58 +571,64 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             app.CommandVoltageLabel=uilabel(controls,"Text","mod488 (V)", ...
                 "HorizontalAlignment","right");
             app.CommandVoltageLabel.Layout.Row=3;
-            app.CommandVoltageLabel.Layout.Column=[1 2];
+            app.CommandVoltageLabel.Layout.Column=1;
             commandGrid=uigridlayout(controls,[1 1]); commandGrid.Padding=0;
-            commandGrid.Layout.Row=3; commandGrid.Layout.Column=3;
+            commandGrid.Layout.Row=3; commandGrid.Layout.Column=2;
+            % Reparenting carries the field's coordinates in the planning
+            % grid with it, which grew this wrapper to that grid's shape and
+            % left the control with zero height -- present, editable, and
+            % invisible. Place it explicitly and pin the wrapper to one cell.
             app.ModulatorVoltage.Parent=commandGrid;
-            app.CommandVoltageNote=uilabel(controls,"Text","", ...
-                "FontAngle","italic");
-            app.CommandVoltageNote.Layout.Row=3;
-            app.CommandVoltageNote.Layout.Column=4;
-            obisLabel=uilabel(controls,"Text","OBIS power is owned by Luminos/React", ...
-                "FontAngle","italic");
-            obisLabel.Layout.Row=3; obisLabel.Layout.Column=[5 8];
+            app.ModulatorVoltage.Layout.Row=1;
+            app.ModulatorVoltage.Layout.Column=1;
+            commandGrid.RowHeight={"1x"}; commandGrid.ColumnWidth={"1x"};
+            % Who owns what is a tooltip, not permanent panel space. Neither
+            % the 2P Pockels command nor the OBIS setpoint is settable here,
+            % and the disabled control already says so in 2P mode.
+            app.ModulatorVoltage.Tooltip=["1P mod488 default (V). The 2P " ...
+                "Pockels command comes from the protocol, and the 488 nm " ...
+                "OBIS power from Luminos/React."];
 
             velocityLabel=uilabel(controls,"Text","Max velocity");
-            velocityLabel.Layout.Row=4; velocityLabel.Layout.Column=1;
+            velocityLabel.Layout.Row=3; velocityLabel.Layout.Column=3;
             app.MaximumVelocity=uieditfield(controls,"numeric","Value",1000,"Limits",[eps Inf]);
-            app.MaximumVelocity.Layout.Row=4; app.MaximumVelocity.Layout.Column=2;
+            app.MaximumVelocity.Layout.Row=3; app.MaximumVelocity.Layout.Column=4;
             accelerationLabel=uilabel(controls,"Text","Max acceleration");
-            accelerationLabel.Layout.Row=4; accelerationLabel.Layout.Column=3;
+            accelerationLabel.Layout.Row=3; accelerationLabel.Layout.Column=5;
             app.MaximumAcceleration=uieditfield(controls,"numeric","Value",6e6,"Limits",[eps Inf]);
-            app.MaximumAcceleration.Layout.Row=4; app.MaximumAcceleration.Layout.Column=4;
+            app.MaximumAcceleration.Layout.Row=3; app.MaximumAcceleration.Layout.Column=6;
             app.AllowCalibrationExtrapolation=uicheckbox(controls,"Text","Allow cal extrapolation");
-            app.AllowCalibrationExtrapolation.Layout.Row=4; app.AllowCalibrationExtrapolation.Layout.Column=5;
+            app.AllowCalibrationExtrapolation.Layout.Row=3; app.AllowCalibrationExtrapolation.Layout.Column=7;
             app.AllowCameraRateOverride=uicheckbox(controls,"Text","Camera-rate override");
-            app.AllowCameraRateOverride.Layout.Row=4; app.AllowCameraRateOverride.Layout.Column=6;
+            app.AllowCameraRateOverride.Layout.Row=3; app.AllowCameraRateOverride.Layout.Column=8;
 
             previewButton=uibutton(controls,"Text","Preview", ...
                 "ButtonPushedFcn",@(~,~)app.invoke(@()app.previewCurrentPlan()));
-            previewButton.Layout.Row=5; previewButton.Layout.Column=1;
+            previewButton.Layout.Row=4; previewButton.Layout.Column=1;
             validateButton=uibutton(controls,"Text","Check", ...
                 "ButtonPushedFcn",@(~,~)app.invoke(@()app.validateCurrentPlan()));
-            validateButton.Layout.Row=5; validateButton.Layout.Column=2;
+            validateButton.Layout.Row=4; validateButton.Layout.Column=2;
             app.RunNextButton=uibutton(controls,"Text","Run next", ...
                 "ButtonPushedFcn",@(~,~)app.invoke(@()app.runNext()));
-            app.RunNextButton.Layout.Row=5; app.RunNextButton.Layout.Column=3;
+            app.RunNextButton.Layout.Row=4; app.RunNextButton.Layout.Column=3;
             app.RunAllButton=uibutton(controls,"Text","Run all", ...
                 "FontWeight","bold","ButtonPushedFcn",@(~,~)app.invoke(@()app.runAll()));
-            app.RunAllButton.Layout.Row=5; app.RunAllButton.Layout.Column=4;
+            app.RunAllButton.Layout.Row=4; app.RunAllButton.Layout.Column=4;
             app.StopButton=uibutton(controls,"Text","Stop after current", ...
                 "Enable","off","ButtonPushedFcn",@(~,~)app.requestStop());
-            app.StopButton.Layout.Row=5; app.StopButton.Layout.Column=[5 6];
+            app.StopButton.Layout.Row=4; app.StopButton.Layout.Column=[5 6];
             resumeButton=uibutton(controls,"Text","Resume run…", ...
                 "ButtonPushedFcn",@(~,~)app.chooseResume());
-            resumeButton.Layout.Row=5; resumeButton.Layout.Column=[7 8];
+            resumeButton.Layout.Row=4; resumeButton.Layout.Column=[7 8];
             reviewButton=uibutton(controls,"Text","Review completed Blue ramp…", ...
                 "ButtonPushedFcn",@(~,~)app.invoke(@()app.chooseRampReview()));
-            reviewButton.Layout.Row=6; reviewButton.Layout.Column=[1 3];
+            reviewButton.Layout.Row=5; reviewButton.Layout.Column=[1 3];
             newRunButton=uibutton(controls,"Text","Freeze new run", ...
                 "ButtonPushedFcn",@(~,~)app.invoke(@()app.startNewRun()), ...
                 "Tooltip",["Freeze the current editable state as a new run " ...
                 "and make it the active one. The previous frozen run's " ...
                 "artifacts stay on disk and remain resumable."]);
-            newRunButton.Layout.Row=6; newRunButton.Layout.Column=[4 5];
+            newRunButton.Layout.Row=5; newRunButton.Layout.Column=[4 5];
             app.WaveformAxes=uiaxes(runtime);
             title(app.WaveformAxes,"Waveform / DMD preview");
 
@@ -657,11 +668,6 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             if isempty(app.CommandVoltageLabel) || ...
                     ~isvalid(app.CommandVoltageLabel), return; end
             app.ModulatorVoltage.Enable=matlab.lang.OnOffSwitchState(is1p);
-            if is1p
-                app.CommandVoltageNote.Text="";
-            else
-                app.CommandVoltageNote.Text="Pockels: from protocol";
-            end
         end
 
         function updateStateDisplay(app)

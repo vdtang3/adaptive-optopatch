@@ -124,9 +124,9 @@ classdef TestFovWorkflowCleanup < matlab.unittest.TestCase
             qc=tables(arrayfun(@(value)numel(value.ColumnName)==9,tables));
             testCase.verifyNumElements(qc,1);
             testCase.verifyEqual(logical(qc.ColumnEditable), ...
-                [false false false false false false true true false]);
+                [false true true false false false false false false]);
             callback=qc.CellEditCallback;
-            callback(qc,struct("Indices",[1 8],"NewData",false));
+            callback(qc,struct("Indices",[1 3],"NewData",false));
             state=app.saveCurrentFov(fullfile(root,"table_edit_fov.mat"));
             testCase.verifyTrue(state.cells(1).recording_enabled);
             testCase.verifyFalse(state.cells(1).stimulation_enabled);

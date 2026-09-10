@@ -547,3 +547,42 @@ launcher lives under `tools/simulation`, and the guarded galvo-dynamics wrapper
 lives under `tools/commissioning`; each specialized directory is added to the
 MATLAB path explicitly when needed. The canonical simulator remains packaged
 under `adaptive_optopatch.testing`.
+
+## 2026-09-10 — The operator panels show decisions, not ownership
+
+The pulse-protocol panel had grown a row of ownership captions -- `OBIS power
+is owned by Luminos/React`, and a `Pockels: from protocol` note beside the
+command-voltage field -- and a sixth grid row. The root grid gives the panel
+250 px; six rows asked for 273. MATLAB does not report the overflow, it simply
+clips, and the bottom row went with it: `Review completed Blue ramp…` and
+`Freeze new run` sat at y = -20, effectively unreachable.
+
+Removing the captions is the fix and also the right call on its own terms. The
+ownership rules they stated are real and unchanged -- Luminos/React owns the
+OBIS setpoint, and the 2P Pockels command is protocol-only -- but they are
+facts an experimenter needs once, not every time they look at the panel, and
+here they were paying for that in the height of a button. The rules now live in
+the field's tooltip, and the enforcement is where it always was: the control is
+disabled in 2P, which `commandVoltageEnabled` still reports and the 2P Pockels
+tests still assert. No GUI Pockels input was introduced; `command_voltage_v`
+for `2p_spiral` remains protocol-only.
+
+Reworking the panel exposed a control that had been present, editable, and
+invisible. `ModulatorVoltage` is created in the planning grid and reparented
+into the protocol panel, and reparenting carries a component's grid coordinates
+with it -- so its one-cell wrapper silently grew to the planning grid's 18x2
+shape and laid the field out with zero height. The GUI has been showing a
+`mod488 (V)` caption with nothing beside it. The wrapper is now pinned to one
+cell and the field placed explicitly, and a test asserts that shape, because
+the failure mode is silent: nothing errors, the value still resolves, and only
+a rendered figure reveals it.
+
+The cell table now leads with `Cell ID | Record | Stim | Blue V (1P)`. Those
+are the three per-cell decisions an experimenter actually makes, and the table
+is narrow enough that they previously sat behind a horizontal scroll while area
+and centroid held the front. `Blue V` was renamed to `Blue V (1P)` because the
+bare name reads as a generic stimulation voltage; it is the per-cell 488 nm
+calibration and there is deliberately no 2P column beside it, since a 2P
+acquisition takes its Pockels command from the protocol rather than per cell.
+The reorder is presentation only -- the edit callback still writes Record and
+Stim through `setCellEligibility`, and Blue V stays read-only.

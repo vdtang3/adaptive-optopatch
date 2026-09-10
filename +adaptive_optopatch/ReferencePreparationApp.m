@@ -305,9 +305,15 @@ classdef ReferencePreparationApp < handle
             uilabel(side,"Text","Somata (select here, drag vertices in image)","FontWeight","bold");
             app.RoiList = uilistbox(side,"Items",strings(1,0), ...
                 "ValueChangedFcn",@(~,~)app.highlightSelection());
+            % The three per-cell decisions an experimenter makes -- record,
+            % stimulate, and at what Blue voltage -- lead, so they are read
+            % without scrolling past the geometry. "Blue V (1P)" is the
+            % per-cell 488 nm calibration; there is no 2P equivalent, whose
+            % Pockels command is protocol-owned rather than per cell.
             app.QcTable = uitable(side,"ColumnName", ...
-                ["Cell","Area px","X","Y","Edge px","QC","Record","Stim","Blue V"], ...
-                "ColumnEditable",[false false false false false false true true false], ...
+                ["Cell ID","Record","Stim","Blue V (1P)", ...
+                 "Area px","X","Y","Edge px","QC"], ...
+                "ColumnEditable",[false true true false false false false false false], ...
                 "CellEditCallback",@(source,event)app.qcCellEdited(source,event));
             uibutton(side,"Text","Set selected Blue calibration…", ...
                 "ButtonPushedFcn",@(~,~)app.chooseCellCalibration());
@@ -455,9 +461,10 @@ classdef ReferencePreparationApp < handle
                 % Older MATLAB releases do not accept string scalars inside
                 % a uitable cell-array Data value; use character vectors.
                 state=cell_state_for_id(app.CurrentFovState,items(k));
-                data(k,:)={char(items(k)),area,round(cx,1),round(cy,1),edge, ...
-                    ternary(pass,'PASS','CHECK'),state.recording_enabled, ...
-                    state.stimulation_enabled,state.selected_blue_voltage_v};
+                data(k,:)={char(items(k)),state.recording_enabled, ...
+                    state.stimulation_enabled,state.selected_blue_voltage_v, ...
+                    area,round(cx,1),round(cy,1),edge, ...
+                    ternary(pass,'PASS','CHECK')};
             end
             previous=string(app.RoiList.Value); app.RoiList.Items=reshape(items,1,[]);
             if ~isempty(previous) && any(strcmp(items,previous)), app.RoiList.Value=previous; end
@@ -793,13 +800,13 @@ classdef ReferencePreparationApp < handle
 
         function qcCellEdited(app,source,event)
             row=event.Indices(1); column=event.Indices(2);
-            if row<1 || row>numel(app.CellIds) || ~ismember(column,[7 8])
+            if row<1 || row>numel(app.CellIds) || ~ismember(column,[2 3])
                 app.updateQc();
                 return
             end
             try
                 cellId=app.CellIds(row);
-                if column==7
+                if column==2
                     app.setCellEligibility(cellId, ...
                         "RecordingEnabled",logical(event.NewData));
                 else

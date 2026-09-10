@@ -586,3 +586,19 @@ calibration and there is deliberately no 2P column beside it, since a 2P
 acquisition takes its Pockels command from the protocol rather than per cell.
 The reorder is presentation only -- the edit callback still writes Record and
 Stim through `setCellEligibility`, and Blue V stays read-only.
+
+## 2026-09-10 — Acquisition quick-look follows explicit frozen-run linkage
+
+`inspect_acquisition` is deliberately a viewer, not a preprocessing pipeline.
+Each new runner record points explicitly to its frozen run and
+`reference_model.mat`; the viewer refuses to guess when that linkage is absent
+or inconsistent. It passes the linked `reference.roi_masks` directly to
+`extract_roi_traces` with background, motion, and photobleach correction all
+disabled, so the displayed cells are exactly the canonical biological ROIs
+used for planning.
+
+The stimulation panel is built from
+`adaptive_optopatch_record.pulse_schedule`, which is the schedule that actually
+executed. This distinction matters for staged 2P: its separate
+`frozen_pulse_schedule` remains immutable acquisition intent, while the saved
+executed schedule contains the subset and attenuation physically commanded.

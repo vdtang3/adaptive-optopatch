@@ -179,6 +179,24 @@ The title contains `[SIMULATION]`, and acquisitions are dispatched only to
 There are no modality-specific production runner GUIs. The unified app owns
 both 1P and 2P planning, freezing, execution, checkpointing, and resume.
 
+### Quick-look completed acquisitions
+
+For a rapid experiment sanity check, select a completed Luminos experiment or
+pass its exact directory:
+
+```matlab
+inspect_acquisition
+inspect_acquisition("path/to/luminos/experiment")
+```
+
+The viewer follows the acquisition record's explicit run/reference link and
+fails if that link is missing, broken, or conflicting. It extracts traces from
+the frozen reference's canonical biological soma masks with background,
+motion, and photobleach correction disabled. The bottom panel plots the saved
+executed `adaptive_optopatch_record.pulse_schedule`: mod488 for 1P or Pockels
+for 2P. For staged 2P this deliberately uses the executed schedule rather than
+the separate untouched frozen schedule.
+
 ## First installation on the VU
 
 ### Requirements

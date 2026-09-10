@@ -225,6 +225,8 @@ save_checkpoint();
         record.waveform_summary=waveformSummary;
         record.target_configuration=config;
         record.experiment_directory=folder;
+        record.run_directory=options.OutputDirectory;
+        record.reference_model_path=linked_reference_path(options.OutputDirectory);
         record.obis_power_w=double(hardware.laser.SetPower);
         record.obis_mode=string(hardware.laser.Mode);
         record.daq_synchronization= ...
@@ -264,6 +266,14 @@ save_checkpoint();
         hardware.dmd.Write_Static();
     end
 
+end
+
+function path=linked_reference_path(runDirectory)
+path="";
+if strlength(runDirectory)>0
+    candidate=fullfile(runDirectory,"reference_model.mat");
+    if isfile(candidate), path=string(candidate); end
+end
 end
 
 function value=row_advisories(row)

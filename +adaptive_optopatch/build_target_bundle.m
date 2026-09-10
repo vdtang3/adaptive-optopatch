@@ -110,6 +110,7 @@ targets.coordinate_space = "voltage_camera_full_sensor_pixels";
 targets.preview_coordinate_space="snapshot_intrinsic_pixels";
 targets.reference_camera = reference_camera_geometry(reference);
 targets.scanner_transform = scannerTransform;
+targets.stimulation_dmd_transform = stimulation_dmd_transform(reference);
 targets.blank_dmd_mask = false(reference.image_size);
 targets.canonical_roi_masks=logical(reference.roi_masks);
 targets.blue_camera_masks = blueMasks;
@@ -131,6 +132,15 @@ targets.parameters = struct( ...
     "orange_expansion_pixels",options.OrangeExpansionPixels, ...
     "blue_mask_adjustment_pixels",options.BlueMaskAdjustmentPixels, ...
     "edge_margin_pixels", options.EdgeMarginPixels);
+end
+
+function transform=stimulation_dmd_transform(reference)
+%STIMULATION_DMD_TRANSFORM Blue camera-to-DMD map this plan was built with.
+transform=[];
+if isfield(reference,"stimulation_dmd") && ...
+        isfield(reference.stimulation_dmd,"tform")
+    transform=reference.stimulation_dmd.tform;
+end
 end
 
 function geometry=reference_camera_geometry(reference)

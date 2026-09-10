@@ -1,6 +1,6 @@
-classdef TestHardwareTimingInvariants < matlab.unittest.TestCase
-%TESTHARDWARETIMINGINVARIANTS Physical timing limits that a frozen 1P
-%schedule must satisfy on the live hardware before output is armed.
+classdef TestFrozenExecutionInvariants < matlab.unittest.TestCase
+%TESTFROZENEXECUTIONINVARIANTS Physical conditions a frozen run must still
+%meet on the live hardware, checked before any output is armed.
     methods (Test)
         function unavailableDmdCapabilityIsRecordedNotInvented(testCase)
             [plan,~]=screen_sequence_plan();
@@ -120,6 +120,41 @@ classdef TestHardwareTimingInvariants < matlab.unittest.TestCase
                 "adaptive_optopatch:CameraGeometryChangedSinceFreeze");
             testCase.verifyEqual(numel(sim.AcquisitionHistory),acquisitions, ...
                 "No acquisition may start once the frozen grid is invalid.");
+        end
+
+        function blueDmdRecalibrationIsRecordedNotBlocked(testCase)
+            outputRoot=tempname;
+            cleanup=onCleanup(@()remove_folder(outputRoot)); %#ok<NASGU>
+            [fovState,targets]=single_cell_fixture();
+            fovState=adaptive_optopatch.update_cell_calibration( ...
+                fovState,"cell_001","CommandVoltageV",1);
+            definition=adaptive_optopatch.generate_screen_protocol( ...
+                "PulseCount",1,"PulseDurationMs",5,"PreDelayMs",10, ...
+                "PostDelayMs",10,"ModulatorVoltage",1);
+            manifest=adaptive_optopatch.build_manifest(fovState.reference, ...
+                targets,definition,"Mode","1p_dmd","FovState",fovState, ...
+                "GuiDefaults",gui_defaults());
+            sim=adaptive_optopatch.testing.make_simulated_luminos( ...
+                "SimulationOutputRoot",outputRoot, ...
+                "CameraRoi",targets.reference_camera.roi);
+            dmd=sim.getDevice("DMD","name","DMD_Blue");
+            targets.stimulation_dmd_transform=dmd.tform;
+
+            run=adaptive_optopatch.run_1p_manifest(manifest,targets,sim, ...
+                "ConfirmLiveOutput",true,"ShutterSettleTimeS",0);
+            testCase.verifyTrue(run.stimulation_dmd_calibration.matched);
+
+            % Recalibrating DMD_Blue moves where a frozen mask lands, but is
+            % often a legitimate operator action, so it is archived rather
+            % than blocked - the same policy the frozen 2P transform uses.
+            dmd.tform=affinetform2d([1.05 0 4;0 1.05 6;0 0 1]);
+            second=adaptive_optopatch.run_1p_manifest(manifest,targets,sim, ...
+                "ConfirmLiveOutput",true,"ShutterSettleTimeS",0,"Resume",false);
+            testCase.verifyEqual(second.trials.acquisition_status,"completed");
+            testCase.verifyTrue(second.stimulation_dmd_calibration.comparable);
+            testCase.verifyFalse(second.stimulation_dmd_calibration.matched);
+            testCase.verifyGreaterThan( ...
+                second.stimulation_dmd_calibration.maximum_element_difference,0);
         end
 
         function dmdAdvanceTriggerMustNotOverlapLight(testCase)

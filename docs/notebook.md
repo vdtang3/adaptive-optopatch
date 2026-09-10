@@ -455,3 +455,21 @@ Two policy questions remain open and were deliberately not decided here:
    (`command_voltage_source = "fov_cell"`), and the resolved command and its
    source are now shown in the trial table before the run, but whether 2P
    should inherit that tier at all is an experimenter decision.
+
+## 2026-09-09 — The Blue camera-to-DMD transform is live state, recorded not gated
+
+A 1P run projects frozen camera-space masks through whatever transform
+DMD_Blue currently holds: the transform lives on the device and is applied
+inside Luminos's `setPatterningROI`, so Adaptive Optopatch cannot execute an
+archived one without either warping masks itself or overwriting live scanner
+state - the second of which the frozen-2P-calibration work deliberately
+avoided. Recalibrating DMD_Blue between planning and execution therefore moves
+where a frozen mask lands, and nothing recorded that.
+
+The bundle now archives the transform the plan was built with
+(`targets.stimulation_dmd_transform`) and each 1P run records the comparison
+with the live one in `run.stimulation_dmd_calibration` and in the saved
+per-acquisition record. Consistent with the accepted 2P policy, a difference
+is provenance rather than an execution gate: recalibrating between runs is a
+legitimate operator action, and what reproducibility needs is for the run to
+say which calibration it actually used.

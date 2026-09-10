@@ -40,6 +40,10 @@ classdef SimulatedLuminosDevice < handle
         ResetCount double = 0
         StaticWriteCount double = 0
         pattern_stack logical = false(0,0,0)
+        % Declared ALP_MIN_PICTURE_TIME equivalent. NaN means the simulated
+        % DMD declares no capability, so no advance-interval limit is
+        % invented; tests set it to exercise the real check.
+        minimum_picture_time_us double = NaN
         StackWriteCount double = 0
         StackMode string = ""
         trigger_channel string = ""

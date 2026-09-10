@@ -305,3 +305,23 @@ synthesizes an STF protocol; `pilot_mixed_trains` runs a bundle frozen from an
 `stf_mixed_conditions` protocol designed in `pulse-protocols/`, keeping the
 protocol artifact canonical. When the bundle archives a scanner calibration,
 both preview and execution use that frozen targeting transform.
+
+## 2026-09-09 — The DMD's own minimum picture time bounds pattern advance
+
+Nothing protected the externally triggered Blue pattern-advance interval. A
+frozen schedule whose end-to-start dark interval is shorter than the ALP can
+display would drop advance triggers, so a pulse would be delivered through the
+previous pulse's mask — light on the wrong cell, with no error.
+
+No constant was invented for this. The ALP exposes `ALP_MIN_PICTURE_TIME`,
+documented as the minimum time between the start of consecutive pictures, and
+Luminos's `Write_Stack` already programs exactly that value into the allocated
+sequence, so it is authoritative for the stack that is loaded.
+`dmd_pattern_advance_capability` reads it (preferring an explicitly declared
+`minimum_picture_time_us` when a profile or test backend states one), and
+`prepare_luminos_dmd_sequence` checks the frozen advance schedule against it
+immediately after the stack is written — before the DAQ waveform is built and
+before the shutter opens. The frozen schedule is never stretched to fit; a
+violation is reported with the offending interval and its two pulses. When the
+device reports no capability, the configuration records that the interval was
+not validated rather than substituting a guess.

@@ -634,10 +634,23 @@ other than `mod488`. For each trial it:
 6. closes `shutter488`, writes `mod488 = 0 V`, blanks the DMD, checkpoints the
    manifest, and restores the original active Luminos waveform settings.
 
+When a trial needs more than one Blue pattern, the ALP stack is armed in
+`slave` mode and advanced by one external trigger per pulse. After the stack is
+written, and before the DAQ waveform is built or the shutter opens, the runner
+compares the frozen advance schedule with the DMD's own
+`ALP_MIN_PICTURE_TIME` — the minimum time between the start of consecutive
+pictures, which is the value Luminos programs into the sequence. A schedule
+that would advance faster is rejected by naming the offending interval and its
+two pulses; the frozen dark interval is never stretched to make it fit, so the
+fix is to lengthen it in the protocol and freeze a new run. No timing constant
+is assumed: if the device does not report the capability, the
+`pattern_advance` record in the trial's target configuration says the interval
+could not be validated.
+
 Live output requires checking **ARM live 488 output** for every run. OBIS power
-and mod488 voltage inherit their active/manifest values unless their override
-checkboxes are selected. **Stop after current** lets the current acquisition
-finish and clean up normally; Luminos remains the emergency-abort interface.
+inherits its active value unless the override checkbox is selected. **Stop
+after current** lets the current acquisition finish and clean up normally;
+Luminos remains the emergency-abort interface.
 
 Programmatic use is also available:
 

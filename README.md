@@ -8,6 +8,52 @@ interchangeable stimulation backends:
 - `1p_dmd`: logical soma masks transformed by Luminos through `DMD_Blue`.
 - `2p_spiral`: soma centers and radii passed to the Luminos scanning device.
 
+## Audit task orchestration
+
+The repository includes a conservative local harness for running bounded audit
+fixes in isolated Git worktrees. It automates process bookkeeping; review and
+scientific decisions remain human responsibilities.
+
+```bash
+./ao-agent status
+./ao-agent run                    # collect finished workers and fill free slots
+./ao-agent launch C2              # launch one eligible task
+./ao-agent launch C2 --dry-run    # show worktree and Claude command only
+./ao-agent approve C2             # cherry-pick, retest main, push, and clean up
+./ao-agent reject C2
+./ao-agent cleanup C2
+```
+
+Durable queue definitions are in `agent_tasks/tasks.json`; shared worker rules
+and short task handoffs are separate Markdown files. The JSON records IDs,
+dependencies, the `main` base policy, model, tests, and expected touch areas.
+C3 is blocked until C2 is reviewed and integrated because both affect staged
+2P release logic.
+
+Runtime state, generated prompts, and logs are written atomically beneath the
+ignored `.ao-agent/` directory. Worktrees are created outside the repository at
+`../.ao-agent-worktrees/adaptive-optopatch/<task-id>`, each from the current
+local `main` SHA on an `agent/<id>-<title>` branch. At most three workers are
+live by default. Completed workers must leave exactly one commit and a clean
+worktree. The harness serializes focused and full MATLAB test runs, then pushes
+the tested review branch and waits for explicit approval.
+
+Approval verifies the recorded base, tested commit, and remote branch; prints
+the diff summary; and refuses to proceed unless the authoritative checkout is
+clean and local `main` equals `origin/main`. It cherry-picks only the approved
+commit, runs the full suite on `main`, and pushes without force. A cherry-pick
+conflict is left untouched, recorded as `integration_conflict`, and reported
+for manual semantic resolution. Failed integration tests leave the unpushed
+commit on local `main` for inspection.
+
+Successful integration removes the clean worktree plus local and remote review
+branches, then unlocks dependencies. Manual cleanup also refuses active,
+conflicted, or dirty worktrees so untracked user files are preserved. Human
+work still includes reviewing the pushed diff, deciding whether to approve,
+resolving semantic conflicts, and deciding what to do after an integration
+test or push failure. The harness never launches audit work during its own
+tests.
+
 `AdaptiveOptopatchApp` is the primary operator interface. Reference annotation,
 protocol configuration, target/waveform preview, preflight, immutable run-plan
 archiving, acquisition, checkpointing, and resume are one continuous workflow.

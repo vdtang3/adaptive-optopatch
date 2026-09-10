@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "settings": {
+    "max_workers": 3,
+    "worker_instructions": "worker-instructions.md",
+    "integration_test_command": "matlab -nodisplay -nosplash -batch \"cd('/home/vdtang/code/cohen-lab/software/adaptive-optopatch'); run_tests\""
+  },
+  "tasks": [
+    {
+      "id": "C2",
+      "title": "Preserve frozen manifest during 2P staged runs",
+      "depends_on": [],
+      "base": "main",
+      "model": "sonnet",
+      "handoff": "handoffs/C2.md",
+      "focused_test_command": "matlab -nodisplay -nosplash -batch \"cd(pwd); results = runtests('tests/TestAdaptiveOptopatch.m'); assertSuccess(results)\"",
+      "full_test_command": "matlab -nodisplay -nosplash -batch \"cd(pwd); run_tests\"",
+      "expected_paths": [
+        "+adaptive_optopatch/run_2p_manifest.m",
+        "tests/TestAdaptiveOptopatch.m"
+      ]
+    },
+    {
+      "id": "C3",
+      "title": "Apply attenuation to the executed 2P test command",
+      "depends_on": ["C2"],
+      "base": "main",
+      "model": "sonnet",
+      "handoff": "handoffs/C3.md",
+      "focused_test_command": "matlab -nodisplay -nosplash -batch \"cd(pwd); results = runtests('tests/TestAdaptiveOptopatch.m'); assertSuccess(results)\"",
+      "full_test_command": "matlab -nodisplay -nosplash -batch \"cd(pwd); run_tests\"",
+      "expected_paths": [
+        "+adaptive_optopatch/run_2p_manifest.m",
+        "+adaptive_optopatch/validate_2p_release_level.m",
+        "tests/TestAdaptiveOptopatch.m"
+      ]
+    },
+    {
+      "id": "A14",
+      "title": "Bring TwoPhotonTestRunnerApp up to schema 3",
+      "depends_on": [],
+      "base": "main",
+      "model": "sonnet",
+      "handoff": "handoffs/A14.md",
+      "focused_test_command": "matlab -nodisplay -nosplash -batch \"cd(pwd); results = runtests('tests/TestAdaptiveOptopatch.m'); assertSuccess(results)\"",
+      "full_test_command": "matlab -nodisplay -nosplash -batch \"cd(pwd); run_tests\"",
+      "expected_paths": [
+        "+adaptive_optopatch/TwoPhotonTestRunnerApp.m",
+        "launch_2p_test_runner_gui.m",
+        "launch_simulated_2p_test_runner_gui.m",
+        "tests/TestAdaptiveOptopatch.m"
+      ]
+    },
+    {
+      "id": "M1",
+      "title": "Enforce a physical DMD pattern-advance interval limit",
+      "depends_on": [],
+      "base": "main",
+      "model": "sonnet",
+      "handoff": "handoffs/M1.md",
+      "focused_test_command": "matlab -nodisplay -nosplash -batch \"cd(pwd); results = runtests('tests/TestBlueMaskEventExecutability.m'); assertSuccess(results)\"",
+      "full_test_command": "matlab -nodisplay -nosplash -batch \"cd(pwd); run_tests\"",
+      "expected_paths": [
+        "+adaptive_optopatch/prepare_luminos_dmd_sequence.m",
+        "+adaptive_optopatch/preflight_trial.m",
+        "tests/TestBlueMaskEventExecutability.m"
+      ]
+    }
+  ]
+}

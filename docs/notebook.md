@@ -242,3 +242,14 @@ only when no active frozen run exists. Starting a genuinely new run over an
 active one still requires an explicit call to `freezeCurrentPlan` (there is
 no separate GUI action or confirmation gate for this); resume is likewise
 unaffected by editable GUI state.
+
+## 2026-09-09 — Audit fixes use a conservative local task orchestrator
+
+The remaining audit findings are represented as small committed JSON tasks with
+separate handoffs, while mutable state and logs stay ignored. Each worker starts
+from the then-current authoritative `main` in a sibling worktree, produces one
+commit, and is tested and pushed only as a review branch. Explicit approval is
+the boundary for cherry-picking into `main`; passing tests alone never triggers
+integration. Conflicts and post-pick test failures deliberately stop for human
+judgment. This keeps the successful isolated-worker workflow reproducible while
+avoiding an autonomous layer that could make experimental policy decisions.

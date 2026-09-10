@@ -1,2 +1,4 @@
 .DS_Store
 pulse-protocols/generated/
+.ao-agent/
+__pycache__/

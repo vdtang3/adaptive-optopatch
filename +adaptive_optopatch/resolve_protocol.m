@@ -30,13 +30,14 @@ for acquisitionIndex=1:numel(definition.acquisitions)
             outputIndex=outputIndex+1;
             resolved{outputIndex,1}=resolve_acquisition(definition,acquisition, ...
                 fovState,guiDefaults,cellIndices(selectedIndex), ...
-                targetIndices(selectedIndex),acquisitionIndex,outputIndex);
+                targetIndices(selectedIndex),acquisitionIndex,outputIndex, ...
+                options.Mode);
         end
     else
         outputIndex=outputIndex+1;
         resolved{outputIndex,1}=resolve_multi_target(definition,acquisition, ...
             fovState,guiDefaults,cellIndices,targetIndices, ...
-            acquisitionIndex,outputIndex);
+            acquisitionIndex,outputIndex,options.Mode);
     end
 end
 if options.Mode=="1p_dmd"
@@ -69,7 +70,7 @@ end
 end
 
 function protocol=resolve_acquisition(definition,acquisition,fovState,gui, ...
-        cellIndex,targetIndex,acquisitionIndex,outputIndex)
+        cellIndex,targetIndex,acquisitionIndex,outputIndex,mode)
 events=acquisition.events;
 n=height(events);
 if definition.event_order=="randomized" && ~acquisition.event_order_realized
@@ -80,11 +81,11 @@ end
 events.target_cell_id=repmat(string(fovState.cells(cellIndex).cell_id),n,1);
 events.target_index=repmat(targetIndex,n,1);
 protocol=resolve_values(definition,acquisition,events,fovState,gui, ...
-    repmat(cellIndex,n,1),acquisitionIndex,outputIndex);
+    repmat(cellIndex,n,1),acquisitionIndex,outputIndex,mode);
 end
 
 function protocol=resolve_multi_target(definition,acquisition,fovState,gui, ...
-        cellIndices,targetIndices,acquisitionIndex,outputIndex)
+        cellIndices,targetIndices,acquisitionIndex,outputIndex,mode)
 template=acquisition.events;
 nTemplate=height(template); repetitions=acquisition.target_repetitions;
 rows=cell(numel(cellIndices)*repetitions*nTemplate,1); cellMap=zeros(numel(rows),1);
@@ -113,11 +114,11 @@ events.target_cell_id=string({fovState.cells(cellMap).cell_id})';
 events.target_index=targetMap;
 events.pulse_id=(1:height(events))';
 protocol=resolve_values(definition,acquisition,events,fovState,gui, ...
-    cellMap,acquisitionIndex,outputIndex);
+    cellMap,acquisitionIndex,outputIndex,mode);
 end
 
 function protocol=resolve_values(definition,acquisition,events,fovState,gui, ...
-        cellMap,acquisitionIndex,outputIndex)
+        cellMap,acquisitionIndex,outputIndex,mode)
 n=height(events); metadata=adaptive_optopatch.protocol_parameter_metadata();
 eventSources=struct;
 for name=["command_voltage_v","pulse_duration_s","blue_mask_adjustment_pixels"]
@@ -130,7 +131,7 @@ for name=["command_voltage_v","pulse_duration_s","blue_mask_adjustment_pixels"]
             values(k)=0; sources(k)="null"; continue
         end
         [values(k),sources(k)]=resolve_one(raw(k),name,definition, ...
-            acquisition,fovState.cells(cellMap(k)),gui);
+            acquisition,fovState.cells(cellMap(k)),gui,mode);
     end
     if name=="command_voltage_v" && ...
             ismember("command_voltage_scale",string(events.Properties.VariableNames))
@@ -158,11 +159,11 @@ if all(cellMap==cellMap(1))
     acquisitionCell=fovState.cells(cellMap(1));
 end
 [orange,orangeSource]=resolve_one(NaN,"orange_expansion_pixels",definition, ...
-    acquisition,acquisitionCell,gui);
+    acquisition,acquisitionCell,gui,mode);
 [radius,radiusSource]=resolve_one(NaN,"spiral_radius_um",definition, ...
-    acquisition,acquisitionCell,gui);
+    acquisition,acquisitionCell,gui,mode);
 [density,densitySource]=resolve_one(NaN,"spiral_density_points_per_volt", ...
-    definition,acquisition,acquisitionCell,gui);
+    definition,acquisition,acquisitionCell,gui,mode);
 parameters=struct("orange_expansion_pixels",orange, ...
     "spiral_radius_um",radius,"spiral_density_points_per_volt",density);
 parameterSources=struct("orange_expansion_pixels",orangeSource, ...
@@ -233,8 +234,8 @@ if ~isfinite(parameters.spiral_density_points_per_volt) || ...
 end
 end
 
-function [value,source]=resolve_one(eventValue,name,definition,acquisition,cellRecord,gui)
-allowed=allowed_sources(definition,name);
+function [value,source]=resolve_one(eventValue,name,definition,acquisition,cellRecord,gui,mode)
+allowed=allowed_sources(definition,name,mode);
 if isfinite_scalar(eventValue) && ismember("event",allowed)
     value=double(eventValue); source="event"; return
 end
@@ -257,15 +258,33 @@ guiName=string(meta.gui_field);
 if isfield(gui,guiName) && isfinite_scalar(gui.(guiName)) && ismember("gui",allowed)
     value=double(gui.(guiName)); source="gui"; return
 end
+if mode=="2p_spiral" && name=="command_voltage_v"
+    error("adaptive_optopatch:MissingTwoPhotonPockelsVoltage", ...
+        ['This 2P protocol does not define its Pockels stimulation voltage. ' ...
+         'A 2p_spiral acquisition takes its command only from the protocol ' ...
+         'artifact: set command_voltage_v on the events, on the acquisition ' ...
+         'parameters, or on the protocol parameters. There is deliberately ' ...
+         'no GUI default and no per-cell Blue-calibration ' ...
+         '(selected_blue_voltage_v) fallback for the 2P Pockels command.']);
+end
 error("adaptive_optopatch:UnresolvedProtocolParameter", ...
     "Required parameter %s remains unresolved after event, acquisition, FOV-cell, and GUI resolution.",name);
 end
 
-function allowed=allowed_sources(definition,name)
+function allowed=allowed_sources(definition,name,mode)
 allowed=["event","acquisition","protocol","fov_cell","gui"];
 if isfield(definition,"parameter_sources") && ...
         isfield(definition.parameter_sources,name)
     allowed=string(definition.parameter_sources.(name));
+end
+if mode=="2p_spiral" && name=="command_voltage_v"
+    % The Pockels command is owned by the 2P protocol artifact. The
+    % fov_cell tier for this parameter is selected_blue_voltage_v, a 488 nm
+    % calibration that must never become a Chameleon command, and a GUI
+    % default must never silently supply a missing 2P voltage. Narrowing
+    % here rather than in each generator makes the rule unconditional: a
+    % protocol cannot widen it back with its own parameter_sources.
+    allowed=intersect(allowed,["event","acquisition","protocol"],"stable");
 end
 end
 

@@ -110,7 +110,11 @@ targets.coordinate_space = "voltage_camera_full_sensor_pixels";
 targets.preview_coordinate_space="snapshot_intrinsic_pixels";
 targets.reference_camera = reference_camera_geometry(reference);
 targets.scanner_transform = scannerTransform;
-targets.stimulation_dmd_transform = stimulation_dmd_transform(reference);
+% Provenance only. Luminos owns the camera-to-DMD calibration and applies
+% whichever one is active at execution; this records which one was active
+% while the plan was built so a completed run can say whether the
+% projection changed in between.
+targets.planning_blue_dmd_transform = planning_blue_dmd_transform(reference);
 targets.blank_dmd_mask = false(reference.image_size);
 targets.canonical_roi_masks=logical(reference.roi_masks);
 targets.blue_camera_masks = blueMasks;
@@ -134,8 +138,9 @@ targets.parameters = struct( ...
     "edge_margin_pixels", options.EdgeMarginPixels);
 end
 
-function transform=stimulation_dmd_transform(reference)
-%STIMULATION_DMD_TRANSFORM Blue camera-to-DMD map this plan was built with.
+function transform=planning_blue_dmd_transform(reference)
+%PLANNING_BLUE_DMD_TRANSFORM Blue camera-to-DMD map active while planning.
+%   Never authoritative for execution; see capture_1p_dmd_calibration.
 transform=[];
 if isfield(reference,"stimulation_dmd") && ...
         isfield(reference.stimulation_dmd,"tform")

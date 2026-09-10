@@ -122,7 +122,12 @@ classdef TestFrozenExecutionInvariants < matlab.unittest.TestCase
                 "No acquisition may start once the frozen grid is invalid.");
         end
 
-        function blueDmdRecalibrationIsRecordedNotBlocked(testCase)
+        function onePhotonUsesLuminosCalibrationEvenAfterRecalibration(testCase)
+            % Luminos owns the camera-to-DMD calibration. A run planned
+            % under calibration A and executed after Luminos is recalibrated
+            % to B must use B, because B is Luminos's current estimate of
+            % how to realize the same camera-space intent. A != B is not an
+            % error and is not corrected; it is recorded.
             outputRoot=tempname;
             cleanup=onCleanup(@()remove_folder(outputRoot)); %#ok<NASGU>
             [fovState,targets]=single_cell_fixture();
@@ -137,24 +142,59 @@ classdef TestFrozenExecutionInvariants < matlab.unittest.TestCase
             sim=adaptive_optopatch.testing.make_simulated_luminos( ...
                 "SimulationOutputRoot",outputRoot, ...
                 "CameraRoi",targets.reference_camera.roi);
-            dmd=sim.getDevice("DMD","name","DMD_Blue");
-            targets.stimulation_dmd_transform=dmd.tform;
+            blue=sim.getDevice("DMD","name","DMD_Blue");
+            orange=sim.getDevice("DMD","name","DMD_Orange");
+            calibrationA=blue.tform;
+            targets.planning_blue_dmd_transform=calibrationA;
 
             run=adaptive_optopatch.run_1p_manifest(manifest,targets,sim, ...
                 "ConfirmLiveOutput",true,"ShutterSettleTimeS",0);
-            testCase.verifyTrue(run.stimulation_dmd_calibration.matched);
+            testCase.verifyEqual(run.dmd_calibration.authority, ...
+                "luminos_active_calibration");
+            testCase.verifyEqual(run.dmd_calibration.blue.comparison,"unchanged");
+            testCase.verifyEqual( ...
+                run.dmd_calibration.blue.execution_transform_matrix, ...
+                calibrationA.A);
 
-            % Recalibrating DMD_Blue moves where a frozen mask lands, but is
-            % often a legitimate operator action, so it is archived rather
-            % than blocked - the same policy the frozen 2P transform uses.
-            dmd.tform=affinetform2d([1.05 0 4;0 1.05 6;0 0 1]);
+            % Optics drift; the operator recalibrates DMD_Blue and DMD_Orange
+            % in Luminos. Adaptive Optopatch must neither fail nor restore
+            % the planning-time transform.
+            calibrationB=affinetform2d([1.05 0 4;0 1.05 6;0 0 1]);
+            blue.tform=calibrationB;
+            orange.tform=affinetform2d([1.07 0 5;0 1.07 7;0 0 1]);
             second=adaptive_optopatch.run_1p_manifest(manifest,targets,sim, ...
                 "ConfirmLiveOutput",true,"ShutterSettleTimeS",0,"Resume",false);
             testCase.verifyEqual(second.trials.acquisition_status,"completed");
-            testCase.verifyTrue(second.stimulation_dmd_calibration.comparable);
-            testCase.verifyFalse(second.stimulation_dmd_calibration.matched);
-            testCase.verifyGreaterThan( ...
-                second.stimulation_dmd_calibration.maximum_element_difference,0);
+            testCase.verifyEqual(blue.tform.A,calibrationB.A, ...
+                "Adaptive Optopatch must not overwrite the Luminos transform.");
+
+            % Provenance shows which calibration actually projected the mask.
+            blueRecord=second.dmd_calibration.blue;
+            testCase.verifyEqual(blueRecord.comparison,"changed");
+            testCase.verifyTrue(blueRecord.calibration_changed_since_planning);
+            testCase.verifyEqual(blueRecord.execution_transform_matrix, ...
+                calibrationB.A);
+            testCase.verifyEqual(blueRecord.planning_transform_matrix, ...
+                calibrationA.A);
+            testCase.verifyGreaterThan(blueRecord.maximum_element_difference,0);
+
+            % Orange follows the same ownership model: its live Luminos
+            % calibration is used and archived, with no planning snapshot
+            % and no drift comparison invented for it.
+            orangeRecord=second.dmd_calibration.orange;
+            testCase.verifyTrue(orangeRecord.present);
+            testCase.verifyEqual(orangeRecord.name,"DMD_Orange");
+            testCase.verifyEqual(orangeRecord.execution_transform_matrix, ...
+                orange.tform.A);
+            testCase.verifyEqual(orangeRecord.comparison,"no_planning_snapshot");
+
+            saved=load(fullfile(second.trials.experiment_directory, ...
+                "output_data.mat"),"adaptive_optopatch_record");
+            archived=saved.adaptive_optopatch_record.dmd_calibration;
+            testCase.verifyEqual(archived.blue.execution_transform_matrix, ...
+                calibrationB.A);
+            testCase.verifyEqual(archived.orange.execution_transform_matrix, ...
+                orange.tform.A);
         end
 
         function dmdAdvanceTriggerMustNotOverlapLight(testCase)

@@ -473,3 +473,62 @@ per-acquisition record. Consistent with the accepted 2P policy, a difference
 is provenance rather than an execution gate: recalibrating between runs is a
 legitimate operator action, and what reproducibility needs is for the run to
 say which calibration it actually used.
+
+## 2026-09-10 — Luminos owns 1P camera-to-DMD calibration
+
+Decided: the `DMD_Blue` and `DMD_Orange` camera-to-DMD transforms belong to
+Luminos. Adaptive Optopatch owns camera-space biological ROIs, Blue and Orange
+masks, resolved parameters, eligibility, mask adjustment, and timing; Luminos
+owns the conversion into each DMD's coordinates and applies it.
+
+The consequence is that a recalibration after a run was frozen is *used*. If
+the frozen intent is "illuminate camera coordinate X" and Luminos's estimate of
+where X lands on the DMD has improved, the new estimate realizes the same
+intent better than the old one. So there is no drift gate, no replay of an
+archived transform, and no mask warping inside Adaptive Optopatch.
+
+Yesterday's provenance helper was framed as frozen-vs-live and named
+accordingly, which implied the planning transform had standing it does not
+have. It is replaced by `capture_1p_dmd_calibration`, which archives what
+Luminos actually applied for both DMDs — transform, DMD dimensions, reference
+image geometry — and, only where a planning snapshot exists
+(`targets.planning_blue_dmd_transform`), whether the projection changed since
+planning. `run.dmd_calibration.authority` names the owner explicitly.
+`resolve_luminos_1p_hardware` resolves `DMD_Orange` non-fatally so its
+calibration can be archived too; `prepare_luminos_orange_mask` remains the
+place that requires and validates it. No Orange calibration subsystem was
+added.
+
+2P is deliberately different and unchanged: Adaptive Optopatch owns the
+camera-to-galvo calibration and a frozen run executes the transform archived
+with it.
+
+## 2026-09-10 — The 2P Pockels command is protocol-only
+
+Decided: for `2p_spiral`, the stimulation voltage must come from the protocol
+artifact. Generic precedence let it fall through to the `fov_cell` tier, which
+`protocol_parameter_metadata` maps to `selected_blue_voltage_v` — a per-cell
+488 nm calibration — and then to the GUI default. A 2P acquisition could
+therefore execute a Blue calibration value as a Chameleon command, in
+preference to the GUI value, with only `command_voltage_source="fov_cell"` to
+show for it.
+
+`resolve_protocol` now narrows the allowed tiers for `command_voltage_v` to
+`event > acquisition > protocol` whenever the mode is `2p_spiral`. The
+narrowing is applied after a definition's own `parameter_sources`, so a
+protocol cannot widen it back. An unresolved 2P command raises
+`MissingTwoPhotonPockelsVoltage`, whose message names the missing explicit
+voltage rather than reporting a generic fall-through, and
+`validate_protocol_for_mode` reports the same incompatibility at protocol load
+so the operator does not discover it at freeze time.
+
+No `pockels_voltage_v` field was introduced. The resolved schedule must keep
+`command_voltage_v` — the waveform builders, validators, runners, record, and
+GUI all read it — so a second input spelling would be a competing name for the
+same value rather than a separate concept. The five required invariants are
+enforced by the source rule, not by the field name, so `command_voltage_v` is
+retained and documented as the explicit, protocol-only Pockels command for
+`2p_spiral`. No per-cell 2P voltage tier was added.
+
+The unified GUI's command-voltage field is now labelled `mod488 (V)` and is
+disabled in 2P mode, because nothing typed there can reach a Pockels command.

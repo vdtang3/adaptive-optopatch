@@ -86,6 +86,23 @@ such as “use GUI value.” A cell may validly have `Stim=true` and
 round-robin definition supplies no voltage, so every selected cell must have a
 positive finite Blue voltage in the FOV.
 
+### `command_voltage_v` in a 2P protocol
+
+For `2p_spiral` the command voltage is the Chameleon Pockels command, and it is
+owned by the protocol artifact alone:
+
+```text
+event > acquisition > protocol > error
+```
+
+`fov_cell` and `gui` are not consulted. The `fov_cell` tier for this parameter
+is `selected_blue_voltage_v`, a per-cell 488 nm calibration that must never
+become a Pockels command, and a GUI default must never quietly stand in for a
+missing 2P voltage. A definition cannot widen this back with its own
+`parameter_sources`. A `2p_spiral` protocol that leaves its command
+unspecified is rejected when the protocol is checked against the mode, before
+any plan is frozen.
+
 Typical sources are:
 
 | Experiment | Voltage | Blue mask | Orange mask | Targets |

@@ -22,6 +22,11 @@ hardware.laser=require_device(app,"Laser_Device",profile.laser.name);
 hardware.modulator=require_device(app,"NI_DAQ_Modulator",profile.modulator.name);
 hardware.shutter=require_device(app,"NI_DAQ_Shutter",profile.shutter.name);
 hardware.dmd_trigger=require_device(app,"NI_DAQ_Shutter",profile.dmd.trigger_alias);
+% The recording DMD is resolved here only so its Luminos-owned calibration
+% can be archived with the run. prepare_luminos_orange_mask remains the
+% place that requires it and validates it before programming a mask, so a
+% missing or uncalibrated DMD_Orange still fails there, with its message.
+hardware.orange_dmd=optional_device(app,"DMD",profile.orange_dmd.name);
 hardware.cameras=app.getDevice("Camera");
 
 if string(hardware.modulator.port)~=string(profile.modulator.port)
@@ -135,6 +140,16 @@ if ismethod(daq,"Same_Terminal")
 else
     tf=strcmpi(strip(string(a)),strip(string(b)));
 end
+end
+
+function device=optional_device(app,type,name)
+device=[];
+try
+    found=app.getDevice(type,"name",name,"displayWarning",false);
+catch
+    return
+end
+if numel(found)==1, device=found; end
 end
 
 function device=require_device(app,type,name)

@@ -584,6 +584,46 @@ Camera points are `[x y]`, with `x` indexing columns and `y` indexing rows of
 pre-warp masks into DMD or galvo coordinates. The live Luminos device applies
 its current calibration, camera ROI offset, and binning.
 
+## Calibration ownership
+
+### 1P spatial calibration
+
+The `DMD_Blue` and `DMD_Orange` camera-to-DMD transforms are owned and applied
+by Luminos, and both DMDs must be calibrated against the voltage camera in
+Luminos before use. Adaptive Optopatch keeps its biological masks in
+voltage-camera coordinates and hands those masks to Luminos; the calibration
+active at execution is authoritative.
+
+A recalibration made after a run was frozen is therefore used, not overridden:
+it is Luminos's current estimate of how to realize the same camera-space
+intent. Adaptive Optopatch does not gate on calibration drift, does not replay
+an archived transform, and does not warp masks itself. A calibration Luminos
+actually needs to project a mask is still required — `prepare_luminos_orange_mask`
+refuses an uncalibrated `DMD_Orange`, and `resolve_luminos_1p_hardware` refuses
+an uncalibrated `DMD_Blue`.
+
+Each 1P run archives the calibration it used in `run.dmd_calibration` and in
+the saved `adaptive_optopatch_record`: per DMD, the transform Luminos applied,
+its DMD dimensions and reference-image geometry, and — for Blue, where the
+plan carries a `planning_blue_dmd_transform` snapshot — whether the projection
+changed between planning and execution. All of that is provenance.
+
+### 2P spatial calibration
+
+Adaptive Optopatch currently owns the camera-to-galvo calibration. The
+calibration archived with the frozen run is what executes it, and a later
+active-calibration change does not affect a frozen or resumed run.
+
+### 2P stimulation voltage
+
+The Pockels command must be supplied explicitly by the 2P protocol artifact,
+at event, acquisition, or protocol scope. There is no GUI fallback and no
+per-cell fallback; in particular `selected_blue_voltage_v` is a 488 nm
+calibration and can never become a Chameleon command. A `2p_spiral` protocol
+that omits its command is rejected before a plan can be frozen. Because
+`command_voltage_v` is shared with 1P, note that for `2p_spiral` it *is* the
+explicit Pockels command and is protocol-only.
+
 ## Safety checks
 
 - Metadata must identify `Virtual_Upright`, voltage camera serial `001125`,
@@ -596,9 +636,11 @@ its current calibration, camera ROI offset, and binning.
   waveform sample rate to be able to realize every frozen pulse and dark
   interval, and any externally triggered DMD advance schedule to respect the
   DMD's own reported minimum picture time.
-- The Blue camera-to-DMD transform and, for 2P, the active galvo calibration
-  are compared with the ones the plan was built with and archived with the
-  run. A difference is provenance, not a gate.
+- The 1P camera-to-DMD calibration Luminos applies, and for 2P the frozen
+  galvo calibration, are archived with the run. A 1P calibration difference
+  between planning and execution is provenance, not a gate.
+- A `2p_spiral` protocol without an explicit Pockels command is rejected
+  before freezing.
 - A nonidentity scanner transform is required for 2P live configuration,
   unless `AllowIdentityScannerTransform=true` is explicitly supplied.
 - Spiral density is expressed using Luminos's native `Points_Per_Volt` value.

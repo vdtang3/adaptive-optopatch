@@ -1,7 +1,7 @@
 % Create an ascending Blue-light power ramp for every Stim-enabled cell.
 
 pulse_duration_ms=10;
-voltage_levels_v=[]; % REQUIRED, for example [0.5 0.75 1.0 1.15 1.3]
+voltage_levels_v=[0.5 0.75 1.0 1.15 1.3]; % REQUIRED, for example [0.5 0.75 1.0 1.15 1.3]
 repeats_per_voltage=10;
 dark_interval_ms=90;
 pre_delay_ms=100;

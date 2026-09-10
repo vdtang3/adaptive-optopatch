@@ -325,3 +325,30 @@ before the shutter opens. The frozen schedule is never stretched to fit; a
 violation is reported with the offending interval and its two pulses. When the
 device reports no capability, the configuration records that the interval was
 not validated rather than substituting a guess.
+
+## 2026-09-09 — What the live waveform sample rate is allowed to change
+
+1P timing is frozen in seconds, not samples: the mod488 waveform is described
+to Luminos as pulse onsets/offsets and Luminos samples it at whatever rate the
+active protocol uses. The rate therefore decides whether the frozen pattern
+physically exists at all. Two failures are unambiguous and now block before
+output: a light pulse whose window contains no sample emits nothing, and a
+dark interval between two light pulses that contains no sample fuses them into
+one longer pulse. The same rate sets the DMD advance-trigger width
+(`max(3/rate, 20 us)`), so a low rate can also push a pattern-advance edge into
+the pulse it selects; that is checked against all light windows rather than
+only the initialization trigger.
+
+Everything else the rate changes is bounded by one sample period. The frozen
+schedule is not adjusted to fit the rate; the realized per-pulse sample counts,
+durations, and the maximum duration error are recorded in the waveform
+summary's `pulse_realization` so the quantization actually used travels with
+the acquisition. What tolerance, if any, should turn that quantization error
+into a hard failure is an experimenter decision and was not invented here.
+
+2P timing is frozen in samples instead: `build_2p_trial_waveforms` emits literal
+X/Y/Pockels vectors that Luminos replays at its active rate. That invariant was
+already enforced (`resolve_luminos_2p_hardware` requires the profile rate and
+`build_luminos_2p_waveform_config` rejects a mismatch), so no check was added;
+the waveform builder is now simply given the resolved rate instead of keeping
+its own copy of the constant.

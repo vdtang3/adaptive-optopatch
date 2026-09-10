@@ -37,7 +37,90 @@ classdef TestHardwareTimingInvariants < matlab.unittest.TestCase
                 configuration.pattern_advance.requested_minimum_interval_s, ...
                 shortest,"AbsTol",1e-12);
         end
+
+        function frozenPulsesMustSurviveTheLiveWaveformSampleRate(testCase)
+            [~,protocol]=screen_sequence_plan();
+            profile=adaptive_optopatch.virtual_upright_1p_profile();
+            wfm=empty_wfm_data();
+
+            fast=live_global_props(200000);
+            [~,~,summary]=adaptive_optopatch.build_luminos_1p_waveform_config( ...
+                fast,wfm,protocol,profile);
+            testCase.verifyEqual(summary.pulse_realization.realized_duration_s, ...
+                protocol.events.duration_s,"AbsTol",1e-9);
+
+            % 100 Hz cannot resolve a 5 ms pulse at all, so the commanded
+            % light would simply not exist.
+            slow=live_global_props(100);
+            testCase.verifyError( ...
+                @()adaptive_optopatch.build_luminos_1p_waveform_config( ...
+                slow,wfm,protocol,profile), ...
+                "adaptive_optopatch:PulseShorterThanWaveformSample");
+        end
+
+        function frozenDarkIntervalsMustSurviveTheLiveSampleRate(testCase)
+            [fovState,targets]=single_cell_fixture();
+            % 5 ms pulses separated by 1 ms of dark: at 500 Hz each pulse
+            % still lands on a sample but the dark interval does not, so the
+            % two commanded pulses would fuse into one.
+            definition=adaptive_optopatch.generate_screen_protocol( ...
+                "PulseCount",3,"PulseDurationMs",5,"DarkIntervalMs",[1 1], ...
+                "PreDelayMs",100,"PostDelayMs",100,"ModulatorVoltage",1);
+            resolved=adaptive_optopatch.resolve_protocol(definition,fovState, ...
+                targets,gui_defaults(),"Mode","1p_dmd");
+            protocol=resolved{1};
+            profile=adaptive_optopatch.virtual_upright_1p_profile();
+            wfm=empty_wfm_data();
+            testCase.verifyError( ...
+                @()adaptive_optopatch.build_luminos_1p_waveform_config( ...
+                live_global_props(500),wfm,protocol,profile), ...
+                "adaptive_optopatch:DarkIntervalShorterThanWaveformSample");
+            [~,~,summary]=adaptive_optopatch.build_luminos_1p_waveform_config( ...
+                live_global_props(200000),wfm,protocol,profile);
+            testCase.verifyGreaterThanOrEqual( ...
+                min(summary.pulse_realization.dark_interval_sample_count),1);
+        end
+
+        function dmdAdvanceTriggerMustNotOverlapLight(testCase)
+            [plan,protocol]=screen_sequence_plan();
+            profile=adaptive_optopatch.virtual_upright_1p_profile();
+            wfm=empty_wfm_data();
+            [~,~,summary]=adaptive_optopatch.build_luminos_1p_waveform_config( ...
+                live_global_props(200000),wfm,protocol,profile, ...
+                "DmdSequencePlan",plan);
+            testCase.verifyEqual(summary.dmd_sequence.pattern_count, ...
+                height(protocol.events));
+
+            % A trigger is at least three samples wide, so a low enough rate
+            % pushes the second advance into the pulse it selects.
+            narrow=protocol;
+            narrow.events.onset_s(2:end)=narrow.events.onset_s(2:end)- ...
+                (narrow.events.onset_s(2)-narrow.events.offset_s(1))+0.004;
+            narrow.events.onset_s(3)=narrow.events.onset_s(2)+ ...
+                narrow.events.duration_s(2)+0.05;
+            narrow=adaptive_optopatch.normalize_protocol(narrow);
+            narrowPlan=adaptive_optopatch.build_dmd_sequence_plan(narrow,targets_for(narrow));
+            testCase.verifyError( ...
+                @()adaptive_optopatch.build_luminos_1p_waveform_config( ...
+                live_global_props(500),wfm,narrow,profile, ...
+                "DmdSequencePlan",narrowPlan), ...
+                "adaptive_optopatch:DmdAdvanceOverlapsLight");
+        end
     end
+end
+
+function targets=targets_for(~)
+[~,targets]=single_cell_fixture();
+end
+
+function props=live_global_props(rate)
+props=struct("rate",rate,"total_time",1,"clock_source","Internal Dev1", ...
+    "trigger_source","Dev1/PFI9","daq_master",true);
+end
+
+function data=empty_wfm_data()
+data=struct("ao",[],"do",[],"ai",[],"di",[],"ctri",[], ...
+    "ao_camera_triggered",[],"do_camera_triggered",[]);
 end
 
 function dmd=simulated_blue_dmd()

@@ -27,6 +27,7 @@ if any(pulses.modulator_voltage<minV | pulses.modulator_voltage>maxV)
     error("adaptive_optopatch:ModulatorVoltageOutOfRange", ...
         "A mod488 command lies outside the declared %.3g-%.3g V range.",minV,maxV);
 end
+realization=validate_pulse_realization(pulses,rate);
 
 globalProps=activeGlobalProps;
 globalProps.total_time=double(protocol.acquisition_duration_s);
@@ -58,6 +59,18 @@ if ~isempty(options.DmdSequencePlan)
         error("adaptive_optopatch:DmdInitializationNotDark", ...
             "The first optical pulse begins before the DMD initialization trigger ends. Add protocol pre-delay.");
     end
+    % A pattern-advance trigger selects the mask for the pulse that follows
+    % it, so it must complete while mod488 is dark. The trigger is at least
+    % three samples wide, so a low live sample rate can push a later advance
+    % into its own pulse and illuminate the previous mask.
+    overlap=first_trigger_light_overlap(triggerOnset,triggerOffset,pulses);
+    if overlap>0
+        error("adaptive_optopatch:DmdAdvanceOverlapsLight", ...
+            ['DMD advance trigger %d ends %.4f ms after it starts, at the ' ...
+             '%.0f Hz active Luminos sample rate, and overlaps an optical ' ...
+             'pulse. Lengthen the preceding dark interval or raise the ' ...
+             'waveform sample rate.'],overlap,1000*triggerWidth,rate);
+    end
     if ~isempty(triggerOffset) && triggerOffset(end)>globalProps.total_time
         error("adaptive_optopatch:DmdAdvanceOutsideAcquisition", ...
             "The final DMD advance trigger exceeds the acquisition duration.");
@@ -83,6 +96,7 @@ summary=struct("schema_version","0.2.0", ...
     "pulse_count",height(pulses), ...
     "onset_sample",onsetSample, ...
     "offset_sample",offsetSample, ...
+    "pulse_realization",realization, ...
     "pulses",pulses);
 if ~isempty(options.DmdSequencePlan)
     summary.dmd_sequence=rmfield(options.DmdSequencePlan,"camera_pattern_stack");
@@ -92,6 +106,74 @@ summary.clock_source=reshape(string(globalProps.clock_source),1,[]);
 summary.trigger_source=reshape(string(globalProps.trigger_source),1,[]);
 summary.expected_clock_bridge=reshape(string(profile.daq.clock_bridge),1,[]);
 summary.expected_start_triggers=reshape(string(profile.daq.default_trigger),1,[]);
+end
+
+function report=validate_pulse_realization(pulses,rate)
+%VALIDATE_PULSE_REALIZATION Confirm the live rate can realize frozen timing.
+%   Frozen 1P timing is expressed in seconds and Luminos samples it at the
+%   active waveform rate, so the rate is what decides whether the requested
+%   pattern physically exists. A pulse whose window contains no sample emits
+%   no light at all, and a dark interval that contains no sample fuses two
+%   commanded pulses into one longer pulse. Both silently change the
+%   experiment, so they fail here rather than being discovered in the data.
+% Sample i is emitted at t=(i-1)/rate and luminos_event_waveform holds a
+% pulse over [onset, offset), so the first sample index inside a boundary is
+% its tick rounded up. Round up with a relative guard: a boundary that is a
+% whole number of samples must not be pushed onto the next one by the
+% floating-point product.
+firstIndex=@(t)ceil(t*rate-1e-9*max(1,abs(t*rate)));
+onsetTick=firstIndex(pulses.onset_s); offsetTick=firstIndex(pulses.offset_s);
+sampleCount=offsetTick-onsetTick;
+light=~pulses.is_null;
+missing=find(light & sampleCount<1,1);
+if ~isempty(missing)
+    error("adaptive_optopatch:PulseShorterThanWaveformSample", ...
+        ['Pulse %s is %.4f ms long, which is shorter than one sample of the ' ...
+         '%.0f Hz active Luminos waveform, so it would emit no light. Use a ' ...
+         'waveform rate of at least %.0f Hz or lengthen the pulse.'], ...
+        string(pulses.pulse_id(missing)), ...
+        1000*pulses.duration_s(missing),rate, ...
+        ceil(1/pulses.duration_s(missing)));
+end
+gapSamples=nan(height(pulses)-1,1);
+for k=1:height(pulses)-1
+    gapSamples(k)=onsetTick(k+1)-offsetTick(k);
+    requested=pulses.onset_s(k+1)-pulses.offset_s(k);
+    if light(k) && light(k+1) && requested>1e-12 && gapSamples(k)<1
+        error("adaptive_optopatch:DarkIntervalShorterThanWaveformSample", ...
+            ['The %.4f ms dark interval between pulses %s and %s contains no ' ...
+             'sample of the %.0f Hz active Luminos waveform, so the two ' ...
+             'commanded pulses would be delivered as one. Use a waveform ' ...
+             'rate of at least %.0f Hz or lengthen the interval.'], ...
+            1000*requested,string(pulses.pulse_id(k)), ...
+            string(pulses.pulse_id(k+1)),rate,ceil(1/requested));
+    end
+end
+% Quantization to the live rate is bounded by one sample period and is
+% recorded rather than corrected: the frozen schedule stays exactly as
+% requested and the realized values travel with the acquisition.
+realizedDuration=sampleCount/rate;
+report=struct("schema_version","1.0.0","sample_rate_hz",rate, ...
+    "pulse_sample_count",sampleCount, ...
+    "realized_duration_s",realizedDuration, ...
+    "maximum_duration_error_s", ...
+        max([abs(realizedDuration(light)-pulses.duration_s(light));0]), ...
+    "dark_interval_sample_count",gapSamples);
+end
+
+function index=first_trigger_light_overlap(triggerOnset,triggerOffset,pulses)
+%FIRST_TRIGGER_LIGHT_OVERLAP Index of the first advance trigger during light.
+index=0;
+light=pulses(~pulses.is_null,:);
+if isempty(light) || isempty(triggerOnset), return; end
+onset=sort(light.onset_s); offset=sort(light.offset_s);
+% Light pulses never overlap, so the number of them intersecting a trigger
+% window is the number starting before it ends minus the number finished
+% before it begins.
+starting=arrayfun(@(value)sum(onset<value-1e-12),triggerOffset);
+finished=arrayfun(@(value)sum(offset<=value+1e-12),triggerOnset);
+overlapping=find(starting-finished>0,1);
+if ~isempty(overlapping), index=overlapping; end
 end
 
 function data=ensure_wfm_fields(data)

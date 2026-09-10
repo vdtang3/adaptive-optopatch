@@ -42,12 +42,27 @@ else
         targetingSource="active_calibration";
     end
 end
+% 2P timing is frozen in samples: build_2p_trial_waveforms emits literal
+% sample vectors that Luminos replays at its active rate, so the two must be
+% one number rather than two independent constants.
 waveforms=adaptive_optopatch.build_2p_trial_waveforms( ...
     protocol,target,tform, ...
+    "SampleRateHz",active_sample_rate(hardware), ...
     "MaximumVelocityVPerS",options.MaximumVelocityVPerS, ...
     "MaximumAccelerationVPerS2",options.MaximumAccelerationVPerS2, ...
     "MinimumIlluminatedRadiusFraction",minimumRadiusFraction);
 preview=struct("schema_version","0.2.0","waveforms",waveforms, ...
     "calibration_coverage",coverage,"motion_validation",motion, ...
     "targeting_tform",tform,"targeting_transform_source",targetingSource);
+end
+
+function rate=active_sample_rate(hardware)
+rate=adaptive_optopatch.virtual_upright_2p_profile().scanner.sample_rate_hz;
+if ~isfield(hardware,"daq") || isempty(hardware.daq), return; end
+try
+    live=double(hardware.daq.global_props.rate);
+catch
+    return
+end
+if isscalar(live) && isfinite(live) && live>0, rate=live; end
 end

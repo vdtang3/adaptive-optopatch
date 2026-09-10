@@ -65,7 +65,7 @@ for k=1:numel(tasks)
         "channels",strings(1,0),"device","");
     channels=safe_get(tasks(k),"channels",[]);
     for c=1:numel(channels)
-        terminal=string(safe_get(channels(c),"phys_channel",""));
+        terminal=strip(string(safe_get(channels(c),"phys_channel","")));
         record.channels(end+1)=terminal;
     end
     if ~isempty(record.channels), record.device=device_from_terminal(record.channels(1)); end
@@ -116,13 +116,13 @@ try
     if ismethod(daq,"remove_al"), value=daq.remove_al(value); end
 catch
 end
-value=string(value);
+value=strip(string(value));
 end
 
 function values=as_string_row(value)
 if isempty(value), values=strings(1,0); return; end
 if iscell(value), values=string(value); else, values=string(value); end
-values=reshape(values,1,[]);
+values=strip(reshape(values,1,[]));
 values=values(strlength(values)>0);
 end
 

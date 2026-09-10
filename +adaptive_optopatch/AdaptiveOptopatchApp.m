@@ -794,7 +794,7 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
         end
 
         function chooseProtocol(app)
-            [file,folder]=uigetfile({"*.mat","Pulse protocol MAT (*.mat)"}, ...
+            [file,folder]=uigetfile({'*.mat','Pulse protocol MAT (*.mat)'}, ...
                 "Select a validated pulse protocol",pwd);
             if isequal(file,0), return; end
             app.invoke(@()app.loadPulseProtocol(string(fullfile(folder,file))));

@@ -3,8 +3,7 @@ function [cameras,plan]=set_camera_frames_for_duration(cameras,durationS,options
 arguments
     cameras
     durationS (1,1) double {mustBePositive}
-    options.SustainableRateFraction (1,1) double ...
-        {mustBePositive,mustBeLessThanOrEqual(options.SustainableRateFraction,1)} = 0.85
+    % Retained for caller compatibility; DAQ cadence no longer needs an override.
     options.AllowRateLimitOverride (1,1) logical = false
 end
 n=numel(cameras);
@@ -19,8 +18,6 @@ for k=1:n
     camera=cameras(k);
     source=string(read_member(camera,"frametrigger_source",""));
     isDaq=contains(upper(source),"DAQ");
-    limitUnavailable=false;
-    tooFast=false;
     if isDaq
         periodMs=double(read_member(camera,"daqtrig_period_ms",NaN));
         if ~isscalar(periodMs) || ~isfinite(periodMs) || periodMs<=0
@@ -28,25 +25,11 @@ for k=1:n
                 "Camera %d is DAQ-triggered but has no positive daqtrig_period_ms.",k);
         end
         frameRate=1000/periodMs;
+        % Trigger each Frame is paced explicitly by the DAQ period. Luminos's
+        % calculate_framerate estimate is diagnostic, not a second authority
+        % that can override or reject that configured cadence.
         cameraLimit=read_camera_rate_limit(camera);
-        limitUnavailable=~isfinite(cameraLimit) || cameraLimit<=0;
-        if limitUnavailable && ~options.AllowRateLimitOverride
-            error("adaptive_optopatch:CameraRateLimitUnavailable", ...
-                ['Camera %d is DAQ-triggered, but its ROI-dependent maximum ' ...
-                 'frame rate could not be calculated.'],k);
-        end
-        conservativeLimit=options.SustainableRateFraction*cameraLimit;
-        tooFast=isfinite(conservativeLimit) && ...
-            frameRate>conservativeLimit*(1+1e-9);
-        if tooFast && ~options.AllowRateLimitOverride
-            error("adaptive_optopatch:CameraTriggerTooFastForRoi", ...
-                ['Camera %d requests %.3f Hz (%.4g ms period), but its current ' ...
-                 'ROI/readout configuration supports only %.3f Hz by the ' ...
-                 'Luminos estimate; the guarded limit is %.3f Hz. Increase ' ...
-                 'daqtrig_period_ms to at least %.4g ms or reduce the ROI.'], ...
-                k,frameRate,periodMs,cameraLimit,conservativeLimit, ...
-                1000/conservativeLimit);
-        end
+        conservativeLimit=NaN;
         count=ceil(durationS*frameRate);
         camera.frames_requested=count;
         cameras(k)=camera;
@@ -78,9 +61,8 @@ for k=1:n
     plan(k).conservative_camera_limit_hz=conservativeLimit;
     plan(k).frames_requested=count;
     plan(k).rate_validation_passed=true;
-    plan(k).rate_override_allowed=options.AllowRateLimitOverride;
-    plan(k).rate_override_used=isDaq && options.AllowRateLimitOverride && ...
-        (limitUnavailable || tooFast);
+    plan(k).rate_override_allowed=false;
+    plan(k).rate_override_used=false;
 end
 
 function rate=read_camera_rate_limit(camera)

@@ -343,7 +343,7 @@ classdef ReferencePreparationApp < handle
 
         function chooseSnapshot(app)
             [selectedFile,selectedFolder] = uigetfile( ...
-                {"*.mat","Luminos snapshot MAT (*.mat)"}, ...
+                {'*.mat','Luminos snapshot MAT (*.mat)'}, ...
                 "Select Camera 1 snapshot from the Luminos Snaps folder",pwd);
             if isequal(selectedFile,0), return; end
             snapshotPath=string(fullfile(selectedFolder,selectedFile));
@@ -363,7 +363,7 @@ classdef ReferencePreparationApp < handle
                     "DefaultOption","Cancel","CancelOption","Cancel");
                 if choice~="Load FOV", return; end
             end
-            [file,folder]=uigetfile({"*.mat","FOV state MAT (*.mat)"}, ...
+            [file,folder]=uigetfile(adaptive_optopatch.fov_file_dialog_filter(), ...
                 "Load persistent Adaptive Optopatch FOV",pwd);
             if isequal(file,0), return; end
             try
@@ -376,8 +376,8 @@ classdef ReferencePreparationApp < handle
         function chooseSaveFov(app)
             if isempty(app.LoadInfo), app.setStatus("Load a snapshot before saving an FOV."); return; end
             suggested=string(app.LoadInfo.snapshot_name)+"_fov_state.mat";
-            [file,folder]=uiputfile({"*.mat","FOV state MAT (*.mat)"}, ...
-                "Save persistent Adaptive Optopatch FOV",suggested);
+            [file,folder]=uiputfile(adaptive_optopatch.fov_file_dialog_filter(), ...
+                "Save persistent Adaptive Optopatch FOV",char(suggested));
             if isequal(file,0), return; end
             try
                 app.saveCurrentFov(string(fullfile(folder,file)));

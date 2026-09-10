@@ -177,7 +177,9 @@ tf=norm(double(matrix)-eye(3),"fro")<1e-9;
 end
 
 function tf=same_terminals(actual,expected)
-actual=sort(strip(string(actual),"left","/"));
-expected=sort(strip(string(expected),"left","/"));
+actual=strip(string(actual));
+expected=strip(string(expected));
+actual=sort(strip(actual,"left","/"));
+expected=sort(strip(expected,"left","/"));
 tf=isequal(reshape(actual,1,[]),reshape(expected,1,[]));
 end

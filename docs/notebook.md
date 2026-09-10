@@ -564,6 +564,20 @@ Luminos object with the canonical GUI launcher is now both simpler and closer
 to the experiment workflow. Camera-geometry mismatch diagnostics also retain
 their column-vector shape when several issues are reported together.
 
+## 2026-09-10 — Rig commissioning inputs are interpreted literally
+
+Luminos terminal names are trimmed before multi-DAQ comparison, so harmless
+leading or trailing whitespace cannot make a configured bridge appear
+different. Terminal identity itself remains exact.
+
+For a camera in DAQ-triggered `Trigger each Frame` mode,
+`daqtrig_period_ms` is the configured cadence and directly determines both
+frame rate and requested frame count. Luminos's `calculate_framerate()` value
+is retained as diagnostic metadata but no longer acts as a second hard limit,
+and the former 0.85 gate does not apply. Invalid DAQ periods still fail before
+acquisition. FOV and protocol dialogs now use character-vector filter cells for
+compatibility with the VU MATLAB release.
+
 ## 2026-09-10 — The operator panels show decisions, not ownership
 
 The pulse-protocol panel had grown a row of ownership captions -- `OBIS power

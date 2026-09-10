@@ -128,18 +128,17 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
                 ["daq_trigger_period" "daq_trigger_period"]);
         end
 
-        function rejectsDaqTriggerFasterThanCameraRoi(testCase)
+        function daqTriggerPeriodOwnsExplicitCameraCadence(testCase)
             camera=struct("name","Camera 1", ...
                 "frametrigger_source","DAQ","daqtrig_period_ms",1, ...
-                "frames_requested",2,"maximum_frame_rate_hz",380);
-            testCase.verifyError(@() ...
-                adaptive_optopatch.set_camera_frames_for_duration(camera,1), ...
-                "adaptive_optopatch:CameraTriggerTooFastForRoi");
+                "frames_requested",2,"maximum_frame_rate_hz",848.128);
             [updated,plan]=adaptive_optopatch.set_camera_frames_for_duration( ...
-                camera,1,"AllowRateLimitOverride",true);
+                camera,1);
             testCase.verifyEqual(updated.frames_requested,1000);
-            testCase.verifyTrue(plan.rate_override_allowed);
-            testCase.verifyTrue(plan.rate_override_used);
+            testCase.verifyEqual(plan.frame_rate_hz,1000);
+            testCase.verifyEqual(plan.calculated_camera_limit_hz,848.128);
+            testCase.verifyTrue(isnan(plan.conservative_camera_limit_hz));
+            testCase.verifyFalse(plan.rate_override_used);
         end
 
         function rejectsTargetOutsideCalibrationGrid(testCase)

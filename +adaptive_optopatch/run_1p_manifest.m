@@ -9,7 +9,6 @@ arguments
     options.Resume (1,1) logical = true
     options.StopAfterTrial (1,1) double {mustBeNonnegative,mustBeInteger} = 0
     options.Profile (1,1) struct = adaptive_optopatch.virtual_upright_1p_profile()
-    options.ModulatorVoltageOverride (1,1) double = NaN
     options.LaserPowerW (1,1) double = NaN
     options.ConfirmLiveOutput (1,1) logical = false
     options.ManageLaserEmission (1,1) logical = true
@@ -35,13 +34,6 @@ if isfinite(options.LaserPowerW) && ...
         (options.LaserPowerW<0 || options.LaserPowerW>profile.laser.max_power_w)
     error("adaptive_optopatch:LaserPowerOutOfRange", ...
         "Requested OBIS power must be between 0 and %.3g W.",profile.laser.max_power_w);
-end
-if isfinite(options.ModulatorVoltageOverride) && ...
-        (options.ModulatorVoltageOverride<profile.modulator.minimum_v || ...
-         options.ModulatorVoltageOverride>profile.modulator.maximum_v)
-    error("adaptive_optopatch:ModulatorVoltageOutOfRange", ...
-        "Requested mod488 command must be between %.3g and %.3g V.", ...
-        profile.modulator.minimum_v,profile.modulator.maximum_v);
 end
 
 hardware=adaptive_optopatch.resolve_luminos_1p_hardware(app,profile);
@@ -135,11 +127,11 @@ for k=1:n
         run.trials.target_configuration{k}=config;
         run.trials.acquisition_status(k)="configured";
 
-        voltageOverride=NaN;
+        % mod488 commands come from the frozen resolved schedule; a 1P run
+        % has no execution-time voltage override.
         [globalProps,wfmData,waveformSummary]= ...
             adaptive_optopatch.build_luminos_1p_waveform_config( ...
             original.global_props,original.wfm_data,row.pulse_schedule{1},profile, ...
-            "ModulatorVoltageOverride",voltageOverride, ...
             "DmdSequencePlan",dmdSequencePlan);
         hardware.daq.global_props=globalProps;
         hardware.daq.wfm_data=wfmData;

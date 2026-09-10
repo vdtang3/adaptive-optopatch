@@ -8,6 +8,8 @@ arguments
     options.Resume (1,1) logical = true
     options.Live (1,1) logical = false
     options.ConfirmLiveOutput (1,1) logical = false
+    % Staged 2P commissioning command voltage. 1P execution has no
+    % execution-time override: it runs the frozen resolved schedule.
     options.ModulatorVoltageOverride (1,1) double = NaN
     options.LaserPowerW (1,1) double = NaN
     options.OutputRoot (1,1) string = ""
@@ -26,7 +28,6 @@ if options.Live
             "Resume",options.Resume, ...
             "StopAfterTrial",options.StopAfterTrial, ...
             "ConfirmLiveOutput",options.ConfirmLiveOutput, ...
-            "ModulatorVoltageOverride",options.ModulatorVoltageOverride, ...
             "LaserPowerW",options.LaserPowerW);
         return
     end

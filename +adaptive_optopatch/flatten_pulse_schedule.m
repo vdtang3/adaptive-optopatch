@@ -1,8 +1,9 @@
-function pulses=flatten_pulse_schedule(protocol,options)
+function pulses=flatten_pulse_schedule(protocol)
 %FLATTEN_PULSE_SCHEDULE Resolve the already-flat physical pulse table.
+%   A resolved acquisition already carries a concrete command voltage for
+%   every event, so there is nothing left for a caller to configure here.
 arguments
     protocol (1,1) struct
-    options.ConfiguredVoltage (1,1) double = NaN
 end
 report=adaptive_optopatch.validate_protocol(protocol);
 if ~report.passed

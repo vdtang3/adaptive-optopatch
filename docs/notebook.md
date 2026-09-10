@@ -376,3 +376,22 @@ A simulated rig has no sensor, so `make_simulated_luminos` gained explicit
 `CameraRoi`/`CameraBin` options and the bundle-based simulated launchers adopt
 the grid recorded in the bundle they replay. Simulation therefore exercises the
 same invariant as hardware instead of being exempted from it.
+
+## 2026-09-09 — Removing the inert 1P pulse-voltage override
+
+`OnePhotonRunnerApp` exposed an "Override pulse voltage" checkbox and field
+and passed the value to `run_1p_manifest` as `ModulatorVoltageOverride`. The
+runner immediately replaced it with `NaN`, and the option it forwarded,
+`flatten_pulse_schedule`'s `ConfiguredVoltage`, had no body reference at all:
+the whole chain had been dead since schema 3 made every resolved event carry a
+concrete command voltage. An operator control that looks like it changes the
+delivered light and does not is worse than no control, and the fix is not to
+revive it — a frozen run must execute its frozen voltages.
+
+The control, the runner option, the waveform-builder option, and the inert
+`ConfiguredVoltage`/`ModulatorVoltage` parameters on `flatten_pulse_schedule`
+and `build_2p_trial_waveforms` are gone; the 1P runner GUI now states that the
+pulse voltage is the frozen per-pulse command. `run_manifest` keeps
+`ModulatorVoltageOverride` only for the staged 2P path, where it is the
+commissioning command that is genuinely executed. OBIS power override remains,
+because it does reach the hardware.

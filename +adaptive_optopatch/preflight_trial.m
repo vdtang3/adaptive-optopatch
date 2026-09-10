@@ -26,7 +26,7 @@ else
     else
         try
             adaptive_optopatch.flatten_pulse_schedule( ...
-                validation.protocol,"ConfiguredVoltage",1);
+                validation.protocol);
         catch exception
             issues(end+1)=string(exception.message);
         end

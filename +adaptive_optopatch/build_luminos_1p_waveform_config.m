@@ -6,7 +6,6 @@ arguments
     activeWfmData (1,1) struct
     protocol (1,1) struct
     profile (1,1) struct = adaptive_optopatch.virtual_upright_1p_profile()
-    options.ModulatorVoltageOverride (1,1) double = NaN
     options.DmdSequencePlan = struct([])
 end
 required=["rate","clock_source","trigger_source","daq_master"];
@@ -20,8 +19,7 @@ if ~isscalar(rate) || ~isfinite(rate) || rate<=0
         "The active Luminos waveform sample rate must be positive.");
 end
 
-pulses=adaptive_optopatch.flatten_pulse_schedule(protocol, ...
-    "ConfiguredVoltage",options.ModulatorVoltageOverride);
+pulses=adaptive_optopatch.flatten_pulse_schedule(protocol);
 minV=double(profile.modulator.minimum_v); maxV=double(profile.modulator.maximum_v);
 if any(pulses.modulator_voltage<minV | pulses.modulator_voltage>maxV)
     error("adaptive_optopatch:ModulatorVoltageOutOfRange", ...

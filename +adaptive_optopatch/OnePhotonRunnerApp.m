@@ -12,8 +12,6 @@ classdef OnePhotonRunnerApp < handle
         Status
         PowerOverride
         PowerMw
-        VoltageOverride
-        VoltageV
         ArmLive
         RunNextButton
         RunAllButton
@@ -83,15 +81,17 @@ classdef OnePhotonRunnerApp < handle
                 "FontSize",16,"FontColor",[1 1 1],"BackgroundColor",[0.75 0.05 0.05], ...
                 "Visible",matlab.lang.OnOffSwitchState(simulation));
             controls=uigridlayout(root,[2 7]);
-            controls.ColumnWidth={145,90,145,90,150,"1x",120};
+            controls.ColumnWidth={145,90,235,"1x",150,"1x",120};
             gui.PowerOverride=uicheckbox(controls,"Text","Override OBIS power", ...
                 "Value",false);
             gui.PowerMw=uieditfield(controls,"numeric","Value",0, ...
                 "Limits",[0 55],"Tooltip","OBIS serial power ceiling in mW.");
-            gui.VoltageOverride=uicheckbox(controls,"Text","Override pulse voltage", ...
-                "Value",false);
-            gui.VoltageV=uieditfield(controls,"numeric","Value",0, ...
-                "Limits",[0 5],"Tooltip","Raw mod488 command on Dev1/ao2.");
+            % mod488 commands come from the frozen resolved schedule. There
+            % is deliberately no execution-time pulse-voltage control here.
+            voltageLabel=uilabel(controls, ...
+                "Text","Pulse voltage: frozen per-pulse command", ...
+                "FontAngle","italic");
+            voltageLabel.Layout.Column=[3 4];
             gui.ArmLive=uicheckbox(controls,"Text","ARM live 488 output", ...
                 "Value",false,"FontWeight","bold");
             if simulation, gui.ArmLive.Text="ARM simulated 488 output"; end
@@ -165,9 +165,8 @@ classdef OnePhotonRunnerApp < handle
             end
             gui.Busy=true; gui.StopRequested=false; gui.setBusyState(true);
             cleanup=onCleanup(@()gui.setBusyState(false));
-            powerW=NaN; voltage=NaN;
+            powerW=NaN;
             if gui.PowerOverride.Value, powerW=gui.PowerMw.Value/1000; end
-            if gui.VoltageOverride.Value, voltage=gui.VoltageV.Value; end
             try
                 if isa(gui.LuminosApp,"adaptive_optopatch.testing.SimulatedLuminosApp")
                     gui.setStatus("Running simulated 1P manifest. No hardware output is possible.");
@@ -179,7 +178,6 @@ classdef OnePhotonRunnerApp < handle
                     "OutputDirectory",gui.BundleFolder, ...
                     "Resume",true,"StopAfterTrial",count, ...
                     "LaserPowerW",powerW, ...
-                    "ModulatorVoltageOverride",voltage, ...
                     "ConfirmLiveOutput",true, ...
                     "StopRequestedFcn",@()gui.StopRequested);
                 gui.Manifest.trials=run.trials;

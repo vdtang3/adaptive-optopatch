@@ -3,14 +3,14 @@ classdef TestFovWorkflowCleanup < matlab.unittest.TestCase
         function savesAndRestoresAllSpatialControls(testCase)
             root=tempname; mkdir(root);
             cleanup=onCleanup(@()remove_if_present(root));
-            [first,~]=launch_simulated_adaptive_optopatch_gui("Visible","off","RunRoot",root);
+            [first,~]=open_simulated_test_gui("Visible","off","RunRoot",root);
             firstCleanup=onCleanup(@()delete(first));
             first.setReferenceData(ones(70,90),test_info(root),test_polygon());
             set_spatial_controls(first);
             path=fullfile(root,"spatial_fov.mat"); first.saveCurrentFov(path);
             saved=load(path,"fov_state"); verify_spatial_values(testCase,saved.fov_state);
 
-            [second,~]=launch_simulated_adaptive_optopatch_gui("Visible","off","RunRoot",root);
+            [second,~]=open_simulated_test_gui("Visible","off","RunRoot",root);
             secondCleanup=onCleanup(@()delete(second));
             second.loadFov(path);
             second.setPulseProtocol(adaptive_optopatch.generate_screen_protocol( ...
@@ -25,7 +25,7 @@ classdef TestFovWorkflowCleanup < matlab.unittest.TestCase
         function rejectsObsoleteFovSchema(testCase)
             root=tempname; mkdir(root);
             cleanup=onCleanup(@()remove_if_present(root));
-            [source,~]=launch_simulated_adaptive_optopatch_gui("Visible","off","RunRoot",root);
+            [source,~]=open_simulated_test_gui("Visible","off","RunRoot",root);
             sourceCleanup=onCleanup(@()delete(source));
             source.setReferenceData(ones(70,90),test_info(root),test_polygon());
             source.setPlanParameter("microns_per_pixel",0.44);
@@ -51,7 +51,7 @@ classdef TestFovWorkflowCleanup < matlab.unittest.TestCase
             save(fullfile(oldPlan,"reference_model.mat"),"reference");
             save(fullfile(oldPlan,"planning_session.mat"),"planning_session");
 
-            [app,~]=launch_simulated_adaptive_optopatch_gui("Visible","off","RunRoot",root);
+            [app,~]=open_simulated_test_gui("Visible","off","RunRoot",root);
             appCleanup=onCleanup(@()delete(app));
             app.setPulseProtocol(adaptive_optopatch.generate_screen_protocol( ...
                 "PulseCount",1,"ModulatorVoltage",1));
@@ -64,7 +64,7 @@ classdef TestFovWorkflowCleanup < matlab.unittest.TestCase
             cleanup=onCleanup(@()remove_if_present(root));
             % Preflight compares the live camera grid with the frozen one,
             % so the simulated camera acquires on test_info's grid.
-            [app,~]=launch_simulated_adaptive_optopatch_gui( ...
+            [app,~]=open_simulated_test_gui( ...
                 "CameraRoi",[979 90 989 70],"Visible","off","RunRoot",root);
             appCleanup=onCleanup(@()delete(app));
             app.setReferenceData(ones(70,90),test_info(root),test_polygon());
@@ -87,7 +87,7 @@ classdef TestFovWorkflowCleanup < matlab.unittest.TestCase
         function editableEligibilityIsIndependentAndPersistent(testCase)
             root=tempname; mkdir(root);
             cleanup=onCleanup(@()remove_if_present(root));
-            [app,~]=launch_simulated_adaptive_optopatch_gui("Visible","off","RunRoot",root);
+            [app,~]=open_simulated_test_gui("Visible","off","RunRoot",root);
             appCleanup=onCleanup(@()delete(app));
             app.setReferenceData(ones(70,90),test_info(root),test_polygon());
 
@@ -105,7 +105,7 @@ classdef TestFovWorkflowCleanup < matlab.unittest.TestCase
             testCase.verifyTrue(state.cells(1).stimulation_enabled);
 
             path=fullfile(root,"eligibility_fov.mat");
-            [loadedApp,~]=launch_simulated_adaptive_optopatch_gui( ...
+            [loadedApp,~]=open_simulated_test_gui( ...
                 "Visible","off","RunRoot",root);
             loadedCleanup=onCleanup(@()delete(loadedApp));
             loadedApp.loadFov(path);
@@ -117,7 +117,7 @@ classdef TestFovWorkflowCleanup < matlab.unittest.TestCase
         function qcCheckboxesAreCanonicalAndLegacyControlsAreGone(testCase)
             root=tempname; mkdir(root);
             cleanup=onCleanup(@()remove_if_present(root));
-            [app,~]=launch_simulated_adaptive_optopatch_gui("Visible","off","RunRoot",root);
+            [app,~]=open_simulated_test_gui("Visible","off","RunRoot",root);
             appCleanup=onCleanup(@()delete(app));
             app.setReferenceData(ones(70,90),test_info(root),test_polygon());
             tables=findall(app.Figure,"Type","uitable");

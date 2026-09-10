@@ -34,6 +34,33 @@ classdef SimulatedLuminosApp < handle
             scanner.tform=calibration.calibration.tform;
         end
 
+        function matchReferenceCameraGeometry(app,referenceCamera)
+            %MATCHREFERENCECAMERAGEOMETRY Represent a loaded reference in simulation.
+            arguments
+                app
+                referenceCamera (1,1) struct
+            end
+            if ~isfield(referenceCamera,"ROI") || ...
+                    ~isfield(referenceCamera,"bin")
+                error("adaptive_optopatch:ReferenceCameraGeometryUnavailable", ...
+                    "The loaded reference does not contain camera ROI and binning metadata.");
+            end
+            roi=double(referenceCamera.ROI);
+            bin=double(referenceCamera.bin);
+            if numel(roi)~=4 || any(~isfinite(roi)) || ...
+                    ~isscalar(bin) || ~isfinite(bin) || bin<=0
+                error("adaptive_optopatch:ReferenceCameraGeometryUnavailable", ...
+                    "The loaded reference contains invalid camera ROI or binning metadata.");
+            end
+            cameras=app.getDevice("Camera");
+            if isempty(cameras)
+                error("adaptive_optopatch:RequiredDeviceMissing", ...
+                    "The simulated Luminos backend has no Camera device.");
+            end
+            cameras(1).ROI=reshape(roi,1,4);
+            cameras(1).bin=bin;
+        end
+
         function devices=getDevice(app,type,varargin)
             requestedType=string(type);
             if requestedType=="DAQ"

@@ -165,16 +165,18 @@ expansion, and 2P spirals at the resolved radius, density, and pulse duration,
 using the targeting transform the run will be executed with. The status line
 says whether it is showing resolved or bundle-default values.
 
-For local development, opt into the simulation tools and open the same GUI
-with the no-hardware backend:
+For local development, create the no-hardware Luminos-compatible backend and
+pass it to the same GUI launcher used during experiments:
 
 ```matlab
-addpath(fullfile(packageRoot,"tools","simulation"))
-[app, sim] = launch_simulated_adaptive_optopatch_gui();
+luminosApp = simulatedLuminosApp();
+app = launch_adaptive_optopatch_gui(luminosApp);
 ```
 
 The title contains `[SIMULATION]`, and acquisitions are dispatched only to
-`SimulatedLuminosApp`. Simulation never sends hardware output.
+`SimulatedLuminosApp`. Loading a Snap or saved FOV automatically makes the
+simulated Camera 1 ROI and binning represent that reference. Simulation never
+sends hardware output.
 
 There are no modality-specific production runner GUIs. The unified app owns
 both 1P and 2P planning, freezing, execution, checkpointing, and resume.
@@ -707,23 +709,25 @@ one acquisition (`Run next`), and a nonbiological fluorescent target.
 
 ## Local simulation / GUI development
 
-The unified GUI can run against the local Luminos test backend. Simulation is
-kept off the normal experiment-day path, so add its specialized tool directory
-explicitly:
+The unified GUI can run against the local Luminos test backend through the same
+interface used with real Luminos:
 
 ```matlab
 packageRoot = "/path/to/adaptive-optopatch";
 addpath(packageRoot)
-addpath(fullfile(packageRoot,"tools","simulation"))
-[app, sim] = launch_simulated_adaptive_optopatch_gui( ...
+luminosApp = simulatedLuminosApp( ...
     "CameraFrameRateHz",1000, ...
     "LaserPowerMw",20, ...
     "SimulationOutputRoot","/path/to/simulation_output");
+app = launch_adaptive_optopatch_gui(luminosApp);
 ```
 
-For programmatic tests, construct only the backend with
-`adaptive_optopatch.testing.make_simulated_luminos(...)` and pass it to the
-canonical functions or unified app.
+`simulatedLuminosApp(...)` is a convenience factory for the canonical packaged
+`adaptive_optopatch.testing.make_simulated_luminos(...)` implementation.
+Loading a Snap or saved FOV synchronizes only the simulated Camera 1 ROI and
+binning to its reference metadata. Normal camera-geometry validation still
+runs, so changing the simulated camera afterward exercises the same mismatch
+failure as live hardware.
 
 **SIMULATION MODE NEVER SENDS HARDWARE OUTPUT.** The class identity
 `adaptive_optopatch.testing.SimulatedLuminosApp` is the only condition that

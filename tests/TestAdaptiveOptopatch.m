@@ -1087,7 +1087,7 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
         function threadsUnifiedGuiStopRequestIntoTwoPhotonRunner(testCase)
             root=tempname; mkdir(root);
             cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
-            [app,sim]=launch_simulated_adaptive_optopatch_gui("CameraRoi",unified_camera_roi(), ...
+            [app,sim]=open_simulated_test_gui("CameraRoi",unified_camera_roi(), ...
                 "Visible","off","RunRoot",root); %#ok<ASGLU>
             appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
             rois={[40 30;60 30;60 50;40 50], ...
@@ -1119,7 +1119,7 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
         function buildsFreshUnifiedPlansWithoutValidationInvalidation(testCase)
             root=tempname; mkdir(root);
             cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
-            [app,sim]=launch_simulated_adaptive_optopatch_gui("CameraRoi",unified_camera_roi(), ...
+            [app,sim]=open_simulated_test_gui("CameraRoi",unified_camera_roi(), ...
                 "Visible","off","RunRoot",root); %#ok<ASGLU>
             appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
             app.setReferenceData(ones(80,100),unified_test_info(root), ...
@@ -1227,7 +1227,7 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
         function unifiedOnePhotonRunFreezesAllArtifacts(testCase)
             root=tempname; mkdir(root);
             cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
-            [app,sim]=launch_simulated_adaptive_optopatch_gui("CameraRoi",unified_camera_roi(), ...
+            [app,sim]=open_simulated_test_gui("CameraRoi",unified_camera_roi(), ...
                 "Visible","off","RunRoot",root); %#ok<ASGLU>
             appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
             app.setReferenceData(ones(80,100),unified_test_info(root), ...
@@ -1277,7 +1277,7 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
         function unifiedTwoPhotonPreviewAndRunComplete(testCase)
             root=tempname; mkdir(root);
             cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
-            [app,sim]=launch_simulated_adaptive_optopatch_gui("CameraRoi",unified_camera_roi(), ...
+            [app,sim]=open_simulated_test_gui("CameraRoi",unified_camera_roi(), ...
                 "Visible","off","RunRoot",root); %#ok<ASGLU>
             appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
             image=ones(80,100); image(10:15,10:15)=0;
@@ -1306,7 +1306,7 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
         function unifiedResumeUsesFrozenManifest(testCase)
             root=tempname; mkdir(root);
             cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
-            [app,sim]=launch_simulated_adaptive_optopatch_gui("CameraRoi",unified_camera_roi(), ...
+            [app,sim]=open_simulated_test_gui("CameraRoi",unified_camera_roi(), ...
                 "Visible","off","RunRoot",root); %#ok<ASGLU>
             appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
             rois={[25 25;40 25;40 40;25 40], ...
@@ -1334,7 +1334,7 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
         function frozenRunContinuesAfterEditableCalibrationChange(testCase)
             root=tempname; mkdir(root);
             cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
-            [app,sim]=launch_simulated_adaptive_optopatch_gui("CameraRoi",unified_camera_roi(), ...
+            [app,sim]=open_simulated_test_gui("CameraRoi",unified_camera_roi(), ...
                 "Visible","off","RunRoot",root); %#ok<ASGLU>
             appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
             rois={[25 25;40 25;40 40;25 40], ...
@@ -1371,7 +1371,7 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
         function resumedFrozenRunContinuesAfterEditableChange(testCase)
             root=tempname; mkdir(root);
             cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
-            [app,sim]=launch_simulated_adaptive_optopatch_gui("CameraRoi",unified_camera_roi(), ...
+            [app,sim]=open_simulated_test_gui("CameraRoi",unified_camera_roi(), ...
                 "Visible","off","RunRoot",root); %#ok<ASGLU>
             appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
             rois={[25 25;40 25;40 40;25 40], ...
@@ -1407,7 +1407,7 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
         function frozenTwoPhotonRunIgnoresLaterActiveCalibrationChange(testCase)
             root=tempname; mkdir(root);
             cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
-            [app,sim]=launch_simulated_adaptive_optopatch_gui("CameraRoi",unified_camera_roi(), ...
+            [app,sim]=open_simulated_test_gui("CameraRoi",unified_camera_roi(), ...
                 "Visible","off","RunRoot",root); %#ok<ASGLU>
             appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
             image=ones(80,100); image(10:15,10:15)=0;
@@ -1449,7 +1449,7 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
         function resumedTwoPhotonRunAlsoUsesFrozenCalibration(testCase)
             root=tempname; mkdir(root);
             cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
-            [app,sim]=launch_simulated_adaptive_optopatch_gui("CameraRoi",unified_camera_roi(), ...
+            [app,sim]=open_simulated_test_gui("CameraRoi",unified_camera_roi(), ...
                 "Visible","off","RunRoot",root); %#ok<ASGLU>
             appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
             image=ones(80,100); image(10:15,10:15)=0;
@@ -1490,7 +1490,7 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
         function hardwareDiscoveryDoesNotOverwriteFrozenScannerTransform(testCase)
             root=tempname; mkdir(root);
             cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
-            [app,sim]=launch_simulated_adaptive_optopatch_gui("CameraRoi",unified_camera_roi(), ...
+            [app,sim]=open_simulated_test_gui("CameraRoi",unified_camera_roi(), ...
                 "Visible","off","RunRoot",root); %#ok<ASGLU>
             appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
             image=ones(80,100); image(10:15,10:15)=0;
@@ -1545,7 +1545,7 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
         function explicitFreezeReplacesActiveFrozenRun(testCase)
             root=tempname; mkdir(root);
             cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
-            [app,sim]=launch_simulated_adaptive_optopatch_gui("CameraRoi",unified_camera_roi(), ...
+            [app,sim]=open_simulated_test_gui("CameraRoi",unified_camera_roi(), ...
                 "Visible","off","RunRoot",root); %#ok<ASGLU>
             appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
             rois={[25 25;40 25;40 40;25 40], ...
@@ -1607,7 +1607,7 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
         function guiReloadsFovWithStableIdsAndCalibration(testCase)
             root=tempname; mkdir(root);
             cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
-            [first,~]=launch_simulated_adaptive_optopatch_gui("CameraRoi",unified_camera_roi(), ...
+            [first,~]=open_simulated_test_gui("CameraRoi",unified_camera_roi(), ...
                 "Visible","off","RunRoot",root);
             cleanupFirst=onCleanup(@()delete(first)); %#ok<NASGU>
             polygons={[15 15;25 15;25 25;15 25], ...
@@ -1616,7 +1616,7 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             first.setCellCalibration("cell_002",1.25,"manual");
             path=fullfile(root,"persistent_fov.mat");
             first.saveCurrentFov(path);
-            [second,~]=launch_simulated_adaptive_optopatch_gui("CameraRoi",unified_camera_roi(), ...
+            [second,~]=open_simulated_test_gui("CameraRoi",unified_camera_roi(), ...
                 "Visible","off","RunRoot",root);
             cleanupSecond=onCleanup(@()delete(second)); %#ok<NASGU>
             second.loadFov(path);
@@ -1865,7 +1865,7 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
         function preservesStableIdsAcrossEditDeleteAddAndReload(testCase)
             root=tempname; mkdir(root);
             cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
-            [app,~]=launch_simulated_adaptive_optopatch_gui("CameraRoi",unified_camera_roi(),"Visible","off","RunRoot",root);
+            [app,~]=open_simulated_test_gui("CameraRoi",unified_camera_roi(),"Visible","off","RunRoot",root);
             appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
             [~,polygons]=test_fov_state();
             app.setReferenceData(ones(70,90),unified_test_info(root),polygons);

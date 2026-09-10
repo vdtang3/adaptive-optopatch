@@ -151,7 +151,7 @@ end
 function [app,root]=open_gui(testCase)
 root=tempname; mkdir(root);
 testCase.addTeardown(@()remove_if_present(root));
-[app,~]=launch_simulated_adaptive_optopatch_gui("Visible","off","RunRoot",root);
+[app,~]=open_simulated_test_gui("Visible","off","RunRoot",root);
 testCase.addTeardown(@()delete(app));
 end
 

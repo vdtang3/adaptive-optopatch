@@ -372,10 +372,11 @@ are what make pixel (r,c) of an acquired frame the same sensor region as pixel
 (r,c) of the reference. A bundle that predates the frozen grid is rejected
 with a regenerate message rather than silently skipping the invariant.
 
-A simulated rig has no sensor, so `make_simulated_luminos` gained explicit
-`CameraRoi`/`CameraBin` options and the bundle-based simulated launchers adopt
-the grid recorded in the bundle they replay. Simulation therefore exercises the
-same invariant as hardware instead of being exempted from it.
+A simulated rig has no sensor, so `make_simulated_luminos` accepts explicit
+`CameraRoi`/`CameraBin` options for headless tests. During normal interactive
+use, loading a Snap or saved FOV updates only the packaged simulator's Camera 1
+to the reference ROI and binning. Simulation therefore exercises the same
+invariant as hardware instead of being exempted from it.
 
 ## 2026-09-09 — Removing the inert 1P pulse-voltage override
 
@@ -542,11 +543,26 @@ classes. Their reusable execution behavior was already implemented by the
 canonical `run_1p_manifest`, `run_2p_manifest`, staged-execution, preview, and
 validation functions, so no acquisition logic moved or changed.
 
-The root now contains only experiment-day entry points. The simulated unified
-launcher lives under `tools/simulation`, and the guarded galvo-dynamics wrapper
-lives under `tools/commissioning`; each specialized directory is added to the
+The root contains experiment-day entry points plus the small
+`simulatedLuminosApp` compatibility factory. The guarded galvo-dynamics wrapper
+lives under `tools/commissioning`; that specialized directory is added to the
 MATLAB path explicitly when needed. The canonical simulator remains packaged
 under `adaptive_optopatch.testing`.
+
+## 2026-09-10 — Simulation mirrors the real GUI launch workflow
+
+`simulatedLuminosApp()` is again the one-line no-hardware stand-in for the
+Luminos object passed to `launch_adaptive_optopatch_gui`. It delegates to the
+packaged simulator rather than defining a second backend. When the GUI loads a
+Snap or persistent FOV, `ReferencePreparationApp` asks that packaged simulator
+to adopt the reference Camera 1 ROI and binning. The type check prevents this
+path from mutating a real Luminos camera, and ordinary camera-geometry
+validation remains active after the match.
+
+The separate simulated-GUI launcher was removed because composing a simulated
+Luminos object with the canonical GUI launcher is now both simpler and closer
+to the experiment workflow. Camera-geometry mismatch diagnostics also retain
+their column-vector shape when several issues are reported together.
 
 ## 2026-09-10 — The operator panels show decisions, not ownership
 

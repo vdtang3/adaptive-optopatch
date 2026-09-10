@@ -81,6 +81,7 @@ classdef ReferencePreparationApp < handle
 
         function setFovState(app,fovState)
             reference=fovState.reference;
+            app.matchSimulatedReferenceCamera(reference.voltage_camera);
             app.ReferenceImage=single(reference.reference_image);
             metadata=struct("rig_name",reference.rig_name, ...
                 "voltage_camera",reference.voltage_camera);
@@ -208,6 +209,7 @@ classdef ReferencePreparationApp < handle
 
         function loadSnapshot(app,snapshotPath)
             [image,info]=adaptive_optopatch.read_reference_snapshot(snapshotPath);
+            app.matchSimulatedReferenceCamera(info.metadata.voltage_camera);
             app.ReferenceImage=image; app.LoadInfo=info; app.clearRois();
             app.CurrentFovState=struct([]);
             app.NextCellIndex=1;
@@ -226,6 +228,14 @@ classdef ReferencePreparationApp < handle
     end
 
     methods (Access=protected)
+        function matchSimulatedReferenceCamera(app,referenceCamera)
+            % Real Luminos camera state is owned by Luminos and is never changed here.
+            if isa(app.LuminosApp, ...
+                    "adaptive_optopatch.testing.SimulatedLuminosApp")
+                app.LuminosApp.matchReferenceCameraGeometry(referenceCamera);
+            end
+        end
+
         function buildUI(app,visible)
             app.Figure = uifigure("Name","Adaptive Optopatch — Reference & Targets", ...
                 "Position",[80 80 1320 780],"Visible",visible);

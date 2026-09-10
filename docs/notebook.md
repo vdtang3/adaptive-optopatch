@@ -431,3 +431,27 @@ irreversible or physical happens - so it is a plain action whose label and
 result message make the consequence obvious: the new run becomes active, and
 the replaced run is named so the operator can see it is still on disk and
 still resumable.
+
+## 2026-09-09 — Command-voltage precedence is intentional; one tier is an open question
+
+`parameter_sources` narrows `command_voltage_v` to
+`event > acquisition > protocol > fov_cell` for round-robin and Blue-mask
+titration, excluding the GUI default. That is deliberate and matches those
+designs: both exist to run at each cell's calibrated voltage, so a single GUI
+value would defeat them, and a cell without a calibration fails explicitly.
+Connectivity screen and STF declare no `parameter_sources`, so they use the
+full precedence and can fall back to the GUI default. Nothing here is
+inconsistent with the precedence architecture, and no generator was changed.
+
+Two policy questions remain open and were deliberately not decided here:
+
+1. Should `connectivity_screen` and `stf_mixed_conditions` also require a
+   per-cell calibrated voltage instead of accepting the GUI default?
+2. `protocol_parameter_metadata` maps the `fov_cell` tier of
+   `command_voltage_v` to `selected_blue_voltage_v` for both modalities, so a
+   2P acquisition on a cell with a stored Blue calibration silently executes
+   that 488 nm calibration value as the Chameleon Pockels command, in
+   preference to the GUI value. The provenance is recorded
+   (`command_voltage_source = "fov_cell"`), and the resolved command and its
+   source are now shown in the trial table before the run, but whether 2P
+   should inherit that tier at all is an experimenter decision.

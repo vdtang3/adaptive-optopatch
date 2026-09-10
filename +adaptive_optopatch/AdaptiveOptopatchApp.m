@@ -609,7 +609,7 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             title(app.WaveformAxes,"Waveform / DMD preview");
 
             app.TrialTable=uitable(root,"ColumnName", ...
-                {'Trial','Cell','Protocol','Duration','Status','Output'});
+                {'Trial','Cell','Protocol','Duration','Command (V)','Status','Output'});
             app.TrialTable.Layout.Row=4; app.TrialTable.Layout.Column=[1 3];
             app.OnePhotonControls={};
             app.TwoPhotonControls={velocityLabel,app.MaximumVelocity, ...
@@ -800,11 +800,13 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
         end
 
         function refreshTrialTable(app,trials)
-            n=height(trials); data=cell(n,6);
+            n=height(trials); data=cell(n,7);
             for k=1:n
-                protocol=string(trials.pulse_schedule{k}.protocol_type);
+                resolved=trials.pulse_schedule{k};
                 data(k,:)={trials.trial_id(k),char(string(trials.target_cell_id(k))), ...
-                    char(protocol),round(trials.acquisition_duration_s(k),3), ...
+                    char(string(resolved.protocol_type)), ...
+                    round(trials.acquisition_duration_s(k),3), ...
+                    char(resolved_command_summary(resolved)), ...
                     char(string(trials.acquisition_status(k))), ...
                     char(string(trials.experiment_directory(k)))};
             end
@@ -968,4 +970,16 @@ if isfield(plan,"reference") && isfield(plan.reference,"scanner") && ...
         isfield(plan.reference.scanner,"tform")
     transform=plan.reference.scanner.tform;
 end
+end
+
+function summary=resolved_command_summary(resolved)
+% What the operator will physically deliver, and where that value came
+% from. command_voltage_source is the resolver's own provenance, so a
+% command inherited from a per-cell calibration is visible before the run
+% rather than only in the archive.
+light=~resolved.events.is_null;
+if ~any(light), summary="0 (null)"; return; end
+values=unique(round(resolved.events.command_voltage_v(light),4),"stable");
+sources=unique(resolved.events.command_voltage_source(light),"stable");
+summary=strjoin(string(values),", ")+" ["+strjoin(sources,", ")+"]";
 end

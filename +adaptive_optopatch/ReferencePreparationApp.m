@@ -642,7 +642,11 @@ classdef ReferencePreparationApp < handle
 
         function previewTargets(app)
             try
-                [~,targets,~]=app.buildArtifacts();
+                % Only spatial artifacts are needed here: the preview draws
+                % resolved acquisitions when the subclass has them, and the
+                % bundle's own defaults otherwise.
+                [~,targets]=app.buildSpatialArtifacts( ...
+                    "PulseDurationMs",app.currentPulseDurationMs());
                 mode=string(app.Mode.Value);
                 preview=adaptive_optopatch.build_target_preview(targets,mode, ...
                     "ResolvedProtocols",app.previewResolvedProtocols(targets), ...

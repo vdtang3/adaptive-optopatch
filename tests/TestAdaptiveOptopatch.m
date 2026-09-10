@@ -395,90 +395,6 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyFalse(aboveLimit.passed);
         end
 
-        function constructsTwoPhotonTestRunnerGui(testCase)
-            folder=tempname; mkdir(folder); cleanup=onCleanup(@()rmdir(folder,"s")); %#ok<NASGU>
-            protocol=resolve_for_test(adaptive_optopatch.generate_screen_protocol( ...
-                "PulseCount",3,"ModulatorVoltage",1),"2p_spiral");
-            target=struct("spiral_center_xy",[20 20], ...
-                "spiral_radius_pixels",5,"parking_point_xy",[30 20], ...
-                "spiral_preview_center_xy",[20 20], ...
-                "parking_preview_point_xy",[30 20]);
-            targets=struct("schema_version","2.0.0", ...
-                "coordinate_space","voltage_camera_full_sensor_pixels", ...
-                "reference_camera",frame_camera_geometry([2048 2048]), ...
-                "targets",target); %#ok<NASGU>
-            trials=table(1,"2p_spiral","cell_001",false,1,{protocol}, ...
-                protocol.acquisition_duration_s,"test","planned","", ...
-                'VariableNames',{'trial_id','stimulation_mode','target_cell_id', ...
-                'is_null','target_index','pulse_schedule','acquisition_duration_s', ...
-                'output_tag','acquisition_status','experiment_directory'});
-            manifest=struct("trials",trials); %#ok<NASGU>
-            save(fullfile(folder,"pattern_bundle.mat"),"targets");
-            save(fullfile(folder,"trial_manifest.mat"),"manifest");
-            gui=adaptive_optopatch.TwoPhotonTestRunnerApp([],folder,"Visible","off");
-            guiCleanup=onCleanup(@()delete(gui)); %#ok<NASGU>
-            testCase.verifyTrue(isvalid(gui.Figure));
-        end
-
-        function standaloneTwoPhotonRunnerExercisesFrozenSchema3Bundle(testCase)
-            root=tempname; mkdir(root);
-            cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
-            [app,~]=launch_simulated_adaptive_optopatch_gui("CameraRoi",unified_camera_roi(), ...
-                "Visible","off","RunRoot",root);
-            appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
-            image=ones(80,100); image(10:15,10:15)=0;
-            app.setReferenceData(image,unified_test_info(root), ...
-                {[40 30;60 30;60 50;40 50]});
-            app.setPulseProtocol( ...
-                adaptive_optopatch.generate_screen_protocol("PulseCount",3,"ModulatorVoltage",1.5));
-            app.freezeCurrentPlan();
-            folder=app.ActiveRunFolder;
-            frozen=load(fullfile(folder,"trial_manifest.mat"),"manifest");
-
-            [gui,~]=launch_simulated_2p_test_runner_gui(folder,"Visible","off");
-            guiCleanup=onCleanup(@()delete(gui)); %#ok<NASGU>
-            testCase.verifyTrue(isvalid(gui.Figure));
-
-            [staging,row,protocol]=gui.stagedExecution();
-            testCase.verifyEqual(staging.release_level,"blocked_test");
-            testCase.verifyEqual(height(protocol.events),1);
-            testCase.verifyEqual(height(row.pulse_schedule{1}.events),3);
-
-            previewResult=gui.preview();
-            testCase.verifyNotEmpty(previewResult, ...
-                char(strjoin(gui.statusText(),newline)));
-            testCase.verifyEqual(previewResult.targeting_transform_source, ...
-                "frozen_plan","Preview must use the frozen targeting transform.");
-            testCase.verifyEqual(max(abs(previewResult.waveforms.pockels_v)),0);
-
-            gui.setRunParameter("confirm_trajectory",true);
-            blockedRun=gui.run();
-            testCase.verifyNotEmpty(blockedRun, ...
-                char(strjoin(gui.statusText(),newline)));
-            index=blockedRun.staging.source_trial_index;
-            testCase.verifyEqual(blockedRun.trials.acquisition_status(index),"completed");
-            testCase.verifyEqual(blockedRun.trials.pulse_schedule, ...
-                frozen.manifest.trials.pulse_schedule, ...
-                "The standalone runner must not rewrite the frozen bundle.");
-
-            gui.setRunParameter("release_level","attenuated_test");
-            gui.setRunParameter("pockels_v",0.2);
-            gui.setRunParameter("confirm_live_output",true);
-            attenuatedRun=gui.run();
-            testCase.verifyNotEmpty(attenuatedRun, ...
-                char(strjoin(gui.statusText(),newline)));
-            executed=attenuatedRun.trials.executed_pulse_schedule{index};
-            testCase.verifyEqual(executed.events.command_voltage_v,0.2);
-            saved=load(fullfile(attenuatedRun.trials.experiment_directory(index), ...
-                "adaptive_optopatch_2p_waveforms.mat"),"actual_waveforms");
-            testCase.verifyEqual(max(saved.actual_waveforms.pockels_v),0.2, ...
-                "AbsTol",1e-12);
-
-            reloaded=load(fullfile(folder,"trial_manifest.mat"),"manifest");
-            testCase.verifyEqual(reloaded.manifest.trials.pulse_schedule, ...
-                frozen.manifest.trials.pulse_schedule);
-        end
-
         function evaluatesConservativeGalvoLimits(testCase)
             t=linspace(0,2*pi,4001)';
             x=0.05*cos(t); y=0.05*sin(t);
@@ -961,40 +877,6 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyEqual(sync.clock_bridge,["Dev1/PFI12","Dev2/PFI0"]);
         end
 
-        function constructsOnePhotonRunnerGui(testCase)
-            folder=tempname; mkdir(folder); cleanup=onCleanup(@()rmdir(folder,"s")); %#ok<NASGU>
-            targets=struct("schema_version","test"); %#ok<NASGU>
-            protocol=resolve_for_test(adaptive_optopatch.generate_screen_protocol( ...
-                "PulseCount",2,"ModulatorVoltage",1),"1p_dmd");
-            trials=table(1,"1p_dmd","cell_001",false,1,{protocol}, ...
-                protocol.acquisition_duration_s,"test_trial","planned","", ...
-                'VariableNames',{'trial_id','stimulation_mode','target_cell_id', ...
-                'is_null','target_index','pulse_schedule','acquisition_duration_s', ...
-                'output_tag','acquisition_status','experiment_directory'});
-            manifest=struct("trials",trials); %#ok<NASGU>
-            save(fullfile(folder,"pattern_bundle.mat"),"targets");
-            save(fullfile(folder,"trial_manifest.mat"),"manifest");
-            gui=adaptive_optopatch.OnePhotonRunnerApp([],folder,"Visible","off");
-            guiCleanup=onCleanup(@()delete(gui)); %#ok<NASGU>
-            testCase.verifyClass(gui,"adaptive_optopatch.OnePhotonRunnerApp");
-            testCase.verifyTrue(isvalid(gui.Figure));
-
-            % A 1P run executes its frozen per-pulse commands, so there must
-            % be no operator control that appears to override them.
-            testCase.verifyEmpty(findall(gui.Figure,"Text","Override pulse voltage"));
-            testCase.verifyNotEmpty(findall(gui.Figure,"Text","Override OBIS power"));
-            rejected=false;
-            try
-                adaptive_optopatch.run_1p_manifest(struct("trials",trials), ...
-                    struct,[],"ModulatorVoltageOverride",1);
-            catch exception
-                rejected=contains(string(exception.message), ...
-                    "ModulatorVoltageOverride");
-            end
-            testCase.verifyTrue(rejected, ...
-                "The 1P runner must not accept an execution-time voltage override.");
-        end
-
         function constructsAndResolvesSimulatedLuminos(testCase)
             outputRoot=tempname;
             sim=adaptive_optopatch.testing.make_simulated_luminos( ...
@@ -1014,63 +896,6 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyEqual(twoPhoton.calibration.calibration_id, ...
                 "SIMULATED_VU_CALIBRATION");
             testCase.verifyTrue(twoPhoton.calibration.simulation);
-        end
-
-        function constructsSimulatorThroughLuminosStyleEntryPoint(testCase)
-            sim=simulatedLuminosApp("CameraFrameRateHz",900,"LaserPowerMw",15);
-            testCase.verifyClass(sim, ...
-                "adaptive_optopatch.testing.SimulatedLuminosApp");
-            hardware=adaptive_optopatch.resolve_luminos_1p_hardware(sim);
-            testCase.verifyEqual(hardware.laser_power_w,0.015,"AbsTol",1e-12);
-            testCase.verifyEqual(hardware.voltage_camera.daqtrig_period_ms, ...
-                1000/900,"AbsTol",1e-12);
-        end
-
-        function launchesRealRunnerGuisInSimulationMode(testCase)
-            root=tempname; mkdir(root);
-            cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
-            protocol=resolve_for_test(adaptive_optopatch.generate_screen_protocol( ...
-                "PulseCount",1,"ModulatorVoltage",1),"1p_dmd");
-
-            onePhotonFolder=fullfile(root,"one_photon"); mkdir(onePhotonFolder);
-            targets=struct("schema_version","test"); %#ok<NASGU>
-            trials=table(1,"1p_dmd","cell_001",false,1,{protocol}, ...
-                protocol.acquisition_duration_s,"gui_1p","planned","", ...
-                'VariableNames',{'trial_id','stimulation_mode','target_cell_id', ...
-                'is_null','target_index','pulse_schedule','acquisition_duration_s', ...
-                'output_tag','acquisition_status','experiment_directory'});
-            manifest=struct("trials",trials); %#ok<NASGU>
-            save(fullfile(onePhotonFolder,"pattern_bundle.mat"),"targets");
-            save(fullfile(onePhotonFolder,"trial_manifest.mat"),"manifest");
-            [gui1,sim1]=launch_simulated_runner_gui(onePhotonFolder,"Visible","off");
-            cleanup1=onCleanup(@()delete(gui1)); %#ok<NASGU>
-            testCase.verifyClass(gui1,"adaptive_optopatch.OnePhotonRunnerApp");
-            testCase.verifyTrue(sim1.IsSimulation);
-            testCase.verifyTrue(contains(gui1.Figure.Name,"[SIMULATION]"));
-            testCase.verifyNotEmpty(findall(gui1.Figure, ...
-                "Text","SIMULATION — NO HARDWARE OUTPUT"));
-
-            twoPhotonFolder=fullfile(root,"two_photon"); mkdir(twoPhotonFolder);
-            target=struct("spiral_center_xy",[1024 1024], ...
-                "spiral_radius_pixels",10,"parking_point_xy",[1080 1024], ...
-                "spiral_preview_center_xy",[1024 1024], ...
-                "parking_preview_point_xy",[1080 1024]);
-            targets=struct("schema_version","2.0.0", ... %#ok<NASGU>
-                "coordinate_space","voltage_camera_full_sensor_pixels", ...
-                "reference_camera",frame_camera_geometry([2048 2048]), ...
-                "targets",target);
-            trials.stimulation_mode(:)="2p_spiral";
-            manifest=struct("trials",trials); %#ok<NASGU>
-            save(fullfile(twoPhotonFolder,"pattern_bundle.mat"),"targets");
-            save(fullfile(twoPhotonFolder,"trial_manifest.mat"),"manifest");
-            [gui2,sim2]=launch_simulated_2p_test_runner_gui( ...
-                twoPhotonFolder,"Visible","off");
-            cleanup2=onCleanup(@()delete(gui2)); %#ok<NASGU>
-            testCase.verifyClass(gui2,"adaptive_optopatch.TwoPhotonTestRunnerApp");
-            testCase.verifyTrue(sim2.IsSimulation);
-            testCase.verifyTrue(contains(gui2.Figure.Name,"[SIMULATION]"));
-            testCase.verifyNotEmpty(findall(gui2.Figure, ...
-                "Text","SIMULATION — NO HARDWARE OUTPUT"));
         end
 
         function runsSimulatedOnePhotonManifest(testCase)

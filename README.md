@@ -165,18 +165,19 @@ expansion, and 2P spirals at the resolved radius, density, and pulse duration,
 using the targeting transform the run will be executed with. The status line
 says whether it is showing resolved or bundle-default values.
 
-For local development, open the same GUI with the no-hardware backend:
+For local development, opt into the simulation tools and open the same GUI
+with the no-hardware backend:
 
 ```matlab
+addpath(fullfile(packageRoot,"tools","simulation"))
 [app, sim] = launch_simulated_adaptive_optopatch_gui();
 ```
 
 The title contains `[SIMULATION]`, and acquisitions are dispatched only to
 `SimulatedLuminosApp`. Simulation never sends hardware output.
 
-The reference and modality-specific runner launchers remain available for
-commissioning and diagnostics, but they consume the same current resolved
-protocol schedules.
+There are no modality-specific production runner GUIs. The unified app owns
+both 1P and 2P planning, freezing, execution, checkpointing, and resume.
 
 ## First installation on the VU
 
@@ -201,9 +202,9 @@ In the same MATLAB process that will run Luminos:
 packageRoot = "Z:\Lab\code\adaptive_optopatch";
 addpath(packageRoot)
 
-which launch_reference_gui
+which launch_adaptive_optopatch_gui
 which launch_galvo_calibration_gui
-which launch_2p_test_runner_gui
+which verify_vu_setup
 ```
 
 Each `which` command should resolve to the copied repository. Do not add a
@@ -317,84 +318,56 @@ reloadStatus = ...
 Both `reloadStatus.found` and `reloadStatus.applied` should be true, and the
 calibration identifier should match the one that was accepted.
 
-### Test 5: Camera 1 Snap and target planning
+### Test 5: unified planning and blocked acquisition
 
-Take a Camera 1 Snap in Luminos and launch:
-
-```matlab
-targetGui = launch_reference_gui(luminosApp);
-```
-
-Load the Snap MAT file, draw one test soma, choose `2p_spiral`, preview the
-spiral and parking point, and save the planning bundle. Confirm that exact
-calibrated spiral metrics are shown rather than “pending calibration.”
-
-### Test 6: blocked target acquisition
+Take a Camera 1 Snap in Luminos, then open the production app:
 
 ```matlab
-runner = launch_2p_test_runner_gui( ...
-    luminosApp, ...
-    "Z:\path\to\the_saved_planning_bundle");
+app = launch_adaptive_optopatch_gui(luminosApp);
 ```
 
-With the beam mechanically blocked:
+Load the Snap MAT file, draw one test soma, choose `2p_spiral`, load a protocol
+with an explicit Pockels command, and preview the resolved spiral and parking
+point. With the beam mechanically blocked, freeze and run one acquisition from
+the unified app. Confirm synchronization, frame timing, bounded tracking,
+terminal return, parking behavior, `2P mod = 0 V`, and settings restoration.
+Preserve the run folder and its `adaptive_optopatch_2p_waveforms.mat` and
+`output_data.mat` records.
 
-1. Select `blocked_test`.
-2. Use one test pulse.
-3. Keep Pockels at `0 V`.
-4. Click **Validate + preview**.
-5. Inspect the complete X, Y, and Pockels traces.
-6. Arrange oscilloscope monitoring or record `Dev2/ai1` and `Dev2/ai2`.
-7. Check **Blocked trajectory reviewed**.
-8. Run one acquisition.
+### Test 6: attenuated target acquisition
 
-Confirm synchronization, frame timing, bounded tracking, terminal return,
-parking behavior, `2P mod = 0 V`, and settings restoration. Preserve
-`adaptive_optopatch_2p_waveforms.mat` and `output_data.mat`.
-
-### Test 7: attenuated target acquisition
-
-Only after Test 6 passes, use a strongly attenuated fluorescent sample:
-
-1. Select `attenuated_test`.
-2. Use one pulse.
-3. Enter a low tested Pockels voltage.
-4. Preview again.
-5. Check both confirmation boxes.
-6. Run one acquisition.
-
-Verify that the illuminated spiral lands on the selected Camera 1 target and
-that no light is commanded during movement or parking. Increase the test pulse
-count only after the single-pulse run passes; the software imposes no numeric
-ceiling.
-
-Two guarded production-pilot levels are available after blocked and attenuated
-checks pass: `pilot_single` for single-pulse trials, and
-`pilot_mixed_trains` for randomized single-pulse and ten-pulse trials. A train
-is one event even though it contains multiple light pulses. Fully
-unrestricted multi-target `experimental` execution still requires a structured
-hardware-validation record documenting feedback, phase alignment, and
-terminal-return validation.
+Only after the blocked run passes, use a strongly attenuated fluorescent
+sample and a protocol containing a low independently tested Pockels command.
+Preview, freeze, and run one acquisition in the unified app. Verify that the
+illuminated spiral lands on the selected Camera 1 target and that no light is
+commanded during movement or parking.
 
 ## Workflow
 
-### Interactive GUI
+### Experiment-day GUI
 
 ```matlab
-cd('/path/to/adaptive_optopatch')
-app = launch_reference_gui;
+packageRoot = "/path/to/adaptive-optopatch";
+addpath(packageRoot)
+app = launch_adaptive_optopatch_gui(luminosApp);
 ```
 
-When running in the MATLAB process that owns Luminos, pass the live app object:
+The normal experiment-day path is:
 
-```matlab
-app = launch_reference_gui(luminosApp);
+```text
+Luminos running
+    ↓
+optional verify_vu_setup
+    ↓
+optional launch_galvo_calibration_gui
+    ↓
+launch_adaptive_optopatch_gui
 ```
 
-The GUI then reads the active scanner `tform` and `sample_rate` during preview
-and save, and calculates exact double-spiral cycles per optical pulse. If the
-live app or a valid scanner calibration cannot be found, target design remains
-available and the status panel displays a warning.
+The unified GUI reads live hardware state, manages canonical ROIs and FOV
+state, resolves protocols, previews, freezes immutable run artifacts, and runs
+or resumes both modalities. Pair review is optional offline analysis. Galvo
+dynamics is a commissioning tool, and simulation is for development/testing.
 
 In the Luminos React camera panel, click **Snap** for Camera 1 (`Orca Fusion`).
 Luminos writes a timestamped TIFF and MAT pair into its `Snaps` folder. In the
@@ -404,7 +377,8 @@ No reference acquisition, `output_data.mat`, or `frames1.bin` is required. Draw 
 ROIs, inspect edge/overlap QC, preview either 2P spiral footprints or eroded 1P
 DMD masks, and save the reference model, target bundle, and randomized trial
 manifest. Defaults produce one acquisition per neuron: one repeat and no null
-trials. The GUI designs files only; it does not control hardware.
+trials. The unified GUI controls acquisition only after modality-specific
+preflight.
 
 After a preview is generated, **Hide target preview** and **Hide ROI polygons**
 independently reveal the raw reference image. These controls only change what is
@@ -565,18 +539,6 @@ intermixed conditions. Frequencies above 100 Hz and overlapping pulses are
 rejected. See `pulse-protocols/README.md` for schema fields, target policies,
 scope rules, ordering semantics, and explicit multi-acquisition examples.
 
-## Active Luminos settings
-
-From the MATLAB process containing the live Luminos app:
-
-```matlab
-app = launch_live_settings_gui(luminosApp);
-```
-
-This captures active nontransient device settings and lets the experimenter
-record requested overrides. It does not apply overrides to hardware while the
-live runner is locked.
-
 ## Coordinate convention
 
 Camera points are `[x y]`, with `x` indexing columns and `y` indexing rows of
@@ -648,10 +610,10 @@ explicit Pockels command and is protocol-only.
 
 ## Current scope
 
-This version provides reference/target GUIs, exact screen and STF schedules,
-resumable dry runs, an automated guarded `1p_dmd` runner, Luminos settings
-snapshots, streamed raw-movie ROI extraction, optional integer rigid correction,
-background subtraction, connectivity ranking, and manual pair review.
+This version provides one production acquisition GUI, exact screen and STF
+schedules, resumable runs, canonical 1P/2P execution functions, streamed
+raw-movie ROI extraction, optional integer rigid correction, background
+subtraction, connectivity ranking, and manual pair review.
 
 ## Automated 1P DMD runner
 
@@ -670,13 +632,9 @@ Use the Luminos `VU_MultiDAQ_Synchronization` branch (or its merged successor).
 Start Luminos, load the desired waveform protocol in React, select either
 `Internal Dev1` or `Internal Dev2` as the master clock, and select self-trigger.
 The active protocol must contain a buffered channel on the selected master DAQ.
-Set the OBIS to `ANALOG` or `MIXED` external-modulation mode. Then open a
-planning bundle saved in `1p_dmd` mode:
-
-```matlab
-runner = launch_1p_runner_gui(luminosApp, ...
-    "D:\path\to\adaptive_optopatch_fov_YYYYMMDD_HHMMSS");
-```
+Set the OBIS to `ANALOG` or `MIXED` external-modulation mode, then use
+`launch_adaptive_optopatch_gui(luminosApp)` to preview, freeze, and run the
+resolved `1p_dmd` acquisition.
 
 The runner inherits the active Luminos waveform rate, clock, trigger, DAQ-master
 state, completion trigger, camera exposure/ROI/binning, and all waveform outputs
@@ -727,40 +685,27 @@ run = adaptive_optopatch.run_manifest(manifest, targets, ...
 
 The live path is implemented but has not yet been validated with light on the
 VU. The first run should therefore use a low OBIS setpoint, a low mod488 command,
-one trial (`Run next trial`), and a nonbiological fluorescent target. Staged 2P
-tests use the separate guarded runner described below.
+one acquisition (`Run next`), and a nonbiological fluorescent target.
 
 ## Local simulation / GUI development
 
-The real 1P and 2P runner GUIs can run against a small local Luminos test
-backend. The general launcher reads `trial_manifest.mat` and selects the right
-GUI:
+The unified GUI can run against the local Luminos test backend. Simulation is
+kept off the normal experiment-day path, so add its specialized tool directory
+explicitly:
 
 ```matlab
-addpath("/path/to/adaptive-optopatch")
-[gui, sim] = launch_simulated_runner_gui("/path/to/planning_bundle");
+packageRoot = "/path/to/adaptive-optopatch";
+addpath(packageRoot)
+addpath(fullfile(packageRoot,"tools","simulation"))
+[app, sim] = launch_simulated_adaptive_optopatch_gui( ...
+    "CameraFrameRateHz",1000, ...
+    "LaserPowerMw",20, ...
+    "SimulationOutputRoot","/path/to/simulation_output");
 ```
 
-Mode-specific launchers are also available:
-
-```matlab
-[gui, sim] = launch_simulated_1p_runner_gui("/path/to/1p_bundle");
-[gui, sim] = launch_simulated_2p_test_runner_gui("/path/to/2p_bundle");
-```
-
-For programmatic use and a few useful overrides:
-
-```matlab
-sim = simulatedLuminosApp( ...
-    "CameraFrameRateHz", 1000, ...
-    "LaserPowerMw", 20, ...
-    "SimulationOutputRoot", "/path/to/simulation_output");
-
-gui = launch_1p_runner_gui(sim, "/path/to/1p_bundle");
-```
-
-`adaptive_optopatch.testing.make_simulated_luminos(...)` is the equivalent
-package-qualified factory when that spelling is preferable in tests.
+For programmatic tests, construct only the backend with
+`adaptive_optopatch.testing.make_simulated_luminos(...)` and pass it to the
+canonical functions or unified app.
 
 **SIMULATION MODE NEVER SENDS HARDWARE OUTPUT.** The class identity
 `adaptive_optopatch.testing.SimulatedLuminosApp` is the only condition that
@@ -768,9 +713,8 @@ selects simulated acquisition. Parameter validation, target preparation,
 protocol and waveform construction, previews, checkpoints, and runner logic
 are the normal Adaptive Optopatch implementations. Device responses,
 acquisition completion, `output_data.mat`, and 2P galvo feedback are synthetic.
-Simulation folders are prefixed `SIMULATION_`; convenience launchers place them
-under the planning bundle's `simulation_runs` folder. Both GUIs display a red
-`SIMULATION — NO HARDWARE OUTPUT` banner and include `[SIMULATION]` in the title.
+Simulation folders are prefixed `SIMULATION_`; the unified GUI displays a red
+`SIMULATION — NO HARDWARE OUTPUT` banner and includes `[SIMULATION]` in the title.
 
 Simple validation-failure injection is available through
 `MissingDevice`, `LaserInterlockEnabled`, `Modulator488Port`, and
@@ -849,7 +793,7 @@ setenv("ADAPTIVE_OPTOPATCH_CONFIG_ROOT", ...
 Put this command in the VU MATLAB `startup.m`, or define the environment
 variable permanently in Windows, so it is present after restarting MATLAB.
 
-`launch_reference_gui(luminosApp)` reads the active pointer, validates the rig,
+`launch_adaptive_optopatch_gui(luminosApp)` reads the active pointer, validates the rig,
 Camera 1 serial, scanner name/ports, transform direction, inverse mapping, and
 held-out QC, and only then applies the transform to the live Luminos scanner.
 A rejected artifact produces a warning and is not applied. The artifact
@@ -905,21 +849,15 @@ Camera 1 settings are restored.
 - [ ] Accepted calibration applied and versioned artifact path recorded.
 - [ ] A fresh MATLAB/Luminos session successfully reloads the active artifact.
 
-## Staged 2P acquisition runner
+## Staged 2P commissioning machinery
 
-After saving a `2p_spiral` planning bundle and applying a passing Camera 1/galvo
-calibration, open the staged runner:
-
-```matlab
-runner = launch_2p_test_runner_gui( ...
-    luminosApp, ...
-    "Z:\path\to\adaptive_optopatch_fov_YYYYMMDD_HHMMSS");
-```
-
-The runner uses the first non-null cell in the planning bundle. Blocked and
-attenuated modes truncate its connectivity-screen schedule to the requested
-number of test pulses. Both pilot modes run one target without a software
-pulse-count or event-count ceiling.
+The production 2P experiment runs through `AdaptiveOptopatchApp`. The retained
+`plan_staged_2p_execution`, `stage_2p_execution_protocol`,
+`validate_2p_release_level`, and `run_2p_manifest` functions support explicit
+programmatic commissioning and the unified execution path; they are not a
+second production GUI. Blocked and attenuated modes select a subset of a frozen
+schedule, while pilot modes run one target without a software pulse-count or
+event-count ceiling.
 
 A staged or pilot level never rewrites the frozen manifest. The manifest, its
 per-trial resolved pulse schedules, output tags, and durations are archived
@@ -1130,6 +1068,7 @@ Prerequisites:
 First run only the lowest-stress X/Y pair to identify wiring:
 
 ```matlab
+addpath(fullfile(packageRoot,"tools","commissioning"))
 result = run_galvo_dynamics_characterization(luminosApp, ...
     "AmplitudesV", 0.05, ...
     "FrequenciesHz", 25, ...

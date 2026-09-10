@@ -1,5 +1,5 @@
 function preview=build_2p_plan_preview(protocol,target,hardware,options)
-%BUILD_2P_PLAN_PREVIEW Shared guarded 2P preview used by both runner GUIs.
+%BUILD_2P_PLAN_PREVIEW Build the guarded 2P preview used before execution.
 arguments
     protocol (1,1) struct
     target (1,1) struct

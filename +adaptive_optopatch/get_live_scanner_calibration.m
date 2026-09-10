@@ -8,7 +8,7 @@ calibration=struct([]);
 warningMessage="";
 if isempty(luminosApp)
     warningMessage="Live Luminos app was not supplied; exact spirals per pulse "+ ...
-        "require launch_reference_gui(luminosApp).";
+        "require launch_adaptive_optopatch_gui(luminosApp).";
     return
 end
 try

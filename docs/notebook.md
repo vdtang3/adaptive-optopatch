@@ -532,3 +532,18 @@ retained and documented as the explicit, protocol-only Pockels command for
 
 The unified GUI's command-voltage field is now labelled `mod488 (V)` and is
 disabled in 2P mode, because nothing typed there can reach a Pockels command.
+
+## 2026-09-10 — One production acquisition interface
+
+`AdaptiveOptopatchApp` is now the only production acquisition GUI for both 1P
+and 2P. The standalone 1P, staged-2P, settings-review, and reference launchers
+duplicated slices of the unified workflow and were removed with their GUI-only
+classes. Their reusable execution behavior was already implemented by the
+canonical `run_1p_manifest`, `run_2p_manifest`, staged-execution, preview, and
+validation functions, so no acquisition logic moved or changed.
+
+The root now contains only experiment-day entry points. The simulated unified
+launcher lives under `tools/simulation`, and the guarded galvo-dynamics wrapper
+lives under `tools/commissioning`; each specialized directory is added to the
+MATLAB path explicitly when needed. The canonical simulator remains packaged
+under `adaptive_optopatch.testing`.

@@ -588,9 +588,17 @@ its current calibration, camera ROI offset, and binning.
 
 - Metadata must identify `Virtual_Upright`, voltage camera serial `001125`,
   and `DMD_Blue` unless overrides are explicitly supplied.
-- Targets touching image edges are flagged.
-- 1P masks that overlap other somata are flagged.
+- Targets touching image edges are flagged. Blue-mask overlap with other
+  somata is not a concept: it is neither computed nor flagged.
 - Live adapter calls are dry-run by default.
+- Before any output, execution requires the live voltage camera to acquire on
+  the frozen reference grid (sensor origin, frame size, binning), the live
+  waveform sample rate to be able to realize every frozen pulse and dark
+  interval, and any externally triggered DMD advance schedule to respect the
+  DMD's own reported minimum picture time.
+- The Blue camera-to-DMD transform and, for 2P, the active galvo calibration
+  are compared with the ones the plan was built with and archived with the
+  run. A difference is provenance, not a gate.
 - A nonidentity scanner transform is required for 2P live configuration,
   unless `AllowIdentityScannerTransform=true` is explicitly supplied.
 - Spiral density is expressed using Luminos's native `Points_Per_Volt` value.

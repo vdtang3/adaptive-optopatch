@@ -1,0 +1,176 @@
+classdef TestExecutionBatchWorkflow < matlab.unittest.TestCase
+    methods (Test)
+        function completedFrozenRunStartsDistinctIdenticalBatch(testCase)
+            [app,root]=open_batch_app(testCase);
+            firstRun=app.runAll();
+            firstFolder=app.ActiveRunFolder;
+            firstPlan=app.ActiveRunPlan;
+            firstIdentity=firstPlan.execution_batch;
+            firstOutputDirectories=string(firstRun.trials.experiment_directory);
+            checkpointPath=fullfile(firstFolder,"run_checkpoint.mat");
+            firstCheckpoint=load(checkpointPath,"run");
+            startButton=findall(app.Figure,"Text","Start new batch");
+
+            testCase.verifyEqual(string(startButton.Enable),"on");
+            testCase.verifyTrue(app.startNewBatchEnabled());
+            paths=app.startNewBatch();
+            secondFolder=app.ActiveRunFolder;
+            secondPlan=app.ActiveRunPlan;
+            secondIdentity=secondPlan.execution_batch;
+
+            testCase.verifyNotEqual(secondFolder,firstFolder);
+            testCase.verifyEqual(paths.output_directory,secondFolder);
+            testCase.verifyEqual(secondIdentity.batch_number,2);
+            testCase.verifyNotEqual(secondIdentity.batch_id,firstIdentity.batch_id);
+            testCase.verifyEqual(secondIdentity.frozen_definition_id, ...
+                firstIdentity.frozen_definition_id);
+            testCase.verifyEqual(secondIdentity.rerun_of_batch_id,firstIdentity.batch_id);
+            testCase.verifyEqual(secondIdentity.rerun_of_batch_directory,firstFolder);
+            testCase.verifyTrue(secondIdentity.randomized_schedule_reused);
+            testCase.verifyTrue(all( ...
+                secondPlan.manifest.trials.acquisition_status=="planned"));
+            testCase.verifyTrue(all( ...
+                secondPlan.manifest.trials.experiment_directory==""));
+            testCase.verifyTrue(all(secondPlan.manifest.trials.analysis_status==""));
+            testCase.verifyEqual(string(startButton.Enable),"off");
+            tableStatuses=string(trial_table(app).Data(:,6));
+            testCase.verifyTrue(all(tableStatuses=="planned"));
+
+            testCase.verifyEqual(secondPlan.protocol_definition.random_seed, ...
+                firstPlan.protocol_definition.random_seed);
+            testCase.verifyEqual(secondPlan.protocol_definition.event_order, ...
+                firstPlan.protocol_definition.event_order);
+            testCase.verifyEqual(secondPlan.resolved_protocols, ...
+                firstPlan.resolved_protocols);
+            testCase.verifyEqual(secondPlan.manifest.trials.pulse_schedule, ...
+                firstPlan.manifest.trials.pulse_schedule);
+
+            unchangedCheckpoint=load(checkpointPath,"run");
+            testCase.verifyEqual(unchangedCheckpoint,firstCheckpoint, ...
+                "Starting a new batch must not rewrite the completed checkpoint.");
+            testCase.verifyTrue(all(isfolder(firstOutputDirectories)));
+
+            partial=app.runNext();
+            testCase.verifyEqual(app.ActiveRunFolder,secondFolder);
+            testCase.verifyEqual(sum(partial.trials.acquisition_status=="completed"),1);
+            testCase.verifyGreaterThan(sum( ...
+                partial.trials.acquisition_status=="planned"),0);
+            secondRun=app.runAll();
+            testCase.verifyTrue(all( ...
+                secondRun.trials.acquisition_status=="completed"));
+            secondOutputDirectories=string(secondRun.trials.experiment_directory);
+            testCase.verifyFalse(any(ismember( ...
+                secondOutputDirectories,firstOutputDirectories)));
+            testCase.verifyTrue(all(isfolder(secondOutputDirectories)));
+            record=load(fullfile(secondOutputDirectories(1),"output_data.mat"), ...
+                "adaptive_optopatch_record");
+            testCase.verifyEqual( ...
+                string(record.adaptive_optopatch_record.trial.batch_id), ...
+                secondIdentity.batch_id);
+            testCase.verifyEqual( ...
+                record.adaptive_optopatch_record.trial.batch_number,2);
+        end
+
+        function resumeContinuesIncompleteBatchWithoutNewIdentity(testCase)
+            [app,~]=open_batch_app(testCase);
+            app.freezeCurrentPlan();
+            originalFolder=app.ActiveRunFolder;
+            originalIdentity=app.ActiveRunPlan.execution_batch;
+            partial=app.runNext();
+            testCase.verifyEqual(sum(partial.trials.acquisition_status=="completed"),1);
+            testCase.verifyGreaterThan(sum( ...
+                partial.trials.acquisition_status=="planned"),0);
+            testCase.verifyFalse(app.startNewBatchEnabled());
+
+            resumedPlan=app.resumeRun(originalFolder);
+            testCase.verifyEqual(app.ActiveRunFolder,originalFolder);
+            testCase.verifyEqual(resumedPlan.execution_batch.batch_id, ...
+                originalIdentity.batch_id);
+            tableControl=trial_table(app);
+            statuses=string(tableControl.Data(:,6));
+            testCase.verifyEqual(sum(statuses=="completed"),1);
+            testCase.verifyGreaterThan(sum(statuses=="planned"),0);
+
+            completed=app.runAll();
+            testCase.verifyEqual(app.ActiveRunFolder,originalFolder);
+            testCase.verifyEqual(app.ActiveRunPlan.execution_batch.batch_id, ...
+                originalIdentity.batch_id);
+            testCase.verifyTrue(all(completed.trials.acquisition_status=="completed"));
+            testCase.verifyTrue(app.startNewBatchEnabled());
+        end
+
+        function startNewBatchControlRequiresCompletedIdleRun(testCase)
+            [app,~]=open_batch_app(testCase,"Configure",false);
+            startButton=findall(app.Figure,"Text","Start new batch");
+            testCase.verifyNumElements(startButton,1);
+            testCase.verifyEqual(string(startButton.Enable),"off");
+            testCase.verifyFalse(app.startNewBatchEnabled());
+
+            configure_batch_app(app);
+            app.freezeCurrentPlan();
+            observedKey="start_new_batch_during_run";
+            timerObject=timer("StartDelay",0.01, ...
+                "TimerFcn",@(~,~)capture_running_state( ...
+                app,startButton,observedKey));
+            timerCleanup=onCleanup(@()delete_timer(timerObject)); %#ok<NASGU>
+            start(timerObject);
+            app.runNext();
+            wait(timerObject);
+            observed=getappdata(app.Figure,observedKey);
+            testCase.verifyEqual(observed.plan_state,"RUNNING");
+            testCase.verifyTrue(observed.controls_locked);
+            testCase.verifyEqual(observed.button_enable,"off");
+        end
+    end
+end
+
+function [app,root]=open_batch_app(testCase,options)
+arguments
+    testCase
+    options.Configure (1,1) logical = true
+end
+root=tempname; mkdir(root);
+testCase.addTeardown(@()remove_if_present(root));
+[app,~]=open_simulated_test_gui( ...
+    "CameraRoi",[974 100 984 80],"Visible","off","RunRoot",root);
+testCase.addTeardown(@()delete(app));
+if options.Configure, configure_batch_app(app); end
+end
+
+function configure_batch_app(app)
+info=struct("snapshot_name","batch_workflow", ...
+    "snapshot_directory","","snapshot_path","", ...
+    "metadata",struct("rig_name","Virtual_Upright", ...
+    "voltage_camera",struct("ROI",[0 0 100 80],"bin",1, ...
+    "x_world_limits",[974 1074],"y_world_limits",[984 1064])));
+rois={[25 25;40 25;40 40;25 40], ...
+    [60 40;75 40;75 55;60 55]};
+app.setReferenceData(ones(80,100),info,rois);
+protocol=adaptive_optopatch.generate_screen_protocol( ...
+    "PulseCount",1,"ModulatorVoltage",1,"RandomSeed",73);
+app.setPulseProtocol(protocol);
+app.setPlanParameter("mode","1p_dmd");
+end
+
+function value=trial_table(app)
+tables=findall(app.Figure,"Type","uitable");
+value=tables(arrayfun(@(table)any(string(table.ColumnName)=="Trial"),tables));
+end
+
+function capture_running_state(app,button,key)
+value=struct("plan_state",app.PlanState, ...
+    "controls_locked",app.ControlsLocked, ...
+    "button_enable",string(button.Enable));
+setappdata(app.Figure,key,value);
+end
+
+function delete_timer(value)
+if isvalid(value)
+    stop(value);
+    delete(value);
+end
+end
+
+function remove_if_present(folder)
+if isfolder(folder), rmdir(folder,"s"); end
+end

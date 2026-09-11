@@ -27,6 +27,7 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
         WaveformAxes
         RunNextButton
         RunAllButton
+        StartNewBatchButton
         StopButton
         StopRequested logical = false
         OnePhotonControls cell = {}
@@ -295,18 +296,7 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             plan=app.buildCurrentPlan();
             app.preflightPlan(plan);
             if strlength(outputRoot)==0, outputRoot=app.defaultRunRoot(); end
-            paths=adaptive_optopatch.save_bundle(outputRoot, ...
-                plan.reference,plan.targets,plan.manifest, ...
-                "CreateSubfolder",true, ...
-                "SubfolderPrefix","adaptive_optopatch_run", ...
-                "SessionState",plan.session,"FovState",plan.fov_state);
-            paths.protocol=fullfile(paths.output_directory,"pulse_protocol.mat");
-            save_frozen_protocol_archive(paths.protocol,plan.resolved_protocols, ...
-                plan.manifest.trials.trial_id);
-            paths.protocol_definition=fullfile(paths.output_directory, ...
-                "protocol_definition.mat");
-            adaptive_optopatch.save_protocol(paths.protocol_definition, ...
-                plan.protocol_definition);
+            [plan,paths]=app.saveExecutionBatch(plan,outputRoot,1,struct([]));
             app.ActiveRunPlan=plan;
             app.ActiveRunFolder=paths.output_directory;
             app.EditableStateChanged=false;
@@ -315,6 +305,57 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             app.refreshTrialTable(plan.manifest.trials);
             app.setStatus("Frozen run plan created before acquisition:"+newline+ ...
                 app.ActiveRunFolder);
+        end
+
+        function paths=startNewBatch(app,outputRoot)
+            %STARTNEWBATCH Reuse one completed frozen definition in a new batch.
+            arguments
+                app
+                outputRoot (1,1) string = ""
+            end
+            if isempty(app.ActiveRunPlan) || strlength(app.ActiveRunFolder)==0
+                error("adaptive_optopatch:FrozenRunRequired", ...
+                    "Freeze or resume a run before starting a new batch.");
+            end
+            if app.PlanState=="RUNNING" || app.ControlsLocked
+                error("adaptive_optopatch:AcquisitionActive", ...
+                    "A new batch cannot be started while an acquisition is active.");
+            end
+            currentTrials=app.currentBatchTrials();
+            if ~batch_is_complete(currentTrials)
+                error("adaptive_optopatch:CompletedBatchRequired", ...
+                    "Start new batch is available only after the current batch completes.");
+            end
+
+            sourcePlan=app.ActiveRunPlan;
+            sourceFolder=app.ActiveRunFolder;
+            sourceBatch=batch_identity(sourcePlan,sourceFolder);
+            plan=sourcePlan;
+            plan.manifest=reset_execution_state(plan.manifest);
+            if strlength(outputRoot)==0
+                outputRoot=string(fileparts(char(sourceFolder)));
+            end
+            [plan,paths]=app.saveExecutionBatch( ...
+                plan,outputRoot,double(sourceBatch.batch_number)+1,sourceBatch);
+            app.ActiveRunPlan=plan;
+            app.ActiveRunFolder=paths.output_directory;
+            app.LastRun=struct([]);
+            app.EditableStateChanged=false;
+            app.PlanState="FROZEN";
+            app.refreshTrialTable(plan.manifest.trials);
+            app.updateStateDisplay();
+            app.setStatus(["Fresh execution batch ready:";app.ActiveRunFolder; ...
+                "Frozen definition and event order reused from:";sourceFolder]);
+        end
+
+        function value=startNewBatchEnabled(app)
+            %STARTNEWBATCHENABLED Whether the active completed batch can be rerun.
+            value=false;
+            if isempty(app.ActiveRunPlan) || strlength(app.ActiveRunFolder)==0 || ...
+                    app.PlanState=="RUNNING" || app.ControlsLocked
+                return
+            end
+            value=batch_is_complete(app.currentBatchTrials());
         end
 
         function paths=startNewRun(app,outputRoot)
@@ -371,12 +412,13 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 "resolved_protocols",{resolvedProtocols}, ...
                 "fov_state",fovState,"manifest",manifest,"session",session, ...
                 "advisories",manifest_advisories(manifest));
+            plan.execution_batch=batch_identity(plan,folder);
             app.ActiveRunPlan=plan;
             app.ActiveRunFolder=folder;
             app.EditableStateChanged=false;
             app.PlanState="FROZEN";
             app.updateStateDisplay();
-            app.refreshTrialTable(manifest.trials);
+            app.refreshTrialTable(app.currentBatchTrials());
             app.setStatus("Loaded frozen run for resume. Editable controls were not substituted into it.");
         end
 
@@ -506,6 +548,54 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
     end
 
     methods (Access=private)
+        function [plan,paths]=saveExecutionBatch( ...
+                app,plan,outputRoot,batchNumber,sourceBatch)
+            paths=adaptive_optopatch.save_bundle(outputRoot, ...
+                plan.reference,plan.targets,plan.manifest, ...
+                "CreateSubfolder",true, ...
+                "SubfolderPrefix","adaptive_optopatch_run", ...
+                "SessionState",plan.session,"FovState",plan.fov_state);
+            identity=make_batch_identity( ...
+                paths.output_directory,batchNumber,sourceBatch);
+            plan.manifest=attach_batch_identity(plan.manifest,identity);
+            plan.session.execution_batch=identity;
+            plan.execution_batch=identity;
+            manifest=plan.manifest; %#ok<NASGU>
+            save(paths.manifest,"manifest");
+            planning_session=plan.session; %#ok<NASGU>
+            save(paths.session,"planning_session","-v7.3");
+            paths.protocol=fullfile(paths.output_directory,"pulse_protocol.mat");
+            save_frozen_protocol_archive(paths.protocol,plan.resolved_protocols, ...
+                plan.manifest.trials.trial_id);
+            paths.protocol_definition=fullfile(paths.output_directory, ...
+                "protocol_definition.mat");
+            adaptive_optopatch.save_protocol(paths.protocol_definition, ...
+                plan.protocol_definition);
+        end
+
+        function trials=currentBatchTrials(app)
+            trials=app.ActiveRunPlan.manifest.trials;
+            checkpoint=batch_checkpoint_path(app.ActiveRunFolder,trials);
+            if strlength(checkpoint)==0 || ~isfile(checkpoint), return; end
+            saved=load(checkpoint,"run");
+            if isfield(saved,"run") && isfield(saved.run,"trials") && ...
+                    height(saved.run.trials)==height(trials)
+                trials=saved.run.trials;
+            end
+        end
+
+        function updateBatchControls(app)
+            if isempty(app.StartNewBatchButton) || ...
+                    ~isvalid(app.StartNewBatchButton), return; end
+            complete=app.startNewBatchEnabled();
+            app.StartNewBatchButton.Enable=matlab.lang.OnOffSwitchState(complete);
+            if ~isempty(app.ActiveRunPlan) && strlength(app.ActiveRunFolder)>0
+                runnable=~complete && app.PlanState~="RUNNING" && ~app.ControlsLocked;
+                app.RunNextButton.Enable=matlab.lang.OnOffSwitchState(runnable);
+                app.RunAllButton.Enable=matlab.lang.OnOffSwitchState(runnable);
+            end
+        end
+
         function buildUnifiedUI(app)
             app.Figure.Name="Adaptive Optopatch";
             if isa(app.LuminosApp,"adaptive_optopatch.testing.SimulatedLuminosApp")
@@ -629,6 +719,13 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 "and make it the active one. The previous frozen run's " ...
                 "artifacts stay on disk and remain resumable."]);
             newRunButton.Layout.Row=5; newRunButton.Layout.Column=[4 5];
+            app.StartNewBatchButton=uibutton(controls,"Text","Start new batch", ...
+                "Enable","off", ...
+                "ButtonPushedFcn",@(~,~)app.invoke(@()app.startNewBatch()), ...
+                "Tooltip",["Create a fresh execution batch from the exact " ...
+                "completed frozen definition and preserve the prior batch."]);
+            app.StartNewBatchButton.Layout.Row=5;
+            app.StartNewBatchButton.Layout.Column=[6 8];
             app.WaveformAxes=uiaxes(runtime);
             title(app.WaveformAxes,"Waveform / DMD preview");
 
@@ -674,13 +771,19 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             if isempty(app.StateLabel) || ~isvalid(app.StateLabel), return; end
             switch app.PlanState
                 case "FROZEN"
-                    app.StateLabel.Text="Frozen run ready / resumable"; app.StateLabel.FontColor=[0 0.5 0];
+                    if app.startNewBatchEnabled()
+                        app.StateLabel.Text="Frozen batch completed";
+                    else
+                        app.StateLabel.Text="Frozen run ready / resumable";
+                    end
+                    app.StateLabel.FontColor=[0 0.5 0];
                 case "RUNNING"
                     app.StateLabel.Text="● Running frozen plan"; app.StateLabel.FontColor=[0 0.3 0.8];
                 otherwise
                     app.StateLabel.Text="Editable — current settings run";
                     app.StateLabel.FontColor=[0 0.35 0.65];
             end
+            app.updateBatchControls();
         end
 
         function run=executeCurrentPlan(app,count)
@@ -948,6 +1051,85 @@ end
 function value=manifest_advisories(manifest)
 value=struct([]);
 if isfield(manifest,"advisories"), value=manifest.advisories; end
+end
+
+function identity=make_batch_identity(folder,batchNumber,source)
+[~,batchId]=fileparts(char(folder));
+if isempty(source)
+    frozenDefinitionId=string(batchId);
+    frozenDefinitionDirectory=string(folder);
+    rerunOfBatchId="";
+    rerunOfBatchDirectory="";
+else
+    frozenDefinitionId=string(source.frozen_definition_id);
+    frozenDefinitionDirectory=string(source.frozen_definition_directory);
+    rerunOfBatchId=string(source.batch_id);
+    rerunOfBatchDirectory=string(source.batch_directory);
+end
+identity=struct("schema_version","1.0.0", ...
+    "batch_id",string(batchId),"batch_number",double(batchNumber), ...
+    "batch_directory",string(folder), ...
+    "frozen_definition_id",frozenDefinitionId, ...
+    "frozen_definition_directory",frozenDefinitionDirectory, ...
+    "rerun_of_batch_id",rerunOfBatchId, ...
+    "rerun_of_batch_directory",rerunOfBatchDirectory, ...
+    "created_at",string(datetime("now","TimeZone","local")), ...
+    "randomized_schedule_reused",~isempty(source));
+end
+
+function identity=batch_identity(plan,folder)
+if isfield(plan,"execution_batch") && ~isempty(plan.execution_batch)
+    identity=plan.execution_batch;
+elseif isfield(plan,"manifest") && isfield(plan.manifest,"execution_batch")
+    identity=plan.manifest.execution_batch;
+elseif isfield(plan,"session") && isfield(plan.session,"execution_batch")
+    identity=plan.session.execution_batch;
+else
+    % Compatibility for frozen runs created before execution-batch metadata.
+    identity=make_batch_identity(folder,1,struct([]));
+end
+end
+
+function manifest=attach_batch_identity(manifest,identity)
+manifest.execution_batch=identity;
+n=height(manifest.trials);
+manifest.trials.batch_id=repmat(identity.batch_id,n,1);
+manifest.trials.batch_number=repmat(identity.batch_number,n,1);
+manifest.trials.frozen_definition_id= ...
+    repmat(identity.frozen_definition_id,n,1);
+manifest.trials.rerun_of_batch_id=repmat(identity.rerun_of_batch_id,n,1);
+end
+
+function manifest=reset_execution_state(manifest)
+n=height(manifest.trials);
+manifest.trials.acquisition_status(:)="planned";
+for name=["experiment_directory","analysis_status","error_message"]
+    if ismember(name,string(manifest.trials.Properties.VariableNames))
+        manifest.trials.(name)=repmat("",n,1);
+    end
+end
+for name=["preflight_report","target_configuration","orange_configuration", ...
+        "settings_snapshot","waveform_summary","executed_pulse_schedule"]
+    if ismember(name,string(manifest.trials.Properties.VariableNames))
+        manifest.trials.(name)=cell(n,1);
+    end
+end
+end
+
+function path=batch_checkpoint_path(folder,trials)
+path="";
+if strlength(folder)==0 || isempty(trials), return; end
+mode=unique(string(trials.stimulation_mode));
+if isscalar(mode) && mode=="1p_dmd"
+    path=fullfile(folder,"run_checkpoint.mat");
+elseif isscalar(mode) && mode=="2p_spiral"
+    path=fullfile(folder,"run_2p_checkpoint.mat");
+end
+end
+
+function value=batch_is_complete(trials)
+value=~isempty(trials) && all(ismember( ...
+    string(trials.acquisition_status),["completed","analyzed"]));
 end
 
 function save_frozen_protocol_archive(path,protocols,trialIds)

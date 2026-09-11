@@ -677,3 +677,20 @@ The quick-look figure now has a nested left plotting grid for traces and the
 executed stimulation command, with the canonical ROI image in a separate right
 column. Both time axes therefore receive the same horizontal geometry as well
 as linked x limits, so an event is physically aligned beneath its trace time.
+
+## 2026-09-10 — Frozen definitions can produce multiple execution batches
+
+A completed run folder represents one execution batch, not exhaustion of its
+frozen experimental definition. `Start new batch` now writes a distinct sibling
+run folder from the active completed plan, resets only trial execution fields,
+and copies the already-resolved protocols rather than resolving or randomizing
+again. The prior checkpoint and acquisition directories are never changed.
+`Resume run` remains different: it selects the same folder and continues from
+that folder's existing checkpoint.
+
+Each frozen manifest, planning session, and trial row carries execution-batch
+metadata: `batch_id`, `batch_number`, `frozen_definition_id`, and rerun-parent
+identity/directory. This makes the initial frozen definition, batch chain, and
+per-acquisition provenance explicit while leaving protocol and runner schemas
+otherwise unchanged. Timestamped run-folder allocation with collision suffixes
+continues to provide unique batch output roots.

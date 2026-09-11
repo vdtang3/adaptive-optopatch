@@ -965,7 +965,9 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             outputRoot=tempname;
             cleanup=onCleanup(@()remove_if_present(outputRoot)); %#ok<NASGU>
             sim=adaptive_optopatch.testing.make_simulated_luminos( ...
-                "SimulationOutputRoot",outputRoot,"CameraRoi",[0 9 0 8]);
+                "SimulationOutputRoot",outputRoot,"CameraRoi",[0 9 0 8], ...
+                "LaserMode","CWP");
+            laser=sim.getDevice("Laser_Device","name","488");
             protocol=resolve_for_test(adaptive_optopatch.generate_screen_protocol( ...
                 "PulseCount",1,"PreDelayMs",10,"PostDelayMs",10, ...
                 "ModulatorVoltage",1),"1p_dmd");
@@ -991,6 +993,14 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             saved=load(fullfile(folder,"output_data.mat"));
             testCase.verifyTrue(saved.simulation);
             testCase.verifyTrue(saved.adaptive_optopatch_record.simulation);
+            testCase.verifyEqual(saved.adaptive_optopatch_record.obis_mode,"CWP");
+            testCase.verifyEqual(laser.Mode,"CWP", ...
+                "The 1P runner must preserve the Luminos-owned OBIS mode.");
+            executed=sim.AcquisitionHistory.wfm_data.ao;
+            mod488=executed(string({executed.name})=="mod488");
+            testCase.verifyEqual(string(mod488.wavefile), ...
+                "adaptive_optopatch.luminos_event_waveform");
+            testCase.verifyEqual(mod488.params{3},1);
             testCase.verifyEqual(numel(sim.AcquisitionHistory),1);
         end
 

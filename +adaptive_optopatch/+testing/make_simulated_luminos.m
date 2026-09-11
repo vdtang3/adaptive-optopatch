@@ -8,6 +8,7 @@ arguments
     options.CameraRoi (1,4) double = [0 2048 0 2048]
     options.CameraBin (1,1) double {mustBePositive} = 1
     options.LaserPowerMw (1,1) double {mustBeNonnegative} = 10
+    options.LaserMode (1,1) string = "ANALOG"
     options.SimulationOutputRoot (1,1) string = ""
     options.GalvoCalibration (1,1) struct = struct
     options.MissingDevice (1,1) string = ""
@@ -58,7 +59,7 @@ orangeDmd=device("DMD",profile1p.orange_dmd.name);
 orangeDmd.tform=affinetform2d([1.02 0 1;0 1.02 2;0 0 1]);
 orangeDmd.refimage=zeros(32,32,"uint16");
 laser=device("Laser_Device",profile1p.laser.name);
-laser.Mode="ANALOG";
+laser.Mode=options.LaserMode;
 laser.SetPower=options.LaserPowerMw/1000;
 laser.InterlockEnabled=options.LaserInterlockEnabled;
 mod488=device("NI_DAQ_Modulator",profile1p.modulator.name);

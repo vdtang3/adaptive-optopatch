@@ -652,17 +652,18 @@ Use the Luminos `VU_MultiDAQ_Synchronization` branch (or its merged successor).
 Start Luminos, load the desired waveform protocol in React, select either
 `Internal Dev1` or `Internal Dev2` as the master clock, and select self-trigger.
 The active protocol must contain a buffered channel on the selected master DAQ.
-Set the OBIS to `ANALOG` or `MIXED` external-modulation mode, then use
+Leave the OBIS in the operating mode selected in Luminos, then use
 `launch_adaptive_optopatch_gui(luminosApp)` to preview, freeze, and run the
-resolved `1p_dmd` acquisition.
+resolved `1p_dmd` acquisition. Adaptive Optopatch records that live mode but
+does not restrict or change it.
 
 The runner inherits the active Luminos waveform rate, clock, trigger, DAQ-master
 state, completion trigger, camera exposure/ROI/binning, and all waveform outputs
 other than `mod488`. For each trial it:
 
 1. validates the live devices, nonidentity DMD calibration, selected DAQ master,
-   clock bridge, device-local triggers, OBIS external-modulation mode,
-   interlock, power, and command limits;
+   clock bridge, device-local triggers, OBIS interlock, power, and command
+   limits, while recording the Luminos-owned OBIS operating mode;
 2. transforms and writes the selected camera-coordinate mask through
    `DMD_Blue`;
 3. replaces only the active `mod488` waveform with the manifest's exact pulse
@@ -1149,5 +1150,5 @@ report = verify_vu_setup( ...
 Every live-related row should report `PASS`. The checker does not write a DMD
 pattern, open a shutter, start the laser, or launch an acquisition. It verifies
 the MATLAB release, Windows platform, toolbox and package paths, Luminos API,
-live devices, DMD calibration, OBIS mode/interlock, Camera 1 HSYNC timing, and
-the selected planning bundle.
+live devices, DMD calibration, observed OBIS mode/interlock, Camera 1 HSYNC
+timing, and the selected planning bundle.

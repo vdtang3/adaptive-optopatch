@@ -1,5 +1,18 @@
 classdef TestRigCommissioningFixes < matlab.unittest.TestCase
     methods (Test)
+        function acceptsAndPreservesLuminosObisModes(testCase)
+            for mode=["CWP","ANALOG","MIXED"]
+                luminosApp=simulatedLuminosApp("LaserMode",mode);
+                laser=luminosApp.getDevice("Laser_Device","name","488");
+
+                hardware=adaptive_optopatch.resolve_luminos_1p_hardware(luminosApp);
+
+                testCase.verifyEqual(hardware.laser_mode,mode);
+                testCase.verifyEqual(laser.Mode,mode, ...
+                    "1P hardware preflight must not mutate the Luminos OBIS mode.");
+            end
+        end
+
         function trimsDaqTerminalWhitespaceWithoutWeakeningMatch(testCase)
             luminosApp=simulatedLuminosApp();
             daq=luminosApp.getDevice("DAQ");

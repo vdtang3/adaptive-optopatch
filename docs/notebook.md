@@ -651,3 +651,14 @@ changing its calibration notes or acquisition provenance; refresh and FOV
 round-trips read the same field. Invalid values restore the stored value. The
 former selected-cell dialog and button were removed, while voltage resolution
 continues to use `event > acquisition > protocol > fov_cell > gui > error`.
+
+## 2026-09-10 — Luminos owns the 488 OBIS operating mode
+
+Rig commissioning showed that the Virtual Upright normally drives the 488 OBIS
+successfully in `CWP` while Luminos independently executes the `mod488` AO
+waveform. Forcing the laser into `ANALOG` suppressed the expected blue output,
+so OBIS mode is not an Adaptive Optopatch execution prerequisite. The 1P
+hardware resolver now observes `laser.Mode` for provenance but accepts it
+without an allowlist and never writes it. Interlock, power range, mod488 port,
+waveform timing, and all other live checks remain unchanged. Each acquisition
+record still reads the actual live mode into `adaptive_optopatch_record.obis_mode`.

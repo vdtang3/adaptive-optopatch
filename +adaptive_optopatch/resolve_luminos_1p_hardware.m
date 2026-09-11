@@ -4,7 +4,6 @@ arguments
     app
     profile (1,1) struct = adaptive_optopatch.virtual_upright_1p_profile()
     options.RequireCalibratedDmd (1,1) logical = true
-    options.RequireExternalLaserMode (1,1) logical = true
 end
 if isempty(app)
     error("adaptive_optopatch:MissingLuminosApp", ...
@@ -79,12 +78,6 @@ hardware.laser_mode=string(hardware.laser.Mode);
 hardware.laser_was_on=logical(hardware.laser.Get_state());
 hardware.laser_power_w=double(hardware.laser.SetPower);
 hardware.laser_interlock_ok=logical(hardware.laser.Get_interlockStatus());
-if options.RequireExternalLaserMode && ...
-        ~ismember(upper(hardware.laser_mode),upper(profile.laser.external_modulation_modes))
-    error("adaptive_optopatch:LaserNotExternallyModulated", ...
-        "The 488 OBIS is in %s mode. Select ANALOG or MIXED in Luminos " + ...
-        "before using mod488 pulse waveforms.",hardware.laser_mode);
-end
 if ~hardware.laser_interlock_ok
     error("adaptive_optopatch:LaserInterlockOpen", ...
         "The 488 OBIS reports that its key or interlock is not enabled.");

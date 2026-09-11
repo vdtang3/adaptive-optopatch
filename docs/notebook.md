@@ -662,3 +662,18 @@ hardware resolver now observes `laser.Mode` for provenance but accepts it
 without an allowlist and never writes it. Interlock, power range, mod488 port,
 waveform timing, and all other live checks remain unchanged. Each acquisition
 record still reads the actual live mode into `adaptive_optopatch_record.obis_mode`.
+
+## 2026-09-10 — Quick-look timing follows the archived trigger authority
+
+For a voltage camera archived as DAQ-triggered, `daqtrig_period_ms` is the
+authoritative frame cadence just as it is during acquisition setup. Quick-look
+extraction now uses `1000 / daqtrig_period_ms` ahead of camera-reported rate or
+exposure metadata and rejects a missing or invalid DAQ period rather than
+inventing a time base. The movie file size remains the authority for the number
+of acquired frames. Non-DAQ cameras retain the existing reported-rate and
+exposure fallbacks.
+
+The quick-look figure now has a nested left plotting grid for traces and the
+executed stimulation command, with the canonical ROI image in a separate right
+column. Both time axes therefore receive the same horizontal geometry as well
+as linked x limits, so an event is physically aligned beneath its trace time.

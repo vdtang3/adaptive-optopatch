@@ -17,6 +17,63 @@ classdef TestInspectAcquisition < matlab.unittest.TestCase
             testCase.verifyEqual(viewer.traces.photobleach_correction,"none");
         end
 
+        function daqTriggerPeriodIsAuthoritativeForTraceTiming(testCase)
+            fixture=make_fixture(testCase,"1p_dmd",[1.2 0.7], ...
+                "CameraTriggerSource","DAQ","DaqTriggerPeriodMs",1, ...
+                "CameraFrameRateHz",17,"CameraExposureTime",250);
+            viewer=inspect_acquisition(fixture.experiment,"Visible","off");
+            cleanup=onCleanup(@()delete(viewer.figure)); %#ok<NASGU>
+
+            testCase.verifyEqual(viewer.traces.frame_rate_hz,1000);
+            testCase.verifyEqual(viewer.traces.tvec,(0:9)'/1000, ...
+                "AbsTol",1e-12);
+            testCase.verifyEqual(viewer.traces.tvec(end),9/1000, ...
+                "AbsTol",1e-12);
+        end
+
+        function invalidDaqTriggerPeriodFailsInsteadOfUsingFallback(testCase)
+            for period=[NaN 0 -1 Inf]
+                fixture=make_fixture(testCase,"1p_dmd",[1.2 0.7], ...
+                    "CameraTriggerSource","Trigger each Frame (DAQ)", ...
+                    "DaqTriggerPeriodMs",period,"CameraFrameRateHz",17, ...
+                    "CameraExposureTime",250);
+                testCase.verifyError(@()inspect_acquisition( ...
+                    fixture.experiment,"Visible","off"), ...
+                    "adaptive_optopatch:InvalidCameraTriggerPeriod");
+            end
+        end
+
+        function nonDaqCameraRetainsFrameRateFallback(testCase)
+            fixture=make_fixture(testCase,"1p_dmd",[1.2 0.7], ...
+                "CameraTriggerSource","Internal","DaqTriggerPeriodMs",0, ...
+                "CameraFrameRateHz",25,"CameraExposureTime",100);
+            viewer=inspect_acquisition(fixture.experiment,"Visible","off");
+            cleanup=onCleanup(@()delete(viewer.figure)); %#ok<NASGU>
+
+            testCase.verifyEqual(viewer.traces.frame_rate_hz,25);
+            testCase.verifyEqual(viewer.traces.tvec(end),9/25, ...
+                "AbsTol",1e-12);
+        end
+
+        function traceAndStimulationAxesHaveMatchingGeometry(testCase)
+            fixture=make_fixture(testCase,"1p_dmd",[1.2 0.7]);
+            viewer=inspect_acquisition(fixture.experiment,"Visible","off");
+            cleanup=onCleanup(@()delete(viewer.figure)); %#ok<NASGU>
+            drawnow;
+
+            tracePosition=viewer.trace_axes.Position;
+            stimulationPosition=viewer.stimulation_axes.Position;
+            testCase.verifyEqual(tracePosition([1 3]), ...
+                stimulationPosition([1 3]),"AbsTol",1e-6);
+            testCase.verifyEqual(viewer.trace_axes.XLim, ...
+                viewer.stimulation_axes.XLim,"AbsTol",1e-12);
+            testCase.verifyTrue(isvalid(viewer.reference_axes));
+            testCase.verifyNotEmpty(findall(viewer.reference_axes,"Type","image"));
+            testCase.verifyNotEqual(viewer.reference_axes.Parent, ...
+                viewer.trace_axes.Parent, ...
+                "The ROI panel must remain outside the shared plotting column.");
+        end
+
         function onePhotonUsesExecutedMod488TimingAndAmplitude(testCase)
             fixture=make_fixture(testCase,"1p_dmd",[1.2 0.7]);
             viewer=inspect_acquisition(fixture.experiment,"Visible","off");
@@ -96,6 +153,10 @@ arguments
     mode (1,1) string
     executedVoltage (1,2) double
     options.FrozenVoltage (1,1) double = NaN
+    options.CameraTriggerSource (1,1) string = ""
+    options.DaqTriggerPeriodMs (1,1) double = NaN
+    options.CameraFrameRateHz (1,1) double = 10
+    options.CameraExposureTime (1,1) double = 100
 end
 root=tempname; mkdir(root);
 testCase.addTeardown(@()remove_if_present(root));
@@ -134,8 +195,11 @@ adaptive_optopatch_record=record; %#ok<NASGU>
 appArchive=struct("rigName","Virtual_Upright");
 cameraArchive=struct("deviceType","Camera","name","Orca Fusion", ...
     "cam_id","S/N: 001125","ROI",[0 nColumns 0 nRows],"bin",1, ...
-    "bit_depth",16,"frames_requested",10,"exposuretime",100, ...
-    "frame_rate",10);
+    "bit_depth",16,"frames_requested",10, ...
+    "frametrigger_source",options.CameraTriggerSource, ...
+    "daqtrig_period_ms",options.DaqTriggerPeriodMs, ...
+    "exposuretime",options.CameraExposureTime, ...
+    "frame_rate",options.CameraFrameRateHz);
 dmdArchive=struct("deviceType","DMD","name","DMD_Blue");
 Device_Data={appArchive,cameraArchive,dmdArchive}; %#ok<NASGU>
 save(fullfile(experiment,"output_data.mat"), ...

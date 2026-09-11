@@ -116,6 +116,25 @@ end
 
 function rate=derive_frame_rate(camera)
 rate=NaN;
+source="";
+if isfield(camera,"frametrigger_source") && ...
+        ~isempty(camera.frametrigger_source)
+    source=string(camera.frametrigger_source);
+end
+if contains(upper(source),"DAQ")
+    periodMs=NaN;
+    if isfield(camera,"daqtrig_period_ms") && ...
+            ~isempty(camera.daqtrig_period_ms)
+        periodMs=double(camera.daqtrig_period_ms);
+    end
+    if ~isscalar(periodMs) || ~isfinite(periodMs) || periodMs<=0
+        error("adaptive_optopatch:InvalidCameraTriggerPeriod", ...
+            ["The voltage camera is DAQ-triggered but its archived " + ...
+             "daqtrig_period_ms is not a finite positive scalar."]);
+    end
+    rate=1000/periodMs;
+    return
+end
 if ~isempty(camera.frame_rate) && isfinite(double(camera.frame_rate))
     rate=double(camera.frame_rate); return
 end

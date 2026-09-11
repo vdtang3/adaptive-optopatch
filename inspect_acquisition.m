@@ -48,7 +48,7 @@ traces=adaptive_optopatch.extract_roi_traces( ...
     "MotionCorrection","none", ...
     "PhotobleachCorrection","none");
 command=executed_command(record,traces.tvec);
-[figureHandle,traceLines,roiLines]=build_figure( ...
+[figureHandle,traceLines,roiLines,axesHandles]=build_figure( ...
     reference,traces,cellIds,command,options.Visible);
 
 viewer=struct( ...
@@ -61,6 +61,9 @@ viewer=struct( ...
     "display_dff",-traces.dff, ...
     "stimulation",command, ...
     "figure",figureHandle, ...
+    "trace_axes",axesHandles.trace, ...
+    "stimulation_axes",axesHandles.stimulation, ...
+    "reference_axes",axesHandles.reference, ...
     "trace_lines",traceLines, ...
     "roi_lines",roiLines);
 end
@@ -153,15 +156,19 @@ command=struct( ...
     "target_cell_ids",targetIds,"time_s",timeS,"command_v",commandV);
 end
 
-function [fig,traceLines,roiLines]=build_figure(reference,traces,cellIds,command,visible)
+function [fig,traceLines,roiLines,axesHandles]=build_figure( ...
+        reference,traces,cellIds,command,visible)
 nCells=numel(cellIds);
 fig=uifigure("Name","Adaptive Optopatch acquisition quick look", ...
     "Position",[100 100 1200 760],"Visible",visible);
-layout=uigridlayout(fig,[2 2]);
-layout.RowHeight={"3x","1x"}; layout.ColumnWidth={"4x","1x"};
-layout.Padding=[8 8 8 8];
+layout=uigridlayout(fig,[1 2]);
+layout.ColumnWidth={"4x","1x"}; layout.Padding=[8 8 8 8];
+plotLayout=uigridlayout(layout,[2 1]);
+plotLayout.Layout.Row=1; plotLayout.Layout.Column=1;
+plotLayout.RowHeight={"3x","1x"}; plotLayout.Padding=[0 0 0 0];
 
-traceAxes=uiaxes(layout); traceAxes.Layout.Row=1; traceAxes.Layout.Column=1;
+traceAxes=uiaxes(plotLayout); traceAxes.Layout.Row=1; traceAxes.Layout.Column=1;
+traceAxes.Tag="AdaptiveOptopatchTraceAxes";
 displayPercent=-100*traces.dff;
 spans=max(displayPercent,[],1,"omitnan")-min(displayPercent,[],1,"omitnan");
 spacing=max([spans,1],[],"omitnan")*1.25;
@@ -180,6 +187,7 @@ title(traceAxes,"Canonical soma ROI traces (voltage activity upward)");
 grid(traceAxes,"on");
 
 referenceAxes=uiaxes(layout); referenceAxes.Layout.Row=1; referenceAxes.Layout.Column=2;
+referenceAxes.Tag="AdaptiveOptopatchReferenceAxes";
 imagesc(referenceAxes,reference.reference_image); colormap(referenceAxes,gray);
 axis(referenceAxes,"image"); referenceAxes.XTick=[]; referenceAxes.YTick=[];
 title(referenceAxes,"Canonical ROIs"); hold(referenceAxes,"on");
@@ -195,13 +203,16 @@ for k=1:nCells
         "HitTest","off");
 end
 
-stimAxes=uiaxes(layout); stimAxes.Layout.Row=2; stimAxes.Layout.Column=[1 2];
+stimAxes=uiaxes(plotLayout); stimAxes.Layout.Row=2; stimAxes.Layout.Column=1;
+stimAxes.Tag="AdaptiveOptopatchStimulationAxes";
 plot(stimAxes,command.time_s,command.command_v,"k-","LineWidth",1.25);
 xlabel(stimAxes,"Time (s)"); ylabel(stimAxes,command.label);
 title(stimAxes,"Executed stimulation command"); grid(stimAxes,"on");
 endTime=max(command.time_s(end),eps);
 xlim(traceAxes,[0 endTime]); xlim(stimAxes,[0 endTime]);
 linkaxes([traceAxes stimAxes],"x");
+axesHandles=struct("trace",traceAxes,"stimulation",stimAxes, ...
+    "reference",referenceAxes);
 
     function highlight(selected)
         for index=1:nCells

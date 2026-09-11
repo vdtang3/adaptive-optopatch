@@ -694,3 +694,20 @@ identity/directory. This makes the initial frozen definition, batch chain, and
 per-acquisition provenance explicit while leaving protocol and runner schemas
 otherwise unchanged. Timestamped run-folder allocation with collision suffixes
 continues to provide unique batch output roots.
+
+## 2026-09-11 — DMD reference grids must match frozen camera masks
+
+Both 1P paths give Luminos ROI-local camera masks and rely on each DMD's active
+`refimage` to place those pixels in sensor coordinates before transformation.
+Archived data demonstrated that a stale full-sensor Blue reference caused a
+current 180-by-400 target mask to be resized to 2304-by-2304; an exact replay
+fully clipped one target and displaced another. The live camera still matched
+the frozen planning reference, so camera-only validation could not detect this.
+
+AO now embeds each ROI-local Blue and Orange mask into the active DMD
+reference-image grid using the two grids' sensor origins before asking Luminos
+to transform it. A smaller current ROI is valid when it is fully contained and
+integer-aligned within the DMD reference at the same binning. Missing geometry,
+incompatible binning, misalignment, or any required clipping stops execution
+before either mask is programmed. Luminos continues to own and apply the
+camera-to-DMD calibration itself.

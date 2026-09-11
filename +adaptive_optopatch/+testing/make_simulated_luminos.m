@@ -53,11 +53,11 @@ camera.maximum_frame_rate_hz=max(options.CameraFrameRateHz/0.85, ...
 
 dmd=device("DMD",profile1p.dmd.name);
 dmd.tform=affinetform2d([1.01 0 2;0 1.01 3;0 0 1]);
-dmd.refimage=zeros(32,32,"uint16");
+dmd.refimage=camera_reference(options.CameraRoi,options.CameraBin);
 dmd.trigger_channel=profile1p.dmd.trigger_port;
 orangeDmd=device("DMD",profile1p.orange_dmd.name);
 orangeDmd.tform=affinetform2d([1.02 0 1;0 1.02 2;0 0 1]);
-orangeDmd.refimage=zeros(32,32,"uint16");
+orangeDmd.refimage=camera_reference(options.CameraRoi,options.CameraBin);
 laser=device("Laser_Device",profile1p.laser.name);
 laser.Mode=options.LaserMode;
 laser.SetPower=options.LaserPowerMw/1000;
@@ -93,6 +93,14 @@ app=adaptive_optopatch.testing.SimulatedLuminosApp( ...
     function value=device(type,name)
         value=adaptive_optopatch.testing.SimulatedLuminosDevice(type,name);
     end
+end
+
+function reference=camera_reference(roi,bin)
+imageSize=[roi(4) roi(2)]/bin;
+reference=struct("img",zeros(imageSize,"uint16"),"bin",bin, ...
+    "ref2d",struct("ImageSize",imageSize, ...
+    "XWorldLimits",[roi(1) roi(1)+roi(2)], ...
+    "YWorldLimits",[roi(3) roi(3)+roi(4)]));
 end
 
 function records=base_outputs()

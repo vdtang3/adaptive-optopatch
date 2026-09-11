@@ -1937,7 +1937,8 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyTrue(configuration.loaded);
             testCase.verifyEqual(configuration.recording_cell_ids,["cell_001","cell_003"]);
             testCase.verifyEqual(configuration.orange_expansion_pixels,4);
-            testCase.verifyEqual(dmd.Target,targets.orange_combined_mask);
+            testCase.verifyEqual(dmd.Target,configuration.dmd_reference_mask);
+            testCase.verifyEqual(nnz(dmd.Target),nnz(targets.orange_combined_mask));
             testCase.verifyEqual(dmd.StaticWriteCount,1);
         end
 

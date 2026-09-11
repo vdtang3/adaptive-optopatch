@@ -39,6 +39,10 @@ end
 hardware=adaptive_optopatch.resolve_luminos_1p_hardware(app,profile);
 cameraGeometry=adaptive_optopatch.validate_camera_geometry( ...
     hardware.voltage_camera,targets);
+adaptive_optopatch.validate_dmd_reference_geometry( ...
+    hardware.dmd,targets.reference_camera,profile.dmd.name);
+adaptive_optopatch.validate_dmd_reference_geometry( ...
+    hardware.orange_dmd,targets.reference_camera,profile.orange_dmd.name);
 dmdCalibration=adaptive_optopatch.capture_1p_dmd_calibration(hardware,targets);
 original=capture_original_state(hardware);
 runnerStartedLaser=false;

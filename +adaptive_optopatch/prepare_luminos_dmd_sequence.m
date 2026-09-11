@@ -12,7 +12,9 @@ configuration.loaded=false;
 if options.DryRun, return; end
 stack=[];
 for k=1:n
-    transformed=dmd.setPatterningROI(plan.camera_pattern_stack(:,:,k), ...
+    referenceMask=adaptive_optopatch.remap_camera_mask_to_dmd_reference( ...
+        plan.camera_pattern_stack(:,:,k),plan.reference_camera,dmd,"DMD_Blue");
+    transformed=dmd.setPatterningROI(referenceMask, ...
         "write_when_complete",false);
     if k==1, stack=false([size(transformed),n]); end
     stack(:,:,k)=logical(transformed);

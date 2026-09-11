@@ -1762,6 +1762,32 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyEqual(first.events.command_voltage_v,expected);
         end
 
+
+        function roundRobinDefaultsToOneHundredPulsesPerCell(testCase)
+            definition=adaptive_optopatch.generate_round_robin_protocol();
+            testCase.verifyEqual( ...
+                definition.acquisitions.target_repetitions,100);
+            overridden=adaptive_optopatch.generate_round_robin_protocol( ...
+                "PulsesPerCell",7);
+            testCase.verifyEqual( ...
+                overridden.acquisitions.target_repetitions,7);
+
+            [fovState,~]=test_fov_state();
+            for k=1:numel(fovState.cells)
+                fovState=adaptive_optopatch.update_cell_calibration(fovState, ...
+                    string(fovState.cells(k).cell_id),"CommandVoltageV",0.8);
+            end
+            targets=adaptive_optopatch.build_target_bundle(fovState.reference, ...
+                "SpiralRadiusUm",2,"ParkingClearancePixels",1, ...
+                "BlueMaskAdjustmentPixels",0);
+            resolved=adaptive_optopatch.resolve_protocol(definition,fovState, ...
+                targets,test_gui_defaults(),"Mode","1p_dmd");
+            resolved=resolved{1};
+            counts=groupcounts(resolved.events.target_cell_id);
+            testCase.verifyEqual(counts,100*ones(size(counts)));
+            testCase.verifyEqual(height(resolved.events),100*numel(counts));
+        end
+
         function buildsHardwareTimedDmdSequenceAtPulseOffsets(testCase)
             [fovState,~]=test_fov_state();
             for k=1:3

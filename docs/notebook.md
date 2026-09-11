@@ -709,6 +709,17 @@ per-acquisition provenance explicit while leaving protocol and runner schemas
 otherwise unchanged. Timestamped run-folder allocation with collision suffixes
 continues to provide unique batch output roots.
 
+## 2026-09-11 — Repeated batches re-resolve randomized schedules
+
+An execution batch remains the resumable unit: resuming an incomplete folder
+continues its exact archived pulse schedule. After a batch completes, however,
+`Start new batch` now sends the same archived experiment definition through the
+canonical protocol resolver again. Randomized protocols therefore receive a
+fresh realized event order while deterministic definitions retain their order;
+the new resolved schedule is archived in the new batch. The user-facing
+round-robin creation script now defaults to 100 stimulations per target, keeping
+each acquisition and its DMD event stack manageable.
+
 ## 2026-09-11 — DMD reference grids must match frozen camera masks
 
 Both 1P paths give Luminos ROI-local camera masks and rely on each DMD's active

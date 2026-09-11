@@ -331,6 +331,7 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             sourceFolder=app.ActiveRunFolder;
             sourceBatch=batch_identity(sourcePlan,sourceFolder);
             plan=sourcePlan;
+            plan=reresolve_batch_schedule(plan);
             plan.manifest=reset_execution_state(plan.manifest);
             if strlength(outputRoot)==0
                 outputRoot=string(fileparts(char(sourceFolder)));
@@ -345,7 +346,8 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             app.refreshTrialTable(plan.manifest.trials);
             app.updateStateDisplay();
             app.setStatus(["Fresh execution batch ready:";app.ActiveRunFolder; ...
-                "Frozen definition and event order reused from:";sourceFolder]);
+                "Same experiment definition with a fresh randomized schedule."; ...
+                "Previous completed batch preserved at:";sourceFolder]);
         end
 
         function value=startNewBatchEnabled(app)
@@ -1074,7 +1076,7 @@ identity=struct("schema_version","1.0.0", ...
     "rerun_of_batch_id",rerunOfBatchId, ...
     "rerun_of_batch_directory",rerunOfBatchDirectory, ...
     "created_at",string(datetime("now","TimeZone","local")), ...
-    "randomized_schedule_reused",~isempty(source));
+    "randomized_schedule_reused",false);
 end
 
 function identity=batch_identity(plan,folder)
@@ -1114,6 +1116,49 @@ for name=["preflight_report","target_configuration","orange_configuration", ...
         manifest.trials.(name)=cell(n,1);
     end
 end
+end
+
+function plan=reresolve_batch_schedule(plan)
+mode=string(plan.session.parameters.stimulation_mode);
+defaults=frozen_gui_defaults(plan);
+resolved=adaptive_optopatch.resolve_protocol(plan.protocol_definition, ...
+    plan.fov_state,plan.targets,defaults,"Mode",mode, ...
+    "FreshRandomization",true);
+if numel(resolved)~=height(plan.manifest.trials)
+    error("adaptive_optopatch:FrozenPlanMismatch", ...
+        "Re-resolving the frozen definition changed the acquisition count.");
+end
+plan.resolved_protocols=resolved;
+for k=1:numel(resolved)
+    schedule=resolved{k};
+    events=schedule.events;
+    used=unique(events.target_cell_id(~events.is_null),"stable");
+    if isscalar(used)
+        plan.manifest.trials.target_cell_id(k)=used;
+        plan.manifest.trials.target_index(k)= ...
+            events.target_index(find(~events.is_null,1));
+    else
+        plan.manifest.trials.target_cell_id(k)="multiple";
+        plan.manifest.trials.target_index(k)=NaN;
+    end
+    plan.manifest.trials.pulse_schedule{k}=schedule;
+    plan.manifest.trials.acquisition_duration_s(k)= ...
+        schedule.acquisition_duration_s;
+end
+end
+
+function defaults=frozen_gui_defaults(plan)
+parameters=plan.session.parameters;
+firstSchedule=plan.resolved_protocols{1};
+firstEvent=firstSchedule.events(1,:);
+defaults=struct( ...
+    "command_voltage_v",double(parameters.modulator_voltage), ...
+    "pulse_duration_s",double(firstEvent.duration_s), ...
+    "blue_mask_adjustment_pixels",double(parameters.blue_mask_adjustment_pixels), ...
+    "orange_expansion_pixels",double(parameters.orange_expansion_pixels), ...
+    "spiral_radius_um",double(parameters.spiral_radius_um), ...
+    "spiral_density_points_per_volt", ...
+        double(parameters.spiral_density_points_per_volt));
 end
 
 function path=batch_checkpoint_path(folder,trials)

@@ -1,6 +1,6 @@
 classdef TestExecutionBatchWorkflow < matlab.unittest.TestCase
     methods (Test)
-        function completedFrozenRunStartsDistinctIdenticalBatch(testCase)
+        function completedFrozenRunStartsDistinctDeterministicBatch(testCase)
             [app,root]=open_batch_app(testCase);
             firstRun=app.runAll();
             firstFolder=app.ActiveRunFolder;
@@ -26,7 +26,7 @@ classdef TestExecutionBatchWorkflow < matlab.unittest.TestCase
                 firstIdentity.frozen_definition_id);
             testCase.verifyEqual(secondIdentity.rerun_of_batch_id,firstIdentity.batch_id);
             testCase.verifyEqual(secondIdentity.rerun_of_batch_directory,firstFolder);
-            testCase.verifyTrue(secondIdentity.randomized_schedule_reused);
+            testCase.verifyFalse(secondIdentity.randomized_schedule_reused);
             testCase.verifyTrue(all( ...
                 secondPlan.manifest.trials.acquisition_status=="planned"));
             testCase.verifyTrue(all( ...
@@ -40,10 +40,10 @@ classdef TestExecutionBatchWorkflow < matlab.unittest.TestCase
                 firstPlan.protocol_definition.random_seed);
             testCase.verifyEqual(secondPlan.protocol_definition.event_order, ...
                 firstPlan.protocol_definition.event_order);
-            testCase.verifyEqual(secondPlan.resolved_protocols, ...
-                firstPlan.resolved_protocols);
-            testCase.verifyEqual(secondPlan.manifest.trials.pulse_schedule, ...
-                firstPlan.manifest.trials.pulse_schedule);
+            testCase.verifyEqual(secondPlan.resolved_protocols{1}.events, ...
+                firstPlan.resolved_protocols{1}.events);
+            testCase.verifyEqual(secondPlan.manifest.trials.pulse_schedule{1}.events, ...
+                firstPlan.manifest.trials.pulse_schedule{1}.events);
 
             unchangedCheckpoint=load(checkpointPath,"run");
             testCase.verifyEqual(unchangedCheckpoint,firstCheckpoint, ...
@@ -69,6 +69,44 @@ classdef TestExecutionBatchWorkflow < matlab.unittest.TestCase
                 secondIdentity.batch_id);
             testCase.verifyEqual( ...
                 record.adaptive_optopatch_record.trial.batch_number,2);
+        end
+
+
+        function completedRoundRobinBatchGetsFreshBalancedSchedule(testCase)
+            [app,~]=open_batch_app(testCase,"Configure",false);
+            configure_round_robin_batch_app(app);
+            app.freezeCurrentPlan();
+            app.runAll();
+            firstFolder=app.ActiveRunFolder;
+            firstPlan=app.ActiveRunPlan;
+            firstEvents=firstPlan.resolved_protocols{1}.events;
+            firstCheckpoint=load(fullfile(firstFolder,"run_checkpoint.mat"),"run");
+
+            paths=app.startNewBatch();
+            secondPlan=app.ActiveRunPlan;
+            secondEvents=secondPlan.resolved_protocols{1}.events;
+
+            testCase.verifyEqual(groupcounts(firstEvents.target_cell_id),[50;50]);
+            testCase.verifyEqual(groupcounts(secondEvents.target_cell_id),[50;50]);
+            testCase.verifyNotEqual(secondEvents.target_cell_id, ...
+                firstEvents.target_cell_id);
+            testCase.verifyEqual(secondEvents.duration_s,firstEvents.duration_s);
+            for cellId=unique(firstEvents.target_cell_id,"stable")'
+                testCase.verifyEqual(unique(secondEvents.command_voltage_v( ...
+                    secondEvents.target_cell_id==cellId)), ...
+                    unique(firstEvents.command_voltage_v( ...
+                    firstEvents.target_cell_id==cellId)));
+            end
+            testCase.verifyEqual(secondEvents.blue_mask_adjustment_pixels, ...
+                firstEvents.blue_mask_adjustment_pixels);
+            testCase.verifyEqual(secondPlan.protocol_definition, ...
+                firstPlan.protocol_definition);
+            testCase.verifyEqual(secondPlan.manifest.trials.pulse_schedule{1}, ...
+                secondPlan.resolved_protocols{1});
+            archived=adaptive_optopatch.load_protocol(paths.protocol);
+            testCase.verifyEqual(archived.events,secondEvents);
+            unchanged=load(fullfile(firstFolder,"run_checkpoint.mat"),"run");
+            testCase.verifyEqual(unchanged,firstCheckpoint);
         end
 
         function resumeContinuesIncompleteBatchWithoutNewIdentity(testCase)
@@ -150,6 +188,15 @@ protocol=adaptive_optopatch.generate_screen_protocol( ...
     "PulseCount",1,"ModulatorVoltage",1,"RandomSeed",73);
 app.setPulseProtocol(protocol);
 app.setPlanParameter("mode","1p_dmd");
+end
+
+function configure_round_robin_batch_app(app)
+configure_batch_app(app);
+app.setCellCalibration("cell_001",0.8);
+app.setCellCalibration("cell_002",1.2);
+protocol=adaptive_optopatch.generate_round_robin_protocol( ...
+    "PulsesPerCell",50,"RandomSeed",73);
+app.setPulseProtocol(protocol);
 end
 
 function value=trial_table(app)

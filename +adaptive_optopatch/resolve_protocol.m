@@ -6,6 +6,7 @@ arguments
     targets (1,1) struct
     guiDefaults (1,1) struct
     options.Mode (1,1) string {mustBeMember(options.Mode,["1p_dmd","2p_spiral"])} = "1p_dmd"
+    options.FreshRandomization (1,1) logical = false
 end
 report=adaptive_optopatch.validate_protocol(definition);
 if ~report.passed
@@ -31,13 +32,13 @@ for acquisitionIndex=1:numel(definition.acquisitions)
             resolved{outputIndex,1}=resolve_acquisition(definition,acquisition, ...
                 fovState,guiDefaults,cellIndices(selectedIndex), ...
                 targetIndices(selectedIndex),acquisitionIndex,outputIndex, ...
-                options.Mode);
+                options.Mode,options.FreshRandomization);
         end
     else
         outputIndex=outputIndex+1;
         resolved{outputIndex,1}=resolve_multi_target(definition,acquisition, ...
             fovState,guiDefaults,cellIndices,targetIndices, ...
-            acquisitionIndex,outputIndex,options.Mode);
+            acquisitionIndex,outputIndex,options.Mode,options.FreshRandomization);
     end
 end
 if options.Mode=="1p_dmd"
@@ -70,12 +71,13 @@ end
 end
 
 function protocol=resolve_acquisition(definition,acquisition,fovState,gui, ...
-        cellIndex,targetIndex,acquisitionIndex,outputIndex,mode)
+        cellIndex,targetIndex,acquisitionIndex,outputIndex,mode,freshRandomization)
 events=acquisition.events;
 n=height(events);
 if definition.event_order=="randomized" && ~acquisition.event_order_realized
-    stream=RandStream("mt19937ar","Seed",definition.random_seed+acquisitionIndex-1);
-    events=events(randperm(stream,n),:);
+    order=randomized_order(n,definition.random_seed+acquisitionIndex-1, ...
+        freshRandomization);
+    events=events(order,:);
     events.pulse_id=(1:n)';
 end
 events.target_cell_id=repmat(string(fovState.cells(cellIndex).cell_id),n,1);
@@ -85,7 +87,7 @@ protocol=resolve_values(definition,acquisition,events,fovState,gui, ...
 end
 
 function protocol=resolve_multi_target(definition,acquisition,fovState,gui, ...
-        cellIndices,targetIndices,acquisitionIndex,outputIndex,mode)
+        cellIndices,targetIndices,acquisitionIndex,outputIndex,mode,freshRandomization)
 template=acquisition.events;
 nTemplate=height(template); repetitions=acquisition.target_repetitions;
 rows=cell(numel(cellIndices)*repetitions*nTemplate,1); cellMap=zeros(numel(rows),1);
@@ -106,8 +108,8 @@ for k=1:numel(cellMap)
     targetMap(k)=targetIndices(selected);
 end
 if definition.event_order=="randomized" && ~acquisition.event_order_realized
-    stream=RandStream("mt19937ar","Seed",definition.random_seed+acquisitionIndex-1);
-    order=randperm(stream,height(events));
+    order=randomized_order(height(events), ...
+        definition.random_seed+acquisitionIndex-1,freshRandomization);
     events=events(order,:); cellMap=cellMap(order); targetMap=targetMap(order);
 end
 events.target_cell_id=string({fovState.cells(cellMap).cell_id})';
@@ -115,6 +117,15 @@ events.target_index=targetMap;
 events.pulse_id=(1:height(events))';
 protocol=resolve_values(definition,acquisition,events,fovState,gui, ...
     cellMap,acquisitionIndex,outputIndex,mode);
+end
+
+function order=randomized_order(count,seed,freshRandomization)
+if freshRandomization
+    order=randperm(count);
+else
+    stream=RandStream("mt19937ar","Seed",seed);
+    order=randperm(stream,count);
+end
 end
 
 function protocol=resolve_values(definition,acquisition,events,fovState,gui, ...

@@ -199,6 +199,12 @@ executed `adaptive_optopatch_record.pulse_schedule`: mod488 for 1P or Pockels
 for 2P. For staged 2P this deliberately uses the executed schedule rather than
 the separate untouched frozen schedule.
 
+New acquisition records store the reference link as a platform-independent
+`Snaps/<run-folder>/reference_model.mat` path relative to the recording/date
+folder. The viewer also repairs legacy absolute Windows or Linux links by
+recovering their `Snaps/...` suffix and attaching it to the current recording
+root; opening an acquisition never rewrites its saved metadata.
+
 ## First installation on the VU
 
 ### Requirements

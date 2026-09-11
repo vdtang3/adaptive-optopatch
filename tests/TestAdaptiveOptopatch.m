@@ -1306,8 +1306,9 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
         function unifiedOnePhotonRunFreezesAllArtifacts(testCase)
             root=tempname; mkdir(root);
             cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
+            snapsRoot=fullfile(root,"Snaps"); mkdir(snapsRoot);
             [app,sim]=open_simulated_test_gui("CameraRoi",unified_camera_roi(), ...
-                "Visible","off","RunRoot",root); %#ok<ASGLU>
+                "Visible","off","RunRoot",snapsRoot); %#ok<ASGLU>
             appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
             app.setReferenceData(ones(80,100),unified_test_info(root), ...
                 {[40 30;60 30;60 50;40 50]});
@@ -1347,17 +1348,20 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyEqual( ...
                 acquisition.adaptive_optopatch_record.run_directory, ...
                 app.ActiveRunFolder);
+            [~,runName]=fileparts(app.ActiveRunFolder);
+            expectedReference="Snaps/"+string(runName)+"/reference_model.mat";
             testCase.verifyEqual( ...
                 acquisition.adaptive_optopatch_record.reference_model_path, ...
-                string(fullfile(app.ActiveRunFolder,"reference_model.mat")));
+                expectedReference);
             testCase.verifyFalse(app.ControlsLocked);
         end
 
         function unifiedTwoPhotonPreviewAndRunComplete(testCase)
             root=tempname; mkdir(root);
             cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
+            snapsRoot=fullfile(root,"Snaps"); mkdir(snapsRoot);
             [app,sim]=open_simulated_test_gui("CameraRoi",unified_camera_roi(), ...
-                "Visible","off","RunRoot",root); %#ok<ASGLU>
+                "Visible","off","RunRoot",snapsRoot); %#ok<ASGLU>
             appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
             image=ones(80,100); image(10:15,10:15)=0;
             app.setReferenceData(image,unified_test_info(root), ...
@@ -1377,9 +1381,11 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyEqual( ...
                 acquisition.adaptive_optopatch_record.run_directory, ...
                 app.ActiveRunFolder);
+            [~,runName]=fileparts(app.ActiveRunFolder);
+            expectedReference="Snaps/"+string(runName)+"/reference_model.mat";
             testCase.verifyEqual( ...
                 acquisition.adaptive_optopatch_record.reference_model_path, ...
-                string(fullfile(app.ActiveRunFolder,"reference_model.mat")));
+                expectedReference);
         end
 
         function unifiedResumeUsesFrozenManifest(testCase)

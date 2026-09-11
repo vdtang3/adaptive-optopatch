@@ -276,7 +276,9 @@ function path=linked_reference_path(runDirectory)
 path="";
 if strlength(runDirectory)>0
     candidate=fullfile(runDirectory,"reference_model.mat");
-    if isfile(candidate), path=string(candidate); end
+    if isfile(candidate)
+        path=adaptive_optopatch.make_portable_reference_path(string(candidate));
+    end
 end
 end
 

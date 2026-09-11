@@ -74,6 +74,34 @@ classdef TestInspectAcquisition < matlab.unittest.TestCase
                 "The ROI panel must remain outside the shared plotting column.");
         end
 
+        function cellColorsMatchAcrossFovTracesAndStimulation(testCase)
+            fixture=make_fixture(testCase,"1p_dmd",[1.2 0.7]);
+            viewer=inspect_acquisition(fixture.experiment,"Visible","off");
+            cleanup=onCleanup(@()delete(viewer.figure)); %#ok<NASGU>
+
+            expected=lines(numel(viewer.cell_ids));
+            traceColors=vertcat(viewer.trace_lines.Color);
+            roiColors=vertcat(viewer.roi_lines.Color);
+            testCase.verifyEqual(traceColors,expected,"AbsTol",1e-12);
+            testCase.verifyEqual(roiColors,expected,"AbsTol",1e-12);
+            testCase.verifyEqual( ...
+                viewer.reference_axes.Parent.ColumnWidth,{'3x','2x'});
+
+            pulses=findall(viewer.stimulation_axes, ...
+                "Tag","AdaptiveOptopatchStimulusPulse");
+            testCase.verifyNumElements(pulses,2);
+            for pulse=reshape(pulses,1,[])
+                cellIndex=find(viewer.cell_ids==string(pulse.UserData),1);
+                testCase.verifyNotEmpty(cellIndex);
+                testCase.verifyEqual(pulse.Color,expected(cellIndex,:), ...
+                    "AbsTol",1e-12);
+            end
+            labels=findall(viewer.stimulation_axes, ...
+                "Tag","AdaptiveOptopatchStimulusLabel");
+            testCase.verifyEqual(sort(string({labels.String})), ...
+                sort(viewer.cell_ids'));
+        end
+
         function onePhotonUsesExecutedMod488TimingAndAmplitude(testCase)
             fixture=make_fixture(testCase,"1p_dmd",[1.2 0.7]);
             viewer=inspect_acquisition(fixture.experiment,"Visible","off");
@@ -116,6 +144,41 @@ classdef TestInspectAcquisition < matlab.unittest.TestCase
             testCase.verifyFalse(any(viewer.stimulation.command_v==2.5));
         end
 
+        function cachesAnalysisAndRendersPngWithoutReextracting(testCase)
+            fixture=make_fixture(testCase,"1p_dmd",[1.2 0.7]);
+            first=inspect_acquisition(fixture.experiment,"Visible","off");
+            firstCleanup=onCleanup(@()delete(first.figure)); %#ok<NASGU>
+            cachePath=fullfile(fixture.experiment,"inspection_analysis.mat");
+            pngPath=fullfile(fixture.experiment,"inspection.png");
+            testCase.verifyFalse(first.cache_hit);
+            testCase.verifyTrue(isfile(cachePath));
+            testCase.verifyTrue(isfile(pngPath));
+
+            delete(fullfile(fixture.experiment,"frames1.bin"));
+            second=inspect_acquisition(fixture.experiment,"Visible","off");
+            secondCleanup=onCleanup(@()delete(second.figure)); %#ok<NASGU>
+            testCase.verifyTrue(second.cache_hit);
+            testCase.verifyEqual(second.traces.raw_traces,first.traces.raw_traces);
+            testCase.verifyEqual(second.stimulation,first.stimulation);
+            testCase.verifyEqual(second.trace_axes.XLim,first.trace_axes.XLim);
+            testCase.verifyEqual(second.stimulation_axes.XLim, ...
+                first.stimulation_axes.XLim);
+            testCase.verifyEqual(second.reference_axes.Children(end).CData, ...
+                first.reference_axes.Children(end).CData);
+            testCase.verifyTrue(isfile(pngPath));
+
+            saved=load(cachePath,"inspection");
+            inspection=saved.inspection; %#ok<NASGU>
+            inspection.schema_version=0;
+            save(cachePath,"inspection","-v7.3");
+            testCase.verifyError(@()inspect_acquisition( ...
+                fixture.experiment,"Visible","off"), ...
+                "adaptive_optopatch:MissingMovie");
+            testCase.verifyError(@()inspect_acquisition( ...
+                fixture.experiment,"Visible","off","Force",true), ...
+                "adaptive_optopatch:MissingMovie");
+        end
+
         function missingReferenceLinkFailsClearly(testCase)
             fixture=make_fixture(testCase,"1p_dmd",[1.2 0.7]);
             record=fixture.record;
@@ -143,6 +206,82 @@ classdef TestInspectAcquisition < matlab.unittest.TestCase
             testCase.verifyError(@()inspect_acquisition( ...
                 fixture.experiment,"Visible","off"), ...
                 "adaptive_optopatch:AmbiguousAcquisitionReference");
+        end
+
+        function portableReferencePathResolvesFromCurrentRecordingRoot(testCase)
+            fixture=make_portable_path_fixture(testCase);
+            record=struct("reference_model_path", ...
+                "Snaps/run_001/reference_model.mat");
+
+            actual=adaptive_optopatch.resolve_reference_path( ...
+                record,fixture.experiment);
+            testCase.verifyEqual(actual,fixture.reference_path);
+        end
+
+        function recordingRootIsParentOfContainingSnapsFolder(testCase)
+            fixture=make_portable_path_fixture(testCase);
+            nestedAcquisition=fullfile(fixture.recording_root, ...
+                "Snaps","recorded_trial");
+            mkdir(nestedAcquisition);
+
+            actual=adaptive_optopatch.resolve_recording_root(nestedAcquisition);
+            testCase.verifyEqual(actual,fixture.recording_root);
+        end
+
+        function existingAbsoluteReferencePathResolvesDirectly(testCase)
+            fixture=make_portable_path_fixture(testCase);
+            record=struct("reference_model_path",fixture.reference_path);
+
+            actual=adaptive_optopatch.resolve_reference_path( ...
+                record,fixture.experiment);
+            testCase.verifyEqual(actual,fixture.reference_path);
+        end
+
+        function staleWindowsReferencePathResolvesOnLinux(testCase)
+            fixture=make_portable_path_fixture(testCase);
+            record=struct("reference_model_path", ...
+                "D:\Labmember\Data\20260910\Snaps\run_001\reference_model.mat");
+
+            actual=adaptive_optopatch.resolve_reference_path( ...
+                record,fixture.experiment);
+            testCase.verifyEqual(actual,fixture.reference_path);
+        end
+
+        function staleLinuxReferencePathResolvesAfterMove(testCase)
+            fixture=make_portable_path_fixture(testCase);
+            record=struct("reference_model_path", ...
+                "/old/mount/20260910/Snaps/run_001/reference_model.mat");
+
+            actual=adaptive_optopatch.resolve_reference_path( ...
+                record,fixture.experiment);
+            testCase.verifyEqual(actual,fixture.reference_path);
+        end
+
+        function missingPortableReferenceReportsResolutionContext(testCase)
+            fixture=make_portable_path_fixture(testCase);
+            saved="D:\old\20260910\Snaps\missing\reference_model.mat";
+            record=struct("reference_model_path",saved);
+
+            exception=capture_exception(@() ...
+                adaptive_optopatch.resolve_reference_path( ...
+                record,fixture.experiment));
+            testCase.verifyEqual(string(exception.identifier), ...
+                "adaptive_optopatch:AcquisitionReferenceLinkBroken");
+            testCase.verifySubstring(string(exception.message),saved);
+            testCase.verifySubstring(string(exception.message), ...
+                fixture.recording_root);
+            testCase.verifySubstring(string(exception.message), ...
+                fullfile(fixture.recording_root,"Snaps","missing", ...
+                "reference_model.mat"));
+        end
+
+        function writerUsesPortableSnapsSuffix(testCase)
+            windowsPath= ...
+                "D:\Labmember\Data\20260910\Snaps\run_001\reference_model.mat";
+            actual=adaptive_optopatch.make_portable_reference_path(windowsPath);
+            testCase.verifyEqual(actual, ...
+                "Snaps/run_001/reference_model.mat");
+            testCase.verifyFalse(startsWith(actual,"D:"));
         end
     end
 end
@@ -219,4 +358,31 @@ end
 
 function remove_if_present(folder)
 if isfolder(folder), rmdir(folder,"s"); end
+end
+
+function fixture=make_portable_path_fixture(testCase)
+root=tempname; mkdir(root);
+testCase.addTeardown(@()remove_if_present(root));
+recordingRoot=fullfile(root,"20260910");
+runDirectory=fullfile(recordingRoot,"Snaps","run_001");
+experiment=fullfile(recordingRoot,"acquisitions","trial_001");
+mkdir(runDirectory); mkdir(experiment);
+reference=struct; %#ok<NASGU>
+referencePath=fullfile(runDirectory,"reference_model.mat");
+save(referencePath,"reference");
+fixture=struct("recording_root",string(recordingRoot), ...
+    "reference_path",string(referencePath), ...
+    "experiment",string(experiment));
+end
+
+function exception=capture_exception(operation)
+exception=[];
+try
+    operation();
+catch exception
+end
+if isempty(exception)
+    error("adaptive_optopatch:ExpectedTestException", ...
+        "The operation did not throw the expected exception.");
+end
 end

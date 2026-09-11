@@ -633,6 +633,20 @@ executed. This distinction matters for staged 2P: its separate
 `frozen_pulse_schedule` remains immutable acquisition intent, while the saved
 executed schedule contains the subset and attenuation physically commanded.
 
+## 2026-09-11 — Acquisition reference links are portable across data mounts
+
+Acquisition records now store `reference_model_path` from the `Snaps` path
+component downward, using `/` as the serialized separator. The recording root
+is the current directory immediately above `Snaps`, not a root inferred from a
+possibly stale saved path. This keeps new links stable when a date folder moves
+between Windows and Linux.
+
+The inspector remains read-only and accepts legacy absolute links. An existing
+absolute path wins on its original machine; otherwise the resolver parses both
+slash styles, recovers the case-insensitive `Snaps/...` suffix, and attaches it
+to the current recording root. Missing-link diagnostics report the saved link,
+current root, and reconstructed candidate.
+
 ## 2026-09-10 — Stimulation modality is an exclusive hardware owner
 
 Preserving a loaded Luminos waveform is correct for imaging and acquisition

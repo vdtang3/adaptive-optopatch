@@ -33,6 +33,7 @@ if ~isfield(globalProps,"completion_trigger")
     globalProps.completion_trigger="None";
 end
 wfmData=ensure_wfm_fields(activeWfmData);
+wfmData=neutralize_two_photon_outputs(wfmData,profile.inactive_two_photon);
 wfmData.ao=remove_output(wfmData.ao,profile.modulator.name,profile.modulator.port);
 record=struct("name",char(profile.modulator.name), ...
     "port",char(profile.modulator.name), ...
@@ -104,6 +105,32 @@ summary.clock_source=reshape(string(globalProps.clock_source),1,[]);
 summary.trigger_source=reshape(string(globalProps.trigger_source),1,[]);
 summary.expected_clock_bridge=reshape(string(profile.daq.clock_bridge),1,[]);
 summary.expected_start_triggers=reshape(string(profile.daq.default_trigger),1,[]);
+summary.inactive_two_photon_outputs=struct( ...
+    "galvo_x_port",string(profile.inactive_two_photon.scanner.x_port), ...
+    "galvo_y_port",string(profile.inactive_two_photon.scanner.y_port), ...
+    "galvo_stationary_v",double(profile.inactive_two_photon.scanner.stationary_v), ...
+    "pockels_port",string(profile.inactive_two_photon.modulator.port), ...
+    "pockels_dark_v",double(profile.inactive_two_photon.modulator.dark_v), ...
+    "safe_value_source",string(profile.inactive_two_photon.safe_value_source));
+end
+
+function data=neutralize_two_photon_outputs(data,outputs)
+scanner=outputs.scanner; modulator=outputs.modulator;
+data.ao=remove_identifiers(data.ao,[scanner.x_name scanner.x_port]);
+data.ao=append_compatible(data.ao,constant_record( ...
+    scanner.x_name,scanner.x_port,scanner.stationary_v(1)));
+data.ao=remove_identifiers(data.ao,[scanner.y_name scanner.y_port]);
+data.ao=append_compatible(data.ao,constant_record( ...
+    scanner.y_name,scanner.y_port,scanner.stationary_v(2)));
+data.ao=remove_identifiers(data.ao,[modulator.name modulator.port]);
+data.ao=append_compatible(data.ao,constant_record( ...
+    modulator.name,modulator.name,modulator.dark_v));
+end
+
+function record=constant_record(name,port,value)
+record=struct("name",char(name),"port",char(port), ...
+    "wavefile","awfm_constant","params",{{double(value)}}, ...
+    "operation","Multiplication","concatTime",[]);
 end
 
 function report=validate_pulse_realization(pulses,rate)
@@ -189,6 +216,18 @@ for k=1:numel(values)
     if isfield(values,"port"), recordPort=string(values(k).port); end
     keep(k)=~(recordName==string(name) || recordPort==string(name) || ...
         recordPort==string(port));
+end
+values=values(keep);
+end
+
+function values=remove_identifiers(values,identifiers)
+if isempty(values), return; end
+keep=true(size(values)); identifiers=strip(string(identifiers));
+for k=1:numel(values)
+    recordName=""; recordPort="";
+    if isfield(values,"name"), recordName=strip(string(values(k).name)); end
+    if isfield(values,"port"), recordPort=strip(string(values(k).port)); end
+    keep(k)=~any(recordName==identifiers | recordPort==identifiers);
 end
 values=values(keep);
 end

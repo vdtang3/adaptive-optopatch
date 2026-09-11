@@ -632,3 +632,22 @@ The stimulation panel is built from
 executed. This distinction matters for staged 2P: its separate
 `frozen_pulse_schedule` remains immutable acquisition intent, while the saved
 executed schedule contains the subset and attenuation physically commanded.
+
+## 2026-09-10 — Stimulation modality is an exclusive hardware owner
+
+Preserving a loaded Luminos waveform is correct for imaging and acquisition
+outputs, but unsafe for stimulation outputs owned by the inactive modality. A
+1P configuration now replaces both 2P galvo commands with stationary constants
+and the Pockels command with dark. A 2P configuration replaces mod488 with dark,
+holds the Blue-DMD trigger low, and closes shutter488; the runner also writes a
+blank static Blue-DMD target before acquisition. Orange DMD/illumination,
+camera triggers, and all other waveform records remain untouched. The neutral
+values and channel identities live in the Virtual Upright rig profiles rather
+than in merge logic, making the safety decision explicit and testable.
+
+The table is now the single manual editor for per-cell `Blue V (1P)`. Valid
+values update `selected_blue_voltage_v` in the canonical FOV cell record without
+changing its calibration notes or acquisition provenance; refresh and FOV
+round-trips read the same field. Invalid values restore the stored value. The
+former selected-cell dialog and button were removed, while voltage resolution
+continues to use `event > acquisition > protocol > fov_cell > gui > error`.

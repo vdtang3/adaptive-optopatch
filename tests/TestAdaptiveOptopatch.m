@@ -212,10 +212,10 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
                 "ao_camera_triggered",[],"do_camera_triggered",[]);
             [g,w,summary]=adaptive_optopatch.build_luminos_2p_waveform_config( ...
                 globalProps,wfm,waveforms);
-            testCase.verifyEqual(numel(w.ao),3);
+            testCase.verifyEqual(numel(w.ao),4);
             testCase.verifyEqual(g.total_time,n/fs,"AbsTol",1e-12);
             testCase.verifyEqual(sort(string({w.ao.port})), ...
-                sort(["Dev2/ao0","Dev2/ao1","2P mod"]));
+                sort(["Dev2/ao0","Dev2/ao1","2P mod","mod488"]));
             testCase.verifyEqual(summary.pockels_port,"Dev1/ao3");
         end
 
@@ -834,7 +834,7 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
                 globalProps,wfm,protocol, ...
                 adaptive_optopatch.virtual_upright_1p_profile());
             testCase.verifyEqual(updatedGlobal.total_time,protocol.acquisition_duration_s);
-            testCase.verifyEqual(numel(updatedWfm.ao),2);
+            testCase.verifyEqual(numel(updatedWfm.ao),5);
             testCase.verifyTrue(any(string({updatedWfm.ao.name})=="mod594"));
             idx=find(string({updatedWfm.ao.name})=="mod488",1);
             testCase.verifyEqual(string(updatedWfm.ao(idx).wavefile), ...
@@ -846,6 +846,70 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             y=feval(updatedWfm.ao(idx).wavefile,t,params{:});
             testCase.verifyEqual(max(y),1.5);
             testCase.verifyEqual(y(end),0);
+        end
+
+        function onePhotonConfigNeutralizesOnlyTwoPhotonStimulation(testCase)
+            profile=adaptive_optopatch.virtual_upright_1p_profile();
+            globalProps=struct("rate",200000,"total_time",1, ...
+                "clock_source","Internal Dev1","trigger_source","Dev1/PFI9", ...
+                "completion_trigger","None","daq_master",true);
+            records=[constant_output("unrelated","Dev1/ao7",4.2), ...
+                constant_output("Adaptive2P_X",profile.inactive_two_photon.scanner.x_port,1.1), ...
+                constant_output("Adaptive2P_Y",profile.inactive_two_photon.scanner.y_port,-1.2), ...
+                constant_output("2P mod",profile.inactive_two_photon.modulator.port,3.3)];
+            wfm=empty_waveform_config(); wfm.ao=records;
+            protocol=resolve_for_test(adaptive_optopatch.generate_screen_protocol( ...
+                "PulseCount",1,"ModulatorVoltage",1.5),"1p_dmd");
+            [~,configured,summary]=adaptive_optopatch.build_luminos_1p_waveform_config( ...
+                globalProps,wfm,protocol,profile);
+
+            testCase.verifyEqual(constant_value(configured.ao,"Adaptive2P_X"), ...
+                profile.inactive_two_photon.scanner.stationary_v(1));
+            testCase.verifyEqual(constant_value(configured.ao,"Adaptive2P_Y"), ...
+                profile.inactive_two_photon.scanner.stationary_v(2));
+            testCase.verifyEqual(constant_value(configured.ao,"2P mod"), ...
+                profile.inactive_two_photon.modulator.dark_v);
+            testCase.verifyEqual(constant_value(configured.ao,"unrelated"),4.2);
+            mod488=configured.ao(string({configured.ao.name})=="mod488");
+            testCase.verifyEqual(string(mod488.wavefile), ...
+                "adaptive_optopatch.luminos_event_waveform");
+            testCase.verifyEqual(mod488.params{3},1.5);
+            testCase.verifyEqual(summary.inactive_two_photon_outputs.galvo_stationary_v,[0 0]);
+        end
+
+        function twoPhotonConfigNeutralizesOnlyOnePhotonStimulation(testCase)
+            profile=adaptive_optopatch.virtual_upright_2p_profile(); fs=200000; n=50;
+            globalProps=struct("rate",fs,"total_time",1, ...
+                "clock_source","Internal Dev1","trigger_source","Dev1/PFI9", ...
+                "daq_master",true);
+            wfm=empty_waveform_config();
+            wfm.ao=[constant_output("unrelated","Dev1/ao7",4.2), ...
+                constant_output("mod488",profile.inactive_one_photon.modulator.port,3.1)];
+            wfm.do=[constant_output("AdaptiveOptopatch DMD trigger", ...
+                profile.inactive_one_photon.dmd.trigger_port,1), ...
+                constant_output("shutter488", ...
+                profile.inactive_one_photon.shutter.port,1), ...
+                constant_output("Orange DMD trigger","Dev1/port0/line5",1), ...
+                constant_output("unrelated digital","Dev1/port0/line6",1)];
+            waveforms=struct("sample_rate_hz",fs, ...
+                "x_v",linspace(0,0.1,n)',"y_v",linspace(0,-0.1,n)', ...
+                "pockels_v",[zeros(10,1);0.2*ones(10,1);zeros(30,1)], ...
+                "preflight",struct("passed",true),"per_pulse",struct([]));
+            [~,configured,summary]=adaptive_optopatch.build_luminos_2p_waveform_config( ...
+                globalProps,wfm,waveforms,"Profile",profile);
+
+            testCase.verifyEqual(constant_value(configured.ao,"mod488"), ...
+                profile.inactive_one_photon.modulator.dark_v);
+            testCase.verifyEqual(constant_value(configured.ao,"unrelated"),4.2);
+            testCase.verifyEqual(constant_value(configured.do,"AdaptiveOptopatch DMD trigger"),0);
+            testCase.verifyEqual(constant_value(configured.do,"shutter488"),0);
+            testCase.verifyEqual(constant_value(configured.do,"Orange DMD trigger"),1);
+            testCase.verifyEqual(constant_value(configured.do,"unrelated digital"),1);
+            testCase.verifyTrue(all(ismember(["Adaptive2P_X","Adaptive2P_Y","2P mod"], ...
+                string({configured.ao.name}))));
+            pockels=configured.ao(string({configured.ao.name})=="2P mod");
+            testCase.verifyEqual(pockels.params{2},waveforms.pockels_v);
+            testCase.verifyEqual(summary.inactive_one_photon_outputs.blue_dmd_safe_static_state,"blank");
         end
 
         function requiresExplicitConfirmationBeforeLiveOnePhotonRun(testCase)
@@ -953,6 +1017,8 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
                 'VariableNames',{'trial_id','stimulation_mode','target_cell_id', ...
                 'is_null','target_index','pulse_schedule','acquisition_duration_s', ...
                 'output_tag','acquisition_status','experiment_directory'});
+            blueDmd=sim.getDevice("DMD","name","DMD_Blue");
+            blueDmd.Target=true(blueDmd.Dimensions);
             run=adaptive_optopatch.run_2p_manifest( ...
                 struct("trials",trials),targets,sim, ...
                 "ReleaseLevel","blocked_test","ConfirmTrajectoryTest",true);
@@ -966,6 +1032,10 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyTrue(saved.adaptive_optopatch_record.simulation);
             testCase.verifyTrue(feedback.galvo_feedback.simulated);
             testCase.verifyTrue(feedback.galvo_feedback.passed);
+            testCase.verifyFalse(any(blueDmd.Target,"all"));
+            testCase.verifyGreaterThan(blueDmd.StaticWriteCount,0);
+            blueShutter=sim.getDevice("NI_DAQ_Shutter","name","shutter488");
+            testCase.verifyFalse(blueShutter.State);
         end
 
         function stagedTwoPhotonRunLeavesFrozenManifestUnchanged(testCase)
@@ -1953,6 +2023,22 @@ reference=adaptive_optopatch.create_reference_model(image,masks,metadata, ...
     "FovId","test_fov","CellIds",["cell_001";"cell_002";"cell_003"], ...
     "RoiPolygons",polygons);
 fovState=adaptive_optopatch.create_fov_state(reference,polygons);
+end
+
+function wfm=empty_waveform_config()
+wfm=struct("ao",[],"do",[],"ai",[],"di",[],"ctri",[], ...
+    "ao_camera_triggered",[],"do_camera_triggered",[]);
+end
+
+function record=constant_output(name,port,value)
+record=struct("name",char(name),"port",char(port), ...
+    "wavefile","awfm_constant","params",{{value}}, ...
+    "operation","Multiplication","concatTime",[]);
+end
+
+function value=constant_value(records,name)
+record=records(string({records.name})==string(name));
+value=record.params{1};
 end
 
 function [trials,targets,sim]=make_multi_trial_2p_fixture(trialCount,outputRoot)

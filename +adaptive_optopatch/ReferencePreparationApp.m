@@ -323,10 +323,8 @@ classdef ReferencePreparationApp < handle
             app.QcTable = uitable(side,"ColumnName", ...
                 ["Cell ID","Record","Stim","Blue V (1P)", ...
                  "Area px","X","Y","Edge px","QC"], ...
-                "ColumnEditable",[false true true false false false false false false], ...
+                "ColumnEditable",[false true true true false false false false false], ...
                 "CellEditCallback",@(source,event)app.qcCellEdited(source,event));
-            uibutton(side,"Text","Set selected Blue calibration…", ...
-                "ButtonPushedFcn",@(~,~)app.chooseCellCalibration());
 
             app.Status = uitextarea(root,"Editable","off", ...
                 "Value",["Ready. In Luminos, click Snap for Camera 1."; ...
@@ -761,34 +759,12 @@ classdef ReferencePreparationApp < handle
             end
         end
 
-        function chooseCellCalibration(app)
-            cellId=app.selectedCellId();
-            if strlength(cellId)==0
-                app.setStatus("Select a cell before storing a Blue calibration."); return
-            end
-            answer=inputdlg({"Chosen Blue command voltage (V):", ...
-                "Optional notes:"},"Blue calibration for "+cellId,[1 55],{"1",""});
-            if isempty(answer), return; end
-            voltage=str2double(answer{1}); notes=string(strip(answer{2}));
-            try
-                app.setCellCalibration(cellId,voltage,notes);
-                app.setStatus("Stored Blue calibration for "+cellId+". Save the FOV to persist it.");
-            catch exception
-                app.showError(exception);
-            end
-        end
-
         function invokeOrangeMask(app)
             try
                 app.sendOrangeRecordingMask();
             catch exception
                 app.showError(exception);
             end
-        end
-
-        function value=selectedCellId(app)
-            value="";
-            if ~isempty(app.RoiList.Value), value=string(app.RoiList.Value); end
         end
 
         function fovState=currentFovState(app)
@@ -810,7 +786,7 @@ classdef ReferencePreparationApp < handle
 
         function qcCellEdited(app,source,event)
             row=event.Indices(1); column=event.Indices(2);
-            if row<1 || row>numel(app.CellIds) || ~ismember(column,[2 3])
+            if row<1 || row>numel(app.CellIds) || ~ismember(column,[2 3 4])
                 app.updateQc();
                 return
             end
@@ -819,17 +795,42 @@ classdef ReferencePreparationApp < handle
                 if column==2
                     app.setCellEligibility(cellId, ...
                         "RecordingEnabled",logical(event.NewData));
-                else
+                elseif column==3
                     app.setCellEligibility(cellId, ...
                         "StimulationEnabled",logical(event.NewData));
+                else
+                    voltage=parse_blue_voltage(event.NewData);
+                    app.setCellBlueVoltage(cellId,voltage);
                 end
-                app.setStatus(sprintf( ...
-                    "%s %s eligibility updated. Save the FOV to persist it.", ...
-                    cellId,lower(string(source.ColumnName(column)))));
+                if column==4
+                    app.setStatus(sprintf( ...
+                        "%s Blue V updated. Save the FOV to persist it.",cellId));
+                else
+                    app.setStatus(sprintf( ...
+                        "%s %s eligibility updated. Save the FOV to persist it.", ...
+                        cellId,lower(string(source.ColumnName(column)))));
+                end
             catch exception
                 app.updateQc();
                 app.showError(exception);
             end
+        end
+
+        function setCellBlueVoltage(app,cellId,voltage)
+            fovState=app.currentFovState();
+            ids=string({fovState.cells.cell_id}); index=find(ids==cellId,1);
+            notes=""; acquisition="";
+            if isfield(fovState.cells,"calibration_notes")
+                notes=string(fovState.cells(index).calibration_notes);
+            end
+            if isfield(fovState.cells,"calibration_acquisition")
+                acquisition=string(fovState.cells(index).calibration_acquisition);
+            end
+            fovState=adaptive_optopatch.update_cell_calibration(fovState,cellId, ...
+                "CommandVoltageV",voltage,"Notes",notes, ...
+                "Acquisition",acquisition,"ReplaceCalibrationSnapshot",false);
+            app.CurrentFovState=fovState;
+            app.updateQc();
         end
 
 
@@ -919,6 +920,20 @@ end
 
 function value=ternary(condition,yes,no)
 if condition, value=yes; else, value=no; end
+end
+
+function voltage=parse_blue_voltage(value)
+if isnumeric(value) && isscalar(value) && isreal(value)
+    voltage=double(value);
+elseif (ischar(value) || isstring(value)) && isscalar(string(value))
+    voltage=str2double(string(value));
+else
+    voltage=NaN;
+end
+if ~isfinite(voltage) || voltage<=0 || voltage>5
+    error("adaptive_optopatch:InvalidCellCalibration", ...
+        "Blue V (1P) must be a finite number in (0,5] V.");
+end
 end
 
 function set_if_present(control,parameters,name)

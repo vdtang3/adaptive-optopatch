@@ -124,7 +124,9 @@ classdef TestFovWorkflowCleanup < matlab.unittest.TestCase
             qc=tables(arrayfun(@(value)numel(value.ColumnName)==9,tables));
             testCase.verifyNumElements(qc,1);
             testCase.verifyEqual(logical(qc.ColumnEditable), ...
-                [false true true false false false false false false]);
+                [false true true true false false false false false]);
+            testCase.verifyEmpty(findall(app.Figure, ...
+                "Text","Set selected Blue calibration…"));
             callback=qc.CellEditCallback;
             callback(qc,struct("Indices",[1 3],"NewData",false));
             state=app.saveCurrentFov(fullfile(root,"table_edit_fov.mat"));
@@ -135,6 +137,39 @@ classdef TestFovWorkflowCleanup < matlab.unittest.TestCase
                     "Release level","Trajectory reviewed"]
                 testCase.verifyEmpty(findall(app.Figure,"Text",text));
             end
+        end
+
+        function blueVoltageTableEditsAreValidatedAndPersistent(testCase)
+            root=tempname; mkdir(root);
+            cleanup=onCleanup(@()remove_if_present(root));
+            [app,~]=open_simulated_test_gui("Visible","off","RunRoot",root);
+            appCleanup=onCleanup(@()delete(app));
+            polygons=test_polygon();
+            polygons{2}=[55 25;75 25;75 45;55 45];
+            app.setReferenceData(ones(70,90),test_info(root),polygons);
+            tables=findall(app.Figure,"Type","uitable");
+            qc=tables(arrayfun(@(value)numel(value.ColumnName)==9,tables));
+            callback=qc.CellEditCallback;
+
+            callback(qc,struct("Indices",[1 4],"NewData",1.35));
+            state=app.saveCurrentFov(fullfile(root,"blue_v_fov.mat"));
+            testCase.verifyEqual(state.cells(1).selected_blue_voltage_v,1.35);
+            testCase.verifyTrue(isnan(state.cells(2).selected_blue_voltage_v));
+            callback(qc,struct("Indices",[2 2],"NewData",false));
+            state=app.saveCurrentFov(fullfile(root,"other_column_fov.mat"));
+            testCase.verifyEqual(state.cells(1).selected_blue_voltage_v,1.35);
+
+            callback(qc,struct("Indices",[1 4],"NewData","not a voltage"));
+            testCase.verifyEqual(qc.Data{1,4},1.35);
+            state=app.saveCurrentFov(fullfile(root,"after_invalid_fov.mat"));
+            testCase.verifyEqual(state.cells(1).selected_blue_voltage_v,1.35);
+
+            [reloaded,~]=open_simulated_test_gui("Visible","off","RunRoot",root);
+            reloadCleanup=onCleanup(@()delete(reloaded));
+            reloaded.loadFov(fullfile(root,"after_invalid_fov.mat"));
+            reloadTable=findall(reloaded.Figure,"Type","uitable");
+            reloadTable=reloadTable(arrayfun(@(value)numel(value.ColumnName)==9,reloadTable));
+            testCase.verifyEqual(reloadTable.Data{1,4},1.35);
         end
 
         function failedMandatoryPreflightDoesNotFreezeRun(testCase)

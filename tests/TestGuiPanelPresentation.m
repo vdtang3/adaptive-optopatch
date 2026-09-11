@@ -35,16 +35,15 @@ classdef TestGuiPanelPresentation < matlab.unittest.TestCase
         end
 
         function reorderedTableEditsTheSameUnderlyingState(testCase)
-            % The reorder is presentation only: the Record and Stim columns
-            % must still drive setCellEligibility, and Blue V must still
-            % report the calibration and stay read-only.
+            % Record and Stim still drive setCellEligibility, while Blue V
+            % edits the same canonical per-cell value displayed by the table.
             [app,root]=open_gui(testCase);
             app.setReferenceData(ones(70,90),panel_info(root),panel_polygon());
             app.setCellCalibration("cell_001",0.8);
             qc=qc_table(testCase,app);
 
             testCase.verifyEqual(logical(qc.ColumnEditable), ...
-                [false true true false false false false false false]);
+                [false true true true false false false false false]);
             testCase.verifyEqual(string(qc.Data{1,1}),"cell_001");
             testCase.verifyEqual(qc.Data{1,4},0.8);
 
@@ -59,11 +58,15 @@ classdef TestGuiPanelPresentation < matlab.unittest.TestCase
             testCase.verifyFalse(state.cells(1).recording_enabled);
             testCase.verifyFalse(state.cells(1).stimulation_enabled);
 
-            % An edit outside the two eligibility columns is refused and the
-            % table is redrawn from state rather than from the typed value.
+            callback(qc,struct("Indices",[1 4],"NewData",1.2));
+            state=app.saveCurrentFov(fullfile(root,"blue_v.mat"));
+            testCase.verifyEqual(state.cells(1).selected_blue_voltage_v,1.2);
+
+            % An invalid Blue V edit is refused and the table is redrawn
+            % from canonical state rather than from the typed value.
             qc.Data{1,4}=99;
             callback(qc,struct("Indices",[1 4],"NewData",99));
-            testCase.verifyEqual(qc.Data{1,4},0.8);
+            testCase.verifyEqual(qc.Data{1,4},1.2);
         end
 
         function protocolPanelFitsTheHeightItIsGiven(testCase)

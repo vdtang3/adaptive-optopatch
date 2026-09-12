@@ -27,7 +27,9 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
         WaveformAxes
         RunNextButton
         RunAllButton
+        RepeatBatchCount
         StartNewBatchButton
+        ReturnToEditingButton
         StopButton
         StopRequested logical = false
         OnePhotonControls cell = {}
@@ -307,17 +309,19 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 app.ActiveRunFolder);
         end
 
-        function paths=startNewBatch(app,outputRoot)
+        function paths=startNewBatch(app,outputRoot,options)
             %STARTNEWBATCH Reuse one completed frozen definition in a new batch.
             arguments
                 app
                 outputRoot (1,1) string = ""
+                options.Automatic (1,1) logical = false
             end
             if isempty(app.ActiveRunPlan) || strlength(app.ActiveRunFolder)==0
                 error("adaptive_optopatch:FrozenRunRequired", ...
                     "Freeze or resume a run before starting a new batch.");
             end
-            if app.PlanState=="RUNNING" || app.ControlsLocked
+            if (app.PlanState=="RUNNING" || app.ControlsLocked) && ...
+                    ~options.Automatic
                 error("adaptive_optopatch:AcquisitionActive", ...
                     "A new batch cannot be started while an acquisition is active.");
             end
@@ -391,7 +395,28 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
         end
 
         function run=runAll(app)
-            run=app.executeCurrentPlan(0);
+            run=app.executeRepeatedBatches();
+        end
+
+        function returnToEditing(app)
+            if app.PlanState=="RUNNING" || app.ControlsLocked
+                error("adaptive_optopatch:AcquisitionActive", ...
+                    "Return to editing is unavailable while an acquisition is active.");
+            end
+            app.ActiveRunPlan=struct([]);
+            app.ActiveRunFolder="";
+            app.LastRun=struct([]);
+            app.PlanState="EDITABLE";
+            app.EditableStateChanged=false;
+            app.refreshTrialTable(table);
+            app.updateStateDisplay();
+            app.setStatus("Returned to editing. Frozen run artifacts remain on disk.");
+        end
+
+        function value=returnToEditingEnabled(app)
+            value=~isempty(app.ActiveRunPlan) && ...
+                strlength(app.ActiveRunFolder)>0 && ...
+                app.PlanState~="RUNNING" && ~app.ControlsLocked;
         end
 
         function plan=resumeRun(app,folder)
@@ -591,6 +616,8 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                     ~isvalid(app.StartNewBatchButton), return; end
             complete=app.startNewBatchEnabled();
             app.StartNewBatchButton.Enable=matlab.lang.OnOffSwitchState(complete);
+            app.ReturnToEditingButton.Enable= ...
+                matlab.lang.OnOffSwitchState(app.returnToEditingEnabled());
             if ~isempty(app.ActiveRunPlan) && strlength(app.ActiveRunFolder)>0
                 runnable=~complete && app.PlanState~="RUNNING" && ~app.ControlsLocked;
                 app.RunNextButton.Enable=matlab.lang.OnOffSwitchState(runnable);
@@ -714,20 +741,33 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             resumeButton.Layout.Row=4; resumeButton.Layout.Column=[7 8];
             reviewButton=uibutton(controls,"Text","Review completed Blue ramp…", ...
                 "ButtonPushedFcn",@(~,~)app.invoke(@()app.chooseRampReview()));
-            reviewButton.Layout.Row=5; reviewButton.Layout.Column=[1 3];
+            reviewButton.Layout.Row=5; reviewButton.Layout.Column=[1 2];
             newRunButton=uibutton(controls,"Text","Freeze new run", ...
                 "ButtonPushedFcn",@(~,~)app.invoke(@()app.startNewRun()), ...
                 "Tooltip",["Freeze the current editable state as a new run " ...
                 "and make it the active one. The previous frozen run's " ...
                 "artifacts stay on disk and remain resumable."]);
-            newRunButton.Layout.Row=5; newRunButton.Layout.Column=[4 5];
+            newRunButton.Layout.Row=5; newRunButton.Layout.Column=3;
+            app.ReturnToEditingButton=uibutton(controls,"Text","Return to editing", ...
+                "Enable","off", ...
+                "ButtonPushedFcn",@(~,~)app.invoke(@()app.returnToEditing()));
+            app.ReturnToEditingButton.Layout.Row=5;
+            app.ReturnToEditingButton.Layout.Column=[4 5];
             app.StartNewBatchButton=uibutton(controls,"Text","Start new batch", ...
                 "Enable","off", ...
                 "ButtonPushedFcn",@(~,~)app.invoke(@()app.startNewBatch()), ...
                 "Tooltip",["Create a fresh execution batch from the exact " ...
                 "completed frozen definition and preserve the prior batch."]);
             app.StartNewBatchButton.Layout.Row=5;
-            app.StartNewBatchButton.Layout.Column=[6 8];
+            app.StartNewBatchButton.Layout.Column=6;
+            batchLabel=uilabel(controls,"Text","Batches", ...
+                "HorizontalAlignment","right");
+            batchLabel.Layout.Row=5; batchLabel.Layout.Column=7;
+            app.RepeatBatchCount=uieditfield(controls,"numeric", ...
+                "Value",1,"Limits",[1 Inf],"RoundFractionalValues","on", ...
+                "Tag","RepeatBatchCount");
+            app.RepeatBatchCount.Layout.Row=5;
+            app.RepeatBatchCount.Layout.Column=8;
             app.WaveformAxes=uiaxes(runtime);
             title(app.WaveformAxes,"Waveform / DMD preview");
 
@@ -788,19 +828,48 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             app.updateBatchControls();
         end
 
-        function run=executeCurrentPlan(app,count)
+        function run=executeRepeatedBatches(app)
+            if isempty(app.ActiveRunPlan) || strlength(app.ActiveRunFolder)==0
+                app.freezeCurrentPlan();
+            end
+            batchCount=app.RepeatBatchCount.Value;
+            app.PlanState="RUNNING"; app.StopRequested=false;
+            app.setControlsLocked(true); app.updateStateDisplay();
+            cleanup=onCleanup(@()app.finishRunning()); %#ok<NASGU>
+            for batch=1:batchCount
+                app.setStatus(sprintf("Running batch %d of %d",batch,batchCount));
+                run=app.executeCurrentPlan(0,"ManageRunState",false);
+                if app.StopRequested || ~batch_is_complete(run.trials)
+                    return
+                end
+                app.setStatus(sprintf("Completed batch %d of %d",batch,batchCount));
+                if batch<batchCount
+                    app.startNewBatch("","Automatic",true);
+                    app.PlanState="RUNNING";
+                end
+            end
+        end
+
+        function run=executeCurrentPlan(app,count,options)
             % Continue an existing active frozen run whenever one exists.
             % Editable changes since freezing (app.EditableStateChanged) do
             % not by themselves trigger a new freeze here — only the absence
             % of an active frozen run does. A new run is created only via an
             % explicit freezeCurrentPlan call.
+            arguments
+                app
+                count (1,1) double
+                options.ManageRunState (1,1) logical = true
+            end
             if isempty(app.ActiveRunPlan) || strlength(app.ActiveRunFolder)==0
                 app.freezeCurrentPlan();
             end
             plan=app.ActiveRunPlan;
-            app.PlanState="RUNNING"; app.StopRequested=false;
-            app.setControlsLocked(true); app.updateStateDisplay();
-            cleanup=onCleanup(@()app.finishRunning());
+            if options.ManageRunState
+                app.PlanState="RUNNING"; app.StopRequested=false;
+                app.setControlsLocked(true); app.updateStateDisplay();
+                cleanup=onCleanup(@()app.finishRunning()); %#ok<NASGU>
+            end
             simulation=isa(app.LuminosApp, ...
                 "adaptive_optopatch.testing.SimulatedLuminosApp");
             outputRoot="";

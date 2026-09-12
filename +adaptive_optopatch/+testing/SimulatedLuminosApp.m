@@ -12,6 +12,7 @@ classdef SimulatedLuminosApp < handle
         exp_complete logical = false
         round_complete logical = false
         expfolder string = ""
+        FailOnAcquisitionNumber double = NaN
     end
     properties (Access=private)
         AcquisitionCount double = 0
@@ -104,6 +105,11 @@ classdef SimulatedLuminosApp < handle
             end
             if ~isfolder(outputRoot), mkdir(outputRoot); end
             app.AcquisitionCount=app.AcquisitionCount+1;
+            if app.AcquisitionCount==app.FailOnAcquisitionNumber
+                app.acquisition_active=false;
+                error("adaptive_optopatch:SimulatedAcquisitionFailure", ...
+                    "Requested simulated acquisition failure.");
+            end
             safeTag=regexprep(char(tag),'[^A-Za-z0-9_-]','_');
             stamp=char(datetime("now","Format","yyyyMMdd_HHmmss_SSS"));
             folder=fullfile(outputRoot,sprintf('SIMULATION_%s_%03d_%s', ...

@@ -119,6 +119,7 @@ classdef TestExecutionBatchWorkflow < matlab.unittest.TestCase
             testCase.verifyGreaterThan(sum( ...
                 partial.trials.acquisition_status=="planned"),0);
             testCase.verifyFalse(app.startNewBatchEnabled());
+            testCase.verifyTrue(app.returnToEditingEnabled());
 
             resumedPlan=app.resumeRun(originalFolder);
             testCase.verifyEqual(app.ActiveRunFolder,originalFolder);
@@ -143,9 +144,11 @@ classdef TestExecutionBatchWorkflow < matlab.unittest.TestCase
             testCase.verifyNumElements(startButton,1);
             testCase.verifyEqual(string(startButton.Enable),"off");
             testCase.verifyFalse(app.startNewBatchEnabled());
+            testCase.verifyFalse(app.returnToEditingEnabled());
 
             configure_batch_app(app);
             app.freezeCurrentPlan();
+            testCase.verifyTrue(app.returnToEditingEnabled());
             observedKey="start_new_batch_during_run";
             timerObject=timer("StartDelay",0.01, ...
                 "TimerFcn",@(~,~)capture_running_state( ...
@@ -158,21 +161,113 @@ classdef TestExecutionBatchWorkflow < matlab.unittest.TestCase
             testCase.verifyEqual(observed.plan_state,"RUNNING");
             testCase.verifyTrue(observed.controls_locked);
             testCase.verifyEqual(observed.button_enable,"off");
+            testCase.verifyFalse(observed.return_to_editing_enabled);
+        end
+
+        function runAllHonorsRepeatedBatchCount(testCase)
+            [app,root]=open_batch_app(testCase,"Configure",false);
+            configure_round_robin_batch_app(app);
+            field=repeat_field(app); field.Value=3;
+
+            run=app.runAll();
+            folders=run_folders(root);
+            testCase.verifyNumElements(folders,3);
+            testCase.verifyTrue(all(run.trials.acquisition_status=="completed"));
+            identities=strings(3,1);
+            schedules=cell(3,1);
+            for k=1:3
+                manifest=load(fullfile(folders(k),"trial_manifest.mat"),"manifest");
+                testCase.verifyTrue(all( ...
+                    manifest.manifest.trials.acquisition_status=="planned"));
+                checkpoint=load(fullfile(folders(k),"run_checkpoint.mat"),"run");
+                testCase.verifyTrue(all( ...
+                    checkpoint.run.trials.acquisition_status=="completed"));
+                identities(k)=manifest.manifest.execution_batch.batch_id;
+                schedules{k}=manifest.manifest.trials.pulse_schedule{1}.events;
+                testCase.verifyEqual(groupcounts( ...
+                    schedules{k}.target_cell_id),[50;50]);
+            end
+            testCase.verifyEqual(numel(unique(identities)),3);
+            testCase.verifyNotEqual(schedules{1}.target_cell_id, ...
+                schedules{2}.target_cell_id);
+            testCase.verifyNotEqual(schedules{2}.target_cell_id, ...
+                schedules{3}.target_cell_id);
+        end
+
+        function oneRepeatedBatchCreatesNoExtraFolder(testCase)
+            [app,root]=open_batch_app(testCase);
+            field=repeat_field(app); field.Value=1;
+            app.runAll();
+            testCase.verifyNumElements(run_folders(root),1);
+            testCase.verifyEqual(app.ActiveRunPlan.execution_batch.batch_number,1);
+        end
+
+        function repeatedBatchFailureStopsBeforeNextBatch(testCase)
+            [app,root,sim]=open_batch_app(testCase);
+            field=repeat_field(app); field.Value=3;
+            sim.FailOnAcquisitionNumber=4;
+
+            testCase.verifyError(@()app.runAll(), ...
+                "adaptive_optopatch:SimulatedAcquisitionFailure");
+            folders=run_folders(root);
+            testCase.verifyNumElements(folders,2);
+            first=load(fullfile(folders(1),"run_checkpoint.mat"),"run");
+            second=load(fullfile(folders(2),"run_checkpoint.mat"),"run");
+            testCase.verifyTrue(all(first.run.trials.acquisition_status=="completed"));
+            testCase.verifyEqual(sum( ...
+                second.run.trials.acquisition_status=="completed"),1);
+            testCase.verifyEqual(sum( ...
+                second.run.trials.acquisition_status=="failed"),1);
+            testCase.verifyEqual(app.ActiveRunFolder,folders(2));
+        end
+
+        function returnToEditingPreservesCurrentExperiment(testCase)
+            [app,~,~]=open_batch_app(testCase,"Configure",false);
+            configure_round_robin_batch_app(app);
+            app.setCellEligibility("cell_002","StimulationEnabled",false);
+            app.freezeCurrentPlan();
+            folder=app.ActiveRunFolder;
+            stateBefore=app.saveCurrentFov(fullfile(fileparts(folder),"before.mat"));
+            protocolBefore=app.PulseProtocol;
+            roiCountBefore=numel(findall(app.Figure,"Type","images.roi.Polygon"));
+
+            testCase.verifyTrue(app.returnToEditingEnabled());
+            app.returnToEditing();
+
+            stateAfter=app.saveCurrentFov(fullfile(fileparts(folder),"after.mat"));
+            testCase.verifyEqual(app.PlanState,"EDITABLE");
+            testCase.verifyEmpty(app.ActiveRunPlan);
+            testCase.verifyEqual(app.ActiveRunFolder,"");
+            testCase.verifyEqual(stateAfter.cells,stateBefore.cells);
+            testCase.verifyEqual(app.PulseProtocol,protocolBefore);
+            testCase.verifyEqual(numel(findall( ...
+                app.Figure,"Type","images.roi.Polygon")),roiCountBefore);
+            testCase.verifyTrue(isfolder(folder));
         end
     end
 end
 
-function [app,root]=open_batch_app(testCase,options)
+function [app,root,sim]=open_batch_app(testCase,options)
 arguments
     testCase
     options.Configure (1,1) logical = true
 end
 root=tempname; mkdir(root);
 testCase.addTeardown(@()remove_if_present(root));
-[app,~]=open_simulated_test_gui( ...
+[app,sim]=open_simulated_test_gui( ...
     "CameraRoi",[974 100 984 80],"Visible","off","RunRoot",root);
 testCase.addTeardown(@()delete(app));
 if options.Configure, configure_batch_app(app); end
+end
+
+function field=repeat_field(app)
+field=findall(app.Figure,"Tag","RepeatBatchCount");
+end
+
+function folders=run_folders(root)
+listing=dir(fullfile(root,"adaptive_optopatch_run_*"));
+folders=string(fullfile({listing.folder},{listing.name}))';
+folders=sort(folders);
 end
 
 function configure_batch_app(app)
@@ -207,7 +302,8 @@ end
 function capture_running_state(app,button,key)
 value=struct("plan_state",app.PlanState, ...
     "controls_locked",app.ControlsLocked, ...
-    "button_enable",string(button.Enable));
+    "button_enable",string(button.Enable), ...
+    "return_to_editing_enabled",app.returnToEditingEnabled());
 setappdata(app.Figure,key,value);
 end
 

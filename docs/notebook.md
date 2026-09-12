@@ -720,6 +720,13 @@ the new resolved schedule is archived in the new batch. The user-facing
 round-robin creation script now defaults to 100 stimulations per target, keeping
 each acquisition and its DMD event stack manageable.
 
+The GUI can chain a requested number of these batches through the existing
+single-batch executor and `Start new batch` transition. Each block therefore
+retains its own folder and checkpoint, and chaining stops before allocating the
+next block after a failure or stop request. `Return to editing` only detaches
+the active frozen plan; the loaded FOV, cell decisions, calibrations, protocol,
+and GUI values stay in memory while completed run artifacts remain on disk.
+
 ## 2026-09-11 — DMD reference grids must match frozen camera masks
 
 Both 1P paths give Luminos ROI-local camera masks and rely on each DMD's active

@@ -1,6 +1,6 @@
 % Create an ROI-independent continuous round-robin experiment definition.
 
-pulses_per_cell=100;
+pulses_per_cell=100; % One acquisition block; repeat with the GUI batch control.
 pulse_duration_ms=10;
 dark_interval_ms=[90 110];
 pre_delay_ms=100;

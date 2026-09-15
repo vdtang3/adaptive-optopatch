@@ -30,8 +30,9 @@ classdef TestPreviewMatchesExecution < matlab.unittest.TestCase
                 adjustment=events.blue_mask_adjustment_pixels(k);
                 index=find([preview.blue.adjustment_pixels]==adjustment,1);
                 testCase.verifyNotEmpty(index);
+                slot=plan.event_slot_indices(k);
                 testCase.verifyEqual(preview.blue(index).mask, ...
-                    plan.camera_pattern_stack(:,:,k));
+                    plan.unique_camera_masks(:,:,slot));
             end
 
             % The bundle default is only one of them, so the old preview

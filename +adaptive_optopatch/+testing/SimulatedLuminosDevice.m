@@ -48,6 +48,14 @@ classdef SimulatedLuminosDevice < handle
         minimum_picture_time_us double = NaN
         StackWriteCount double = 0
         StackMode string = ""
+        supports_flut logical = true
+        flut_max_entries double = 4096
+        reserved_slot_count double = 0
+        slot_write_count double = 0
+        written_slots double = zeros(0,1)
+        slot_patterns cell = cell(0,1)
+        playlist double = zeros(0,1)
+        playlist_mode string = ""
         trigger_channel string = ""
     end
 
@@ -82,6 +90,11 @@ classdef SimulatedLuminosDevice < handle
             state=device.EmissionOn;
         end
 
+        function state=Get_State(device)
+            state=struct("flut_max_entries",device.flut_max_entries, ...
+                "min_picture_time",round(device.minimum_picture_time_us));
+        end
+
         function state=Get_interlockStatus(device)
             state=device.InterlockEnabled;
         end
@@ -107,6 +120,35 @@ classdef SimulatedLuminosDevice < handle
             device.StackMode=string(mode);
             if ~isempty(device.pattern_stack)
                 device.Target=device.pattern_stack(:,:,1);
+            end
+        end
+
+        function tf=Supports_FLUT(device)
+            tf=device.supports_flut;
+        end
+
+        function Reserve_Slots(device,count)
+            device.reserved_slot_count=double(count);
+            device.slot_write_count=0;
+            device.written_slots=zeros(0,1);
+            device.slot_patterns=cell(count,1);
+            device.playlist=zeros(0,1);
+        end
+
+        function Write_Pattern_To_Slot(device,slot,mask)
+            if slot<1 || slot>device.reserved_slot_count
+                error("DMD:SlotOutOfRange","Simulated slot is outside the reserved bank.");
+            end
+            device.slot_write_count=device.slot_write_count+1;
+            device.written_slots(end+1,1)=slot;
+            device.slot_patterns{slot}=logical(mask);
+        end
+
+        function Set_Playlist(device,slots,mode)
+            device.playlist=double(slots(:));
+            device.playlist_mode=string(mode);
+            if ~isempty(device.playlist)
+                device.Target=device.slot_patterns{device.playlist(1)};
             end
         end
 

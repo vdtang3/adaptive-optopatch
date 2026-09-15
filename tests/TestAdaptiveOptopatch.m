@@ -1812,7 +1812,8 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyTrue(plan.no_artificial_settle_interval);
             for k=1:height(resolved.events)
                 index=resolved.events.target_index(k);
-                testCase.verifyEqual(plan.camera_pattern_stack(:,:,k), ...
+                slot=plan.event_slot_indices(k);
+                testCase.verifyEqual(plan.unique_camera_masks(:,:,slot), ...
                     targets.blue_camera_masks(:,:,index));
             end
             sim=adaptive_optopatch.testing.make_simulated_luminos();
@@ -1820,8 +1821,9 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             config=adaptive_optopatch.prepare_luminos_dmd_sequence(dmd,plan, ...
                 "DryRun",false);
             testCase.verifyTrue(config.loaded);
-            testCase.verifyEqual(dmd.StackMode,"slave");
-            testCase.verifyEqual(dmd.StackWriteCount,1);
+            testCase.verifyEqual(dmd.playlist_mode,"slave");
+            testCase.verifyEqual(dmd.slot_write_count,plan.unique_mask_count);
+            testCase.verifyEqual(dmd.playlist,plan.event_slot_indices);
             globalProps=struct("rate",200000,"total_time",1, ...
                 "clock_source","Internal Dev1","trigger_source","Dev1/PFI9", ...
                 "daq_master",true);
@@ -1839,7 +1841,7 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyEqual(summary.dmd_sequence.trigger_associated_pulse_id, ...
                 resolved.events.pulse_id);
             testCase.verifyEqual(summary.dmd_sequence.stack_pattern_number, ...
-                (1:height(resolved.events))');
+                plan.event_slot_indices);
             testCase.verifyLessThan(plan.initialization_trigger_s, ...
                 resolved.events.onset_s(1));
             triggerWaveform=adaptive_optopatch.luminos_event_waveform( ...
@@ -1891,6 +1893,7 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
                 protocol,"Mode","1p_dmd","FovState",fovState, ...
                 "GuiDefaults",test_gui_defaults());
             frozen=manifest.trials.pulse_schedule{1};
+            expectedPlan=adaptive_optopatch.build_dmd_sequence_plan(frozen,targets);
             sim=adaptive_optopatch.testing.make_simulated_luminos( ...
                 "SimulationOutputRoot",outputRoot, ...
                 "CameraRoi",targets.reference_camera.roi);
@@ -1900,7 +1903,7 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyEqual(run.trials.acquisition_status,"completed");
             testCase.verifyEqual(numel(sim.AcquisitionHistory),1);
             dmd=sim.getDevice("DMD","name","DMD_Blue");
-            testCase.verifyEqual(dmd.StackWriteCount,1);
+            testCase.verifyEqual(dmd.slot_write_count,expectedPlan.unique_mask_count);
             saved=load(fullfile(run.trials.experiment_directory,"output_data.mat"), ...
                 "adaptive_optopatch_record");
             realized=saved.adaptive_optopatch_record.realized_pulses;

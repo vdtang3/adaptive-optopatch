@@ -25,7 +25,7 @@ classdef TestBlueMaskEventExecutability < matlab.unittest.TestCase
 
             plan=adaptive_optopatch.build_dmd_sequence_plan(protocol,targets);
             canonicalMask=targets.canonical_roi_masks(:,:,1);
-            testCase.verifyEqual(plan.camera_pattern_stack(:,:,1),canonicalMask);
+            testCase.verifyEqual(plan.unique_camera_masks(:,:,1),canonicalMask);
         end
 
         function defaultValidEventInvalidFailsExplicitly(testCase)
@@ -89,7 +89,8 @@ classdef TestBlueMaskEventExecutability < matlab.unittest.TestCase
             for k=1:height(protocol.events)
                 expected=adaptive_optopatch.apply_blue_mask_adjustment( ...
                     canonicalMask,protocol.events.blue_mask_adjustment_pixels(k));
-                testCase.verifyEqual(plan.camera_pattern_stack(:,:,k),expected);
+                slot=plan.event_slot_indices(k);
+                testCase.verifyEqual(plan.unique_camera_masks(:,:,slot),expected);
             end
 
             manifest=adaptive_optopatch.build_manifest(fovState.reference,targets, ...

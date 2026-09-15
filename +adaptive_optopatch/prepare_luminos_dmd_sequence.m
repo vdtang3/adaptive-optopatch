@@ -1,32 +1,97 @@
 function configuration=prepare_luminos_dmd_sequence(dmd,plan,options)
-%PREPARE_LUMINOS_DMD_SEQUENCE Transform and preload an ALP slave stack.
+%PREPARE_LUMINOS_DMD_SEQUENCE Program unique masks and the resolved event order.
 arguments
     dmd
     plan (1,1) struct
     options.DryRun (1,1) logical = true
 end
-n=plan.pattern_count;
-configuration=rmfield(plan,"camera_pattern_stack");
+n=plan.event_count;
+playlistSlots=plan.event_slot_indices;
+if isfield(plan,"programmed_playlist_slots")
+    playlistSlots=plan.programmed_playlist_slots;
+end
+playlistCount=numel(playlistSlots);
+configuration=rmfield(plan,"unique_camera_masks");
 configuration.mode="slave";
 configuration.loaded=false;
+configuration.execution_mode="unprogrammed";
 if options.DryRun, return; end
-stack=[];
-for k=1:n
+
+uniqueCount=plan.unique_mask_count;
+useFlut=supports_flut(dmd);
+configuration.supports_flut=useFlut;
+if isfield(plan,"dmd_diagnostic") && ~useFlut
+    error("adaptive_optopatch:DmdFlutDiagnosticRequiresFlut", ...
+        "The dmd_flut_wrap diagnostic requires a DMD with FLUT support.");
+end
+flutMaxEntries=NaN; playlistCapacity=NaN;
+if useFlut
+    state=dmd.Get_State();
+    if ~isstruct(state) || ~isfield(state,"flut_max_entries") || ...
+            ~isscalar(state.flut_max_entries) || state.flut_max_entries<=0
+        error("adaptive_optopatch:FlutCapacityUnavailable", ...
+            "The DMD reports FLUT support but no usable FLUT entry capacity.");
+    end
+    flutMaxEntries=double(state.flut_max_entries);
+    widthMultiplier=1+(uniqueCount>512);
+    % Luminos' tFlutWrite transfer buffer contains 4096 frame numbers. The
+    % controller may advertise less, and 18-bit entries consume two of its
+    % 9-bit positions, so the executable capacity is the smaller limit.
+    playlistCapacity=min(4096,floor(flutMaxEntries/widthMultiplier));
+    if playlistCount>playlistCapacity
+        error("adaptive_optopatch:FlutPlaylistTooLong", ...
+            "The DMD playlist contains %d entries, but this DMD and "+ ...
+            "Luminos can hold only %d FLUT playlist entries for a %d-mask "+ ...
+            "bank. Split the protocol or reduce its event count.", ...
+            playlistCount,playlistCapacity,uniqueCount);
+    end
+end
+
+referenceMask=adaptive_optopatch.remap_camera_mask_to_dmd_reference( ...
+    plan.unique_camera_masks(:,:,1),plan.reference_camera,dmd,"DMD_Blue");
+transformed=dmd.setPatterningROI(referenceMask,"write_when_complete",false);
+transformedMasks=false([size(transformed),uniqueCount]);
+transformedMasks(:,:,1)=logical(transformed);
+for k=2:uniqueCount
     referenceMask=adaptive_optopatch.remap_camera_mask_to_dmd_reference( ...
-        plan.camera_pattern_stack(:,:,k),plan.reference_camera,dmd,"DMD_Blue");
+        plan.unique_camera_masks(:,:,k),plan.reference_camera,dmd,"DMD_Blue");
     transformed=dmd.setPatterningROI(referenceMask, ...
         "write_when_complete",false);
-    if k==1, stack=false([size(transformed),n]); end
-    stack(:,:,k)=logical(transformed);
+    transformedMasks(:,:,k)=logical(transformed);
 end
-dmd.pattern_stack=stack;
-dmd.Write_Stack('slave');
-configuration.dmd_stack_size=size(stack);
+
+if useFlut
+    dmd.Reserve_Slots(uniqueCount);
+    for slot=1:uniqueCount
+        dmd.Write_Pattern_To_Slot(slot,transformedMasks(:,:,slot));
+    end
+    dmd.Set_Playlist(playlistSlots,'slave');
+    configuration.execution_mode="flut_playlist";
+    configuration.flut_max_entries=flutMaxEntries;
+    configuration.flut_playlist_capacity=playlistCapacity;
+    configuration.physical_upload_count=uniqueCount;
+    configuration.playlist_entry_count=playlistCount;
+else
+    stack=transformedMasks(:,:,plan.event_slot_indices);
+    dmd.pattern_stack=stack;
+    dmd.Write_Stack('slave');
+    configuration.execution_mode="physical_event_stack";
+    configuration.dmd_stack_size=size(stack);
+    configuration.physical_upload_count=n;
+    configuration.playlist_entry_count=n;
+end
 configuration.loaded=true;
 % The stack is armed but the DAQ waveform is not built and the shutter is
 % still closed, so this is the last point at which the frozen advance
 % schedule can be checked against what this DMD can physically display.
 configuration.pattern_advance=validate_pattern_advance(dmd,plan);
+end
+
+function tf=supports_flut(dmd)
+tf=false;
+if ismethod(dmd,"Supports_FLUT")
+    tf=logical(dmd.Supports_FLUT());
+end
 end
 
 function report=validate_pattern_advance(dmd,plan)

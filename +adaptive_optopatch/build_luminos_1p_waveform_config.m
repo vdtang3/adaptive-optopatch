@@ -58,18 +58,11 @@ if ~isempty(options.DmdSequencePlan)
         error("adaptive_optopatch:DmdInitializationNotDark", ...
             "The first optical pulse begins before the DMD initialization trigger ends. Add protocol pre-delay.");
     end
-    % A pattern-advance trigger selects the mask for the pulse that follows
-    % it, so it must complete while mod488 is dark. The trigger is at least
-    % three samples wide, so a low live sample rate can push a later advance
-    % into its own pulse and illuminate the previous mask.
-    overlap=first_trigger_light_overlap(triggerOnset,triggerOffset,pulses);
-    if overlap>0
-        error("adaptive_optopatch:DmdAdvanceOverlapsLight", ...
-            ['DMD advance trigger %d ends %.4f ms after it starts, at the ' ...
-             '%.0f Hz active Luminos sample rate, and overlaps an optical ' ...
-             'pulse. Lengthen the preceding dark interval or raise the ' ...
-             'waveform sample rate.'],overlap,1000*triggerWidth,rate);
-    end
+    % The ALP advances on the rising edge. The digital pulse may remain high
+    % after a back-to-back optical event begins; requiring its full width to
+    % fit in darkness would add a biological gap that the protocol did not
+    % request. The initial edge remains fully dark so entry 1 is selected
+    % before any illumination.
     if ~isempty(triggerOffset) && triggerOffset(end)>globalProps.total_time
         error("adaptive_optopatch:DmdAdvanceOutsideAcquisition", ...
             "The final DMD advance trigger exceeds the acquisition duration.");
@@ -98,7 +91,7 @@ summary=struct("schema_version","0.2.0", ...
     "pulse_realization",realization, ...
     "pulses",pulses);
 if ~isempty(options.DmdSequencePlan)
-    summary.dmd_sequence=rmfield(options.DmdSequencePlan,"camera_pattern_stack");
+    summary.dmd_sequence=rmfield(options.DmdSequencePlan,"unique_camera_masks");
     summary.dmd_trigger_port=string(profile.dmd.trigger_port);
 end
 summary.clock_source=reshape(string(globalProps.clock_source),1,[]);
@@ -184,21 +177,6 @@ report=struct("schema_version","1.0.0","sample_rate_hz",rate, ...
     "maximum_duration_error_s", ...
         max([abs(realizedDuration(light)-pulses.duration_s(light));0]), ...
     "dark_interval_sample_count",gapSamples);
-end
-
-function index=first_trigger_light_overlap(triggerOnset,triggerOffset,pulses)
-%FIRST_TRIGGER_LIGHT_OVERLAP Index of the first advance trigger during light.
-index=0;
-light=pulses(~pulses.is_null,:);
-if isempty(light) || isempty(triggerOnset), return; end
-onset=sort(light.onset_s); offset=sort(light.offset_s);
-% Light pulses never overlap, so the number of them intersecting a trigger
-% window is the number starting before it ends minus the number finished
-% before it begins.
-starting=arrayfun(@(value)sum(onset<value-1e-12),triggerOffset);
-finished=arrayfun(@(value)sum(offset<=value+1e-12),triggerOnset);
-overlapping=find(starting-finished>0,1);
-if ~isempty(overlapping), index=overlapping; end
 end
 
 function data=ensure_wfm_fields(data)

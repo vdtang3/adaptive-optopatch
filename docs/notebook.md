@@ -709,6 +709,13 @@ per-acquisition provenance explicit while leaving protocol and runner schemas
 otherwise unchanged. Timestamped run-folder allocation with collision suffixes
 continues to provide unique batch output roots.
 
+## 2026-09-13 — Inspection FOV uses the acquisition mean
+
+The inspection ROI panel now displays the mean of the acquired voltage-camera
+frames rather than the planning snapshot. The mean is accumulated during the
+existing trace-extraction pass and cached, avoiding a second movie read. ROI
+outlines and identities remain sourced from the frozen canonical reference.
+
 ## 2026-09-11 — Repeated batches re-resolve randomized schedules
 
 An execution batch remains the resumable unit: resuming an incomplete folder
@@ -743,3 +750,23 @@ integer-aligned within the DMD reference at the same binning. Missing geometry,
 incompatible binning, misalignment, or any required clipping stops execution
 before either mask is programmed. Luminos continues to own and apply the
 camera-to-DMD calibration itself.
+## 2026-09-14 — Protocol-owned round robin and FLUT-backed DMD execution
+
+Constrained round-robin scheduling belongs to the pulse-protocol layer: it
+materializes exact target order, timing, balancing, recovery gaps, and voltage
+before AO freezes a run. AO treats those events as authoritative and rejects
+only concrete execution incompatibilities. For 1P DMD sequences, final
+camera-space masks are deduplicated by pixel content, uploaded once to Luminos
+slots, and referenced by an event-sized FLUT playlist. Non-FLUT devices retain
+an explicit physical-event-stack fallback; FLUT capacity overflow is an error
+rather than an automatic protocol split.
+
+## 2026-09-15 — Isolated FLUT wrap diagnostic
+
+FLUT wrap behavior in continuous slave mode is a controller property, not
+something software tests can establish. A narrowly tagged hardware diagnostic
+therefore programs only slots `[1 2 3]` while emitting eight ordinary event
+triggers, with expected observations `[1 2 3 1 2 3 1 2]`. The tag is validated
+strictly, requires three distinct masks and FLUT capability, and cannot change
+production playlist semantics. Both the three-entry programmed playlist and
+the eight-event expectation are archived for interpreting the acquisition.

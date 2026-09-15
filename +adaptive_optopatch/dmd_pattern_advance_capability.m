@@ -28,6 +28,21 @@ if is_positive_scalar(declared)
     return
 end
 
+% Modern Luminos exposes the negotiated sequence timing through Get_State.
+if ismethod(dmd,"Get_State")
+    try
+        state=dmd.Get_State();
+        if isstruct(state) && isfield(state,"min_picture_time") && ...
+                is_positive_scalar(state.min_picture_time)
+            capability.minimum_picture_time_s=double(state.min_picture_time)*1e-6;
+            capability.source="luminos_get_state_min_picture_time";
+            return
+        end
+    catch exception
+        capability.detail="Luminos Get_State inquiry failed: "+string(exception.message);
+    end
+end
+
 api=read_member(dmd,"api");
 sequence=read_member(dmd,"seq");
 if isempty(api) || isempty(sequence)

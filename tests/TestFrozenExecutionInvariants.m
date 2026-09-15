@@ -231,7 +231,7 @@ classdef TestFrozenExecutionInvariants < matlab.unittest.TestCase
                 orange.tform.A);
         end
 
-        function dmdAdvanceTriggerMustNotOverlapLight(testCase)
+        function backToBackDmdEventsPreserveProtocolTiming(testCase)
             [plan,protocol]=screen_sequence_plan();
             profile=adaptive_optopatch.virtual_upright_1p_profile();
             wfm=empty_wfm_data();
@@ -241,20 +241,22 @@ classdef TestFrozenExecutionInvariants < matlab.unittest.TestCase
             testCase.verifyEqual(summary.dmd_sequence.pattern_count, ...
                 height(protocol.events));
 
-            % A trigger is at least three samples wide, so a low enough rate
-            % pushes the second advance into the pulse it selects.
+            % The ALP responds to the rising edge. A trigger may remain high
+            % after the next back-to-back pulse begins without AO inserting a
+            % biological dark gap or changing the frozen event timing.
             narrow=protocol;
             narrow.events.onset_s(2:end)=narrow.events.onset_s(2:end)- ...
-                (narrow.events.onset_s(2)-narrow.events.offset_s(1))+0.004;
+                (narrow.events.onset_s(2)-narrow.events.offset_s(1));
             narrow.events.onset_s(3)=narrow.events.onset_s(2)+ ...
-                narrow.events.duration_s(2)+0.05;
+                narrow.events.duration_s(2);
             narrow=adaptive_optopatch.normalize_protocol(narrow);
             narrowPlan=adaptive_optopatch.build_dmd_sequence_plan(narrow,targets_for(narrow));
-            testCase.verifyError( ...
-                @()adaptive_optopatch.build_luminos_1p_waveform_config( ...
+            [~,~,narrowSummary]=adaptive_optopatch.build_luminos_1p_waveform_config( ...
                 live_global_props(500),wfm,narrow,profile, ...
-                "DmdSequencePlan",narrowPlan), ...
-                "adaptive_optopatch:DmdAdvanceOverlapsLight");
+                "DmdSequencePlan",narrowPlan);
+            testCase.verifyEqual(narrowSummary.pulses.onset_s,narrow.events.onset_s);
+            testCase.verifyEqual(narrowSummary.dmd_sequence.dmd_trigger_s, ...
+                [0;narrow.events.offset_s(1:end-1)]);
         end
     end
 end

@@ -7,6 +7,7 @@ classdef TestInspectAcquisition < matlab.unittest.TestCase
             cleanup=onCleanup(@()delete(viewer.figure)); %#ok<NASGU>
 
             testCase.verifyEqual(viewer.roi_source,"reference.roi_masks");
+            testCase.verifyEqual(viewer.fov_image_source,"acquisition mean image");
             testCase.verifyEqual(viewer.cell_ids,["cell_001";"cell_002"]);
             testCase.verifySize(viewer.traces.raw_traces,[10 2]);
             testCase.verifyEqual(viewer.traces.raw_traces(4,:),[900 1000]);
@@ -15,6 +16,12 @@ classdef TestInspectAcquisition < matlab.unittest.TestCase
             testCase.verifyEqual(viewer.traces.background_mode,"none");
             testCase.verifyEqual(viewer.traces.motion_correction,"none");
             testCase.verifyEqual(viewer.traces.photobleach_correction,"none");
+            expected=1000*ones(6,7);
+            expected(fixture.reference.roi_masks(:,:,1))=990;
+            imageHandle=findall(viewer.reference_axes,"Type","image");
+            testCase.verifyEqual(imageHandle.CData,expected,"AbsTol",1e-12);
+            testCase.verifyNotEqual(imageHandle.CData, ...
+                fixture.reference.reference_image);
         end
 
         function daqTriggerPeriodIsAuthoritativeForTraceTiming(testCase)

@@ -89,6 +89,41 @@ end
 function protocol=resolve_multi_target(definition,acquisition,fovState,gui, ...
         cellIndices,targetIndices,acquisitionIndex,outputIndex,mode,freshRandomization)
 template=acquisition.events;
+if ismember("target_cell_id",string(template.Properties.VariableNames))
+    if ~acquisition.event_order_realized
+        error("adaptive_optopatch:UnrealizedExplicitTargetSchedule", ...
+            "An explicit target_cell_id schedule must already have realized order and timing.");
+    end
+    if acquisition.target_repetitions~=1 || any(~isfinite(template.onset_s))
+        error("adaptive_optopatch:UnrealizedExplicitTargetSchedule", ...
+            "Explicit multi-target schedules require target_repetitions=1 and finite event onsets.");
+    end
+    selectedIds=string({fovState.cells(cellIndices).cell_id})';
+    eventIds=string(template.target_cell_id);
+    cellMap=zeros(height(template),1); targetMap=zeros(height(template),1);
+    for k=1:height(template)
+        if template.is_null(k), continue; end
+        selected=find(selectedIds==eventIds(k),1);
+        if isempty(selected)
+            error("adaptive_optopatch:ScheduledTargetUnavailable", ...
+                "Resolved protocol target %s is not stimulation-enabled in this FOV.",eventIds(k));
+        end
+        cellMap(k)=cellIndices(selected); targetMap(k)=targetIndices(selected);
+    end
+    if any(template.is_null)
+        fallback=find(~template.is_null,1);
+        if isempty(fallback)
+            error("adaptive_optopatch:ScheduledTargetUnavailable", ...
+                "An all-null explicit multi-target schedule has no target context.");
+        end
+        cellMap(template.is_null)=cellMap(fallback);
+    end
+    events=template;
+    events.target_index=targetMap;
+    protocol=resolve_values(definition,acquisition,events,fovState,gui, ...
+        cellMap,acquisitionIndex,outputIndex,mode);
+    return
+end
 nTemplate=height(template); repetitions=acquisition.target_repetitions;
 rows=cell(numel(cellIndices)*repetitions*nTemplate,1); cellMap=zeros(numel(rows),1);
 cursor=0;
@@ -208,6 +243,12 @@ protocol=struct("schema_version","3.0.0", ...
     "parameters",parameters,"parameter_sources",parameterSources, ...
     "acquisition_duration_s",duration, ...
     "resolved_at",string(datetime("now","TimeZone","local")));
+if isfield(acquisition,"scheduler_metadata")
+    protocol.scheduler_metadata=acquisition.scheduler_metadata;
+end
+if isfield(acquisition,"dmd_diagnostic")
+    protocol.dmd_diagnostic=acquisition.dmd_diagnostic;
+end
 protocol=adaptive_optopatch.normalize_protocol(protocol);
 validation=adaptive_optopatch.validate_protocol(protocol);
 if ~validation.passed

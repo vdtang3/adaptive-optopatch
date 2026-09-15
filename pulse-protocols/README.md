@@ -1,10 +1,11 @@
 # Pulse protocols
 
-Pulse-protocol files describe experimental intent without naming cells. Load a
-generated `protocol.mat` in Adaptive Optopatch; when the plan is built, the
-current FOV's **Stim** checkboxes select the cells and the resolver freezes one
-or more concrete acquisition schedules. Runners execute those schedules
-literally.
+Pulse-protocol files own experimental design and emit explicit event timing.
+Most reusable protocols do not name cells: the current FOV's **Stim**
+checkboxes select their targets when a plan is frozen. The constrained
+round-robin protocol is deliberately FOV-specific and contains its literal
+target order and onset times. Adaptive Optopatch maps that schedule to hardware
+without changing its timing, balance, recovery rule, or randomization.
 
 Generated artifacts use protocol schema `3.0.0`. Older protocol files are
 intentionally rejected and must be regenerated from their source scripts.
@@ -20,6 +21,7 @@ intentionally rejected and must be regenerated from their source scripts.
 | `create_stf_frequency_mix_protocol.m` | Mixed single, 50 Hz, and 100 Hz trains | `each_stimulation_enabled_cell` | randomized |
 | `create_paired_pulse_protocol.m` | Mixed paired-pulse intervals | `each_stimulation_enabled_cell` | randomized |
 | `create_round_robin_protocol.m` | One continuous, interleaved multi-cell acquisition | `multi_target_continuous` | randomized |
+| `create_dmd_flut_wrap_test.m` | Three-slot/eight-trigger FLUT wrap hardware diagnostic | `multi_target_continuous` | ordered |
 | `create_custom_event_protocol.m` | Minimal hand-written schema-3 example | `each_stimulation_enabled_cell` | ordered |
 
 Scripts write to `pulse-protocols/generated/` by default and leave the
@@ -36,13 +38,15 @@ two-entry definition resolves to sixteen. Voltage ramps, Blue-mask titrations,
 connectivity screens, and STF use this policy.
 
 `multi_target_continuous` produces one actual multi-target acquisition for each
-explicit acquisition definition. Targets vary event-by-event. Round robin uses
-this policy.
+explicit acquisition definition. Targets vary event-by-event. The current
+round-robin generator writes those target IDs and all event times explicitly;
+every named target must be stimulation-enabled in the selected FOV.
 
-These are the only policies. Reusable definitions never contain
-`target_cell_id`; biological identity comes from the current FOV at plan-build
-time. Record and Stim are independent: Record controls Orange-mask inclusion,
-while Stim controls target selection.
+These are the only policies. Reusable definitions normally omit
+`target_cell_id`; a FOV-specific explicit multi-target schedule may contain it
+when target order is part of the experimental design. Record and Stim are
+independent: Record controls Orange-mask inclusion, while Stim determines
+whether a named target is physically available for stimulation.
 
 ## Explicit acquisitions
 
@@ -171,10 +175,30 @@ command_voltage_v
 blue_mask_adjustment_pixels
 ```
 
-Use `NaN` for a value that should fall through precedence. Do not add cell IDs.
+Use `NaN` for a value that should fall through precedence. Add cell IDs only to
+an already realized, FOV-specific `multi_target_continuous` schedule.
 Set `event_order_realized=true` when the generator has already materialized the
-requested order. A sequencing template such as round robin may set it false so
-the resolver materializes target order once, using the seed.
+requested order. AO never reshuffles an explicit target schedule.
+
+## Constrained round robin
+
+`generate_constrained_round_robin_schedule` lives beside the user-facing
+round-robin script. It gives every target an exact quota, selects randomly among
+eligible targets with the largest remaining quota, and advances time only when
+all remaining targets are inside their same-cell recovery interval. The script
+records the realized order, onset and offset of every event plus descriptive
+spacing and idle-time metadata. AO performs hardware checks but does not
+recreate or repair this schedule.
+
+## FLUT wrap hardware diagnostic
+
+`create_dmd_flut_wrap_test.m` creates a deliberately diagnostic-only schedule:
+three distinct target masks are uploaded and the programmed playlist is exactly
+`[1 2 3]`, while the DAQ emits eight event triggers. The expected cyclic result
+is `[1 2 3 1 2 3 1 2]`. The runner records both vectors separately and refuses
+to run this diagnostic on a non-FLUT DMD. Software tests verify configuration,
+not physical wrap behavior; run it only on a fluorescent slide or safe test
+preparation and inspect the acquired target sequence.
 
 Validate and save with:
 

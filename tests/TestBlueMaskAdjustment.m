@@ -59,12 +59,14 @@ classdef TestBlueMaskAdjustment < matlab.unittest.TestCase
                 adjustment=resolved.events.blue_mask_adjustment_pixels(k);
                 expected=adaptive_optopatch.apply_blue_mask_adjustment( ...
                     canonicalMask,adjustment);
-                testCase.verifyEqual(plan.camera_pattern_stack(:,:,k),expected);
+                slot=plan.event_slot_indices(k);
+                testCase.verifyEqual(plan.unique_camera_masks(:,:,slot),expected);
             end
-            % Resolved event order must be preserved in the pattern stack.
+            % Resolved event order must be preserved in the playlist.
             testCase.verifyEqual(plan.pulse_id,resolved.events.pulse_id);
 
-            areaByAdjustment=arrayfun(@(k)nnz(plan.camera_pattern_stack(:,:,k)), ...
+            areaByAdjustment=arrayfun(@(k)nnz(plan.unique_camera_masks( ...
+                :, :, plan.event_slot_indices(k))), ...
                 (1:height(resolved.events))');
             [~,order]=sort(resolved.events.blue_mask_adjustment_pixels);
             testCase.verifyTrue(issorted(areaByAdjustment(order)));

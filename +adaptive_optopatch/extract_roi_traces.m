@@ -63,6 +63,7 @@ rawTraces=nan(nFrames,nCells);
 backgroundTraces=zeros(nFrames,nCells);
 shifts=zeros(nFrames,2);
 registrationPeak=nan(nFrames,1);
+frameSum=zeros(nRows,nColumns);
 template=double(reference.reference_image);
 fid=fopen(moviePath,"r","ieee-le");
 if fid<0, error("adaptive_optopatch:MovieOpenFailed","Could not open %s",moviePath); end
@@ -72,6 +73,7 @@ for f=1:nFrames
     raw=fread(fid,nRows*nColumns,precision);
     if numel(raw)~=nRows*nColumns, break; end
     frame=double(permute(reshape(raw,nColumns,nRows),[2 1]));
+    frameSum=frameSum+frame;
     if options.MotionCorrection=="integer_translation"
         [dy,dx,peak]=estimate_shift(frame,template,options.MaximumShiftPixels);
         shifts(f,:)=[dy dx]; registrationPeak(f)=peak;
@@ -106,6 +108,7 @@ if isfinite(frameRate), tvec=(0:nFrames-1)'/frameRate; else, tvec=(0:nFrames-1)'
 
 result=struct("schema_version","0.2.0","experiment_directory",experimentDirectory, ...
     "movie_path",moviePath,"raw_traces",rawTraces, ...
+    "mean_image",frameSum/nFrames, ...
     "background_traces",backgroundTraces,"corrected_traces",corrected, ...
     "dff",dff,"tvec",tvec,"frame_rate_hz",frameRate, ...
     "motion_shifts_yx",shifts,"registration_peak",registrationPeak, ...

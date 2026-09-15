@@ -1312,10 +1312,10 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
             app.setReferenceData(ones(80,100),unified_test_info(root), ...
                 {[40 30;60 30;60 50;40 50]});
-            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1);
+            protocol=adaptive_optopatch.generate_screen_protocol( ...
+                "PulseCount",1,"ModulatorVoltage",1.3);
             app.setPulseProtocol(protocol);
             app.setPlanParameter("mode","1p_dmd");
-            app.setPlanParameter("modulator_voltage",1.3);
             run=app.runNext();
             testCase.verifyEqual(run.trials.acquisition_status,"completed");
             testCase.verifyTrue(run.simulation);
@@ -1397,7 +1397,8 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             rois={[25 25;40 25;40 40;25 40], ...
                 [60 40;75 40;75 55;60 55]};
             app.setReferenceData(ones(80,100),unified_test_info(root),rois);
-            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1);
+            protocol=adaptive_optopatch.generate_screen_protocol( ...
+                "PulseCount",1,"ModulatorVoltage",1);
             app.setPulseProtocol(protocol);
             app.setPlanParameter("mode","1p_dmd");
             first=app.runNext();
@@ -1425,7 +1426,8 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             rois={[25 25;40 25;40 40;25 40], ...
                 [60 40;75 40;75 55;60 55]};
             app.setReferenceData(ones(80,100),unified_test_info(root),rois);
-            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1);
+            protocol=adaptive_optopatch.generate_screen_protocol( ...
+                "PulseCount",1,"ModulatorVoltage",1);
             app.setPulseProtocol(protocol);
             app.setPlanParameter("mode","1p_dmd");
             first=app.runNext();
@@ -1462,7 +1464,8 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             rois={[25 25;40 25;40 40;25 40], ...
                 [60 40;75 40;75 55;60 55]};
             app.setReferenceData(ones(80,100),unified_test_info(root),rois);
-            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1);
+            protocol=adaptive_optopatch.generate_screen_protocol( ...
+                "PulseCount",1,"ModulatorVoltage",1);
             app.setPulseProtocol(protocol);
             app.setPlanParameter("mode","1p_dmd");
             first=app.runNext();
@@ -1636,7 +1639,8 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             rois={[25 25;40 25;40 40;25 40], ...
                 [60 40;75 40;75 55;60 55]};
             app.setReferenceData(ones(80,100),unified_test_info(root),rois);
-            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1);
+            protocol=adaptive_optopatch.generate_screen_protocol( ...
+                "PulseCount",1,"ModulatorVoltage",1);
             app.setPulseProtocol(protocol);
             app.setPlanParameter("mode","1p_dmd");
             first=app.runNext();

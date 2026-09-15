@@ -1,24 +1,29 @@
 classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
     %ADAPTIVEOPTOPATCHAPP Unified editable-plan and run workflow.
-    properties (SetAccess=private)
-        PlanState string = "EDITABLE"
-        ActiveRunFolder string = ""
-        ActiveRunPlan struct = struct([])
-        LastRun struct = struct([])
-        ControlsLocked logical = false
-        PulseProtocol struct = struct([])
-        PulseProtocolPath string = ""
-        PulseProtocolSummary struct = struct([])
-        EditableStateChanged logical = true
+    %   Like its base class, this app is a view over
+    %   adaptive_optopatch.AdaptiveOptopatchController. Protocol identity,
+    %   editable plan values, the frozen run, and the run lifecycle all live
+    %   in the controller; the buttons, tables, and labels here render that
+    %   state and send user actions back to it.
+    properties (Dependent, SetAccess=private)
+        %PLANSTATE Lifecycle as AO has always named it: EDITABLE/FROZEN/RUNNING.
+        PlanState
+        ActiveRunFolder
+        ActiveRunPlan
+        LastRun
+        %CONTROLSLOCKED Whether an acquisition is currently holding the session.
+        ControlsLocked
+        PulseProtocol
+        PulseProtocolPath
+        PulseProtocolSummary
+        EditableStateChanged
     end
     properties (Access=private)
-        RunRoot string = ""
         UnifiedReady logical = false
         StateLabel
         ProtocolPathField
         ProtocolSummaryArea
         LoadProtocolButton
-        CommandVoltageLabel
         MaximumVelocity
         MaximumAcceleration
         AllowCalibrationExtrapolation
@@ -31,10 +36,10 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
         StartNewBatchButton
         ReturnToEditingButton
         StopButton
-        StopRequested logical = false
         OnePhotonControls cell = {}
         TwoPhotonControls cell = {}
         LockSnapshot cell = {}
+        WidgetsLocked logical = false
     end
 
     methods
@@ -46,74 +51,32 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             end
             app@adaptive_optopatch.ReferencePreparationApp( ...
                 "LuminosApp",options.LuminosApp,"Visible",options.Visible);
-            app.RunRoot=options.RunRoot;
+            app.Controller.RunRoot=options.RunRoot;
             app.buildUnifiedUI();
             app.UnifiedReady=true;
-            app.planChanged();
+            app.refreshFromController();
+        end
+
+        function value=get.PlanState(app), value=app.Controller.LifecycleState; end
+        function value=get.ActiveRunFolder(app), value=app.Controller.ActiveRunFolder; end
+        function value=get.ActiveRunPlan(app), value=app.Controller.ActiveRunPlan; end
+        function value=get.LastRun(app), value=app.Controller.LastRun; end
+        function value=get.ControlsLocked(app)
+            value=app.Controller.LifecycleState=="RUNNING";
+        end
+        function value=get.PulseProtocol(app), value=app.Controller.Protocol; end
+        function value=get.PulseProtocolPath(app), value=app.Controller.ProtocolPath; end
+        function value=get.PulseProtocolSummary(app), value=app.Controller.ProtocolSummary; end
+        function value=get.EditableStateChanged(app)
+            value=app.Controller.EditableStateChanged;
         end
 
         function plan=buildCurrentPlan(app)
-            if isempty(app.PulseProtocol)
-                error("adaptive_optopatch:PulseProtocolRequired", ...
-                    "Load a validated pulse_protocol.mat before previewing or running.");
-            end
-            protocol=adaptive_optopatch.normalize_protocol(app.PulseProtocol);
-            compatibility=adaptive_optopatch.validate_protocol_for_mode( ...
-                protocol,string(app.Mode.Value));
-            if ~compatibility.passed
-                error("adaptive_optopatch:ProtocolModeIncompatible", ...
-                    "%s",strjoin(compatibility.issues,newline));
-            end
-            lightDurations=[];
-            for acquisition=protocol.acquisitions
-                selected=~acquisition.events.is_null & ...
-                    isfinite(acquisition.events.duration_s);
-                lightDurations=[lightDurations; ...
-                    acquisition.events.duration_s(selected)]; %#ok<AGROW>
-            end
-            if isempty(lightDurations), representativePulseMs=5;
-            else, representativePulseMs=1000*min(lightDurations); end
-            [~,targets]=app.buildSpatialArtifacts( ...
-                "PulseDurationMs",representativePulseMs);
-            fovState=app.currentFovState();
-            reference=fovState.reference;
-            guiDefaults=struct("command_voltage_v",app.ModulatorVoltage.Value, ...
-                "pulse_duration_s",representativePulseMs/1000, ...
-                "blue_mask_adjustment_pixels",app.DmdErosion.Value, ...
-                "orange_expansion_pixels",app.OrangeExpansion.Value, ...
-                "spiral_radius_um",app.SpiralRadius.Value, ...
-                "spiral_density_points_per_volt",app.SpiralDensity.Value);
-            [manifest,resolvedProtocols]=adaptive_optopatch.build_manifest( ...
-                reference,targets,protocol,"Mode",string(app.Mode.Value), ...
-                "OutputPrefix",string(protocol.protocol_id), ...
-                "CurrentObisPowerW",app.plannedObisPowerW(), ...
-                "FovState",fovState,"GuiDefaults",guiDefaults);
-            session=app.buildSessionState();
-            legacyTimingFields=["screen_repeats","pulse_count","pulse_duration_ms", ...
-                "dark_interval_min_ms","dark_interval_max_ms", ...
-                "pre_delay_ms","post_delay_ms"];
-            for field=legacyTimingFields
-                if isfield(session.parameters,field)
-                    session.parameters=rmfield(session.parameters,field);
-                end
-            end
-            session.pulse_protocol_path=app.PulseProtocolPath;
-            session.pulse_protocol_id=string(protocol.protocol_id);
-            session.pulse_protocol_summary=app.PulseProtocolSummary;
-            session.run_controls=app.captureRunControls();
-            plan=struct("schema_version","1.0.0", ...
-                "built_at",string(datetime("now","TimeZone","local")), ...
-                "software",adaptive_optopatch.software_provenance(), ...
-                "reference",reference,"targets",targets,"fov_state",fovState, ...
-                "protocol_definition",protocol,"protocol",protocol, ...
-                "resolved_protocols",{resolvedProtocols}, ...
-                "manifest",manifest,"session",session, ...
-                "advisories",manifest.advisories);
+            plan=app.Controller.buildPlan();
         end
 
         function protocol=loadPulseProtocol(app,path)
-            protocol=adaptive_optopatch.load_protocol(path);
-            app.setPulseProtocol(protocol,path);
+            protocol=app.Controller.loadProtocol(path);
         end
 
         function setPulseProtocol(app,protocol,path)
@@ -122,137 +85,28 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 protocol (1,1) struct
                 path (1,1) string = ""
             end
-            report=adaptive_optopatch.validate_protocol(protocol);
-            if ~report.passed
-                error("adaptive_optopatch:InvalidProtocol", ...
-                    "%s",strjoin(report.issues,newline));
-            end
-            app.PulseProtocol=report.protocol;
-            app.PulseProtocolPath=path;
-            app.PulseProtocolSummary= ...
-                adaptive_optopatch.summarize_protocol(report.protocol);
-            app.updateProtocolDisplay();
-            app.planChanged();
-            app.refreshTrialTable(table);
+            app.Controller.setProtocol(protocol,path);
         end
 
         function report=validateCurrentPlan(app)
-            plan=app.buildCurrentPlan();
-            report=app.preflightPlan(plan);
-            app.showPreflightStatus(report,plan.advisories);
+            report=app.Controller.validateCurrentPlan();
         end
 
         function report=preflightCurrentPlan(app)
-            plan=app.buildCurrentPlan();
-            report=app.preflightPlan(plan);
+            report=app.Controller.preflightCurrentPlan();
         end
 
         function report=preflightPlan(app,plan)
-            issues=strings(0,1);
-            for k=1:height(plan.manifest.trials)
-                preflight=adaptive_optopatch.preflight_trial( ...
-                    plan.targets,plan.manifest.trials(k,:), ...
-                    "RequireConfirmedLiveProtocol",false, ...
-                    "LiveProtocolConfirmed",true, ...
-                    "Advisories",plan.manifest.advisories);
-                issues=[issues;preflight.issues(:)]; %#ok<AGROW>
-            end
-            mode=string(app.Mode.Value);
-            if mode=="1p_dmd"
-                if isempty(issues)
-                    hardware=adaptive_optopatch.resolve_luminos_1p_hardware(app.LuminosApp);
-                    adaptive_optopatch.validate_camera_geometry( ...
-                        hardware.voltage_camera,plan.targets);
-                    for rowIndex=1:height(plan.manifest.trials)
-                        resolved=plan.manifest.trials.pulse_schedule{rowIndex};
-                        sequencePlan=struct([]);
-                        pulseTargets=unique(resolved.events.target_cell_id( ...
-                            ~resolved.events.is_null));
-                        maskVaries=any(resolved.events.blue_mask_adjustment_pixels~= ...
-                            plan.targets.parameters.blue_mask_adjustment_pixels);
-                        if numel(pulseTargets)>1 || maskVaries
-                            sequencePlan=adaptive_optopatch.build_dmd_sequence_plan( ...
-                                resolved,plan.targets);
-                        end
-                        [globalProps,~]=adaptive_optopatch.build_luminos_1p_waveform_config( ...
-                            hardware.daq.global_props,hardware.daq.wfm_data, ...
-                            resolved,adaptive_optopatch.virtual_upright_1p_profile(), ...
-                            "DmdSequencePlan",sequencePlan);
-                        preflight_camera_frames(hardware.cameras,globalProps.total_time,false);
-                    end
-                end
-            else
-                bundleReport=adaptive_optopatch.validate_2p_planning_bundle(plan.targets);
-                issues=[issues;bundleReport.issues(:)];
-                if isempty(issues)
-                    hardware=adaptive_optopatch.resolve_luminos_2p_hardware( ...
-                        app.LuminosApp,"ApplyCalibration",false);
-                    adaptive_optopatch.validate_camera_geometry( ...
-                        hardware.voltage_camera,plan.targets);
-                    rows=find(~plan.manifest.trials.is_null);
-                    for rowIndex=reshape(rows,1,[])
-                        row=plan.manifest.trials(rowIndex,:);
-                        target=adaptive_optopatch.resolve_trial_target(plan.targets,row);
-                        protocol=app.protocolWithEffectiveVoltage( ...
-                            row.pulse_schedule{1},row.is_null);
-                        preview=adaptive_optopatch.build_2p_plan_preview( ...
-                            protocol,target,hardware, ...
-                            "ReleaseLevel","standard", ...
-                            "MaximumVelocityVPerS",app.MaximumVelocity.Value, ...
-                            "MaximumAccelerationVPerS2",app.MaximumAcceleration.Value, ...
-                            "AllowCalibrationExtrapolation", ...
-                            app.AllowCalibrationExtrapolation.Value, ...
-                            "TargetingTransform",plan_targeting_transform(plan));
-                        [globalProps,~,~]= ...
-                            adaptive_optopatch.build_luminos_2p_waveform_config( ...
-                            hardware.daq.global_props,hardware.daq.wfm_data, ...
-                            preview.waveforms);
-                        preflight_camera_frames(hardware.cameras, ...
-                            globalProps.total_time,app.AllowCameraRateOverride.Value);
-                    end
-                end
-            end
-            issues=unique(issues(strlength(issues)>0),"stable");
-            report=struct("schema_version","0.1.0","passed",isempty(issues), ...
-                "validated_at",string(datetime("now","TimeZone","local")), ...
-                "mode",mode,"issues",issues);
-            if ~report.passed
-                error("adaptive_optopatch:UnifiedPlanValidationFailed", ...
-                    "%s",strjoin(issues,newline));
-            end
-        end
-
-        function showPreflightStatus(app,report,advisories)
-            if ~report.passed, return; end
-            if isempty(advisories)
-                app.setStatus("Configuration check passed. Runs will rebuild and freeze current settings.");
-            else
-                messages=reshape(string({advisories.message}),[],1);
-                app.setStatus(["Configuration check passed with nonblocking advisories:";messages]);
-            end
+            report=app.Controller.preflightPlan(plan);
         end
 
         function plan=previewCurrentPlan(app)
             app.previewTargets();
-            plan=app.buildCurrentPlan();
+            plan=app.Controller.buildPlan();
             cla(app.WaveformAxes);
-            if string(app.Mode.Value)=="2p_spiral"
+            if app.Controller.PlanParameters.stimulation_mode=="2p_spiral"
                 yyaxis(app.WaveformAxes,"left");
-                hardware=adaptive_optopatch.resolve_luminos_2p_hardware( ...
-                    app.LuminosApp,"ApplyCalibration",false);
-                row=plan.manifest.trials(find(~plan.manifest.trials.is_null,1),:);
-                target=adaptive_optopatch.resolve_trial_target(plan.targets,row);
-                protocol=app.protocolWithEffectiveVoltage( ...
-                    row.pulse_schedule{1},row.is_null);
-                preview=adaptive_optopatch.build_2p_plan_preview( ...
-                    protocol,target,hardware, ...
-                    "ReleaseLevel","standard", ...
-                    "MaximumVelocityVPerS",app.MaximumVelocity.Value, ...
-                    "MaximumAccelerationVPerS2",app.MaximumAcceleration.Value, ...
-                    "AllowCalibrationExtrapolation", ...
-                    app.AllowCalibrationExtrapolation.Value, ...
-                    "TargetingTransform",plan_targeting_transform(plan));
-                waveforms=preview.waveforms;
+                waveforms=app.Controller.build2pPreviewWaveforms(plan);
                 time=(0:numel(waveforms.x_v)-1)'/waveforms.sample_rate_hz;
                 step=max(1,ceil(numel(time)/50000)); index=1:step:numel(time);
                 plot(app.WaveformAxes,time(index),waveforms.x_v(index), ...
@@ -295,18 +149,7 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 app
                 outputRoot (1,1) string = ""
             end
-            plan=app.buildCurrentPlan();
-            app.preflightPlan(plan);
-            if strlength(outputRoot)==0, outputRoot=app.defaultRunRoot(); end
-            [plan,paths]=app.saveExecutionBatch(plan,outputRoot,1,struct([]));
-            app.ActiveRunPlan=plan;
-            app.ActiveRunFolder=paths.output_directory;
-            app.EditableStateChanged=false;
-            app.PlanState="FROZEN";
-            app.updateStateDisplay();
-            app.refreshTrialTable(plan.manifest.trials);
-            app.setStatus("Frozen run plan created before acquisition:"+newline+ ...
-                app.ActiveRunFolder);
+            paths=app.Controller.freezeRun(outputRoot);
         end
 
         function paths=startNewBatch(app,outputRoot,options)
@@ -316,107 +159,37 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 outputRoot (1,1) string = ""
                 options.Automatic (1,1) logical = false
             end
-            if isempty(app.ActiveRunPlan) || strlength(app.ActiveRunFolder)==0
-                error("adaptive_optopatch:FrozenRunRequired", ...
-                    "Freeze or resume a run before starting a new batch.");
-            end
-            if (app.PlanState=="RUNNING" || app.ControlsLocked) && ...
-                    ~options.Automatic
-                error("adaptive_optopatch:AcquisitionActive", ...
-                    "A new batch cannot be started while an acquisition is active.");
-            end
-            currentTrials=app.currentBatchTrials();
-            if ~batch_is_complete(currentTrials)
-                error("adaptive_optopatch:CompletedBatchRequired", ...
-                    "Start new batch is available only after the current batch completes.");
-            end
-
-            sourcePlan=app.ActiveRunPlan;
-            sourceFolder=app.ActiveRunFolder;
-            sourceBatch=batch_identity(sourcePlan,sourceFolder);
-            plan=sourcePlan;
-            plan=reresolve_batch_schedule(plan);
-            plan.manifest=reset_execution_state(plan.manifest);
-            if strlength(outputRoot)==0
-                outputRoot=string(fileparts(char(sourceFolder)));
-            end
-            [plan,paths]=app.saveExecutionBatch( ...
-                plan,outputRoot,double(sourceBatch.batch_number)+1,sourceBatch);
-            app.ActiveRunPlan=plan;
-            app.ActiveRunFolder=paths.output_directory;
-            app.LastRun=struct([]);
-            app.EditableStateChanged=false;
-            app.PlanState="FROZEN";
-            app.refreshTrialTable(plan.manifest.trials);
-            app.updateStateDisplay();
-            app.setStatus(["Fresh execution batch ready:";app.ActiveRunFolder; ...
-                "Same experiment definition with a fresh randomized schedule."; ...
-                "Previous completed batch preserved at:";sourceFolder]);
+            paths=app.Controller.startNewBatch(outputRoot, ...
+                "Automatic",options.Automatic);
         end
 
         function value=startNewBatchEnabled(app)
-            %STARTNEWBATCHENABLED Whether the active completed batch can be rerun.
-            value=false;
-            if isempty(app.ActiveRunPlan) || strlength(app.ActiveRunFolder)==0 || ...
-                    app.PlanState=="RUNNING" || app.ControlsLocked
-                return
-            end
-            value=batch_is_complete(app.currentBatchTrials());
+            value=app.Controller.startNewBatchEnabled();
         end
 
         function paths=startNewRun(app,outputRoot)
             %STARTNEWRUN Freeze current editable state as the active run.
-            %   Editable changes never replace an active frozen run on their
-            %   own, so this is the operator's explicit way to finish with
-            %   one run and begin another. The previous run's frozen
-            %   artifacts stay on disk and remain resumable.
             arguments
                 app
                 outputRoot (1,1) string = ""
             end
-            previousFolder=app.ActiveRunFolder;
-            paths=app.freezeCurrentPlan(outputRoot);
-            if strlength(previousFolder)>0
-                app.setStatus(["Froze a new run and made it active:"; ...
-                    app.ActiveRunFolder; ...
-                    "The previous run remains on disk and can be continued "+ ...
-                    "with Resume run…:";previousFolder]);
-            end
-        end
-
-        function value=commandVoltageEnabled(app)
-            %COMMANDVOLTAGEENABLED Whether the mod488 default is in use.
-            %   Off in 2P mode: the Pockels command is protocol-owned.
-            value=app.ModulatorVoltage.Enable;
+            paths=app.Controller.startNewRun(outputRoot);
         end
 
         function run=runNext(app)
-            run=app.executeCurrentPlan(1);
+            run=app.Controller.runNext();
         end
 
         function run=runAll(app)
-            run=app.executeRepeatedBatches();
+            run=app.Controller.runAll();
         end
 
         function returnToEditing(app)
-            if app.PlanState=="RUNNING" || app.ControlsLocked
-                error("adaptive_optopatch:AcquisitionActive", ...
-                    "Return to editing is unavailable while an acquisition is active.");
-            end
-            app.ActiveRunPlan=struct([]);
-            app.ActiveRunFolder="";
-            app.LastRun=struct([]);
-            app.PlanState="EDITABLE";
-            app.EditableStateChanged=false;
-            app.refreshTrialTable(table);
-            app.updateStateDisplay();
-            app.setStatus("Returned to editing. Frozen run artifacts remain on disk.");
+            app.Controller.returnToEditing();
         end
 
         function value=returnToEditingEnabled(app)
-            value=~isempty(app.ActiveRunPlan) && ...
-                strlength(app.ActiveRunFolder)>0 && ...
-                app.PlanState~="RUNNING" && ~app.ControlsLocked;
+            value=app.Controller.returnToEditingEnabled();
         end
 
         function plan=resumeRun(app,folder)
@@ -424,54 +197,11 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 app
                 folder (1,1) string
             end
-            reference=load_required(folder,"reference_model.mat","reference");
-            targets=load_required(folder,"pattern_bundle.mat","targets");
-            manifest=load_required(folder,"trial_manifest.mat","manifest");
-            session=load_required(folder,"planning_session.mat","planning_session");
-            [~,resolvedProtocols]=load_frozen_protocol_archive( ...
-                fullfile(folder,"pulse_protocol.mat"));
-            definition=adaptive_optopatch.load_protocol( ...
-                fullfile(folder,"protocol_definition.mat"));
-            fovState=load_required(folder,"fov_state.mat","fov_state");
-            plan=struct("schema_version","1.0.0","built_at","frozen", ...
-                "reference",reference,"targets",targets, ...
-                "protocol_definition",definition,"protocol",definition, ...
-                "resolved_protocols",{resolvedProtocols}, ...
-                "fov_state",fovState,"manifest",manifest,"session",session, ...
-                "advisories",manifest_advisories(manifest));
-            plan.execution_batch=batch_identity(plan,folder);
-            app.ActiveRunPlan=plan;
-            app.ActiveRunFolder=folder;
-            app.EditableStateChanged=false;
-            app.PlanState="FROZEN";
-            app.updateStateDisplay();
-            app.refreshTrialTable(app.currentBatchTrials());
-            app.setStatus("Loaded frozen run for resume. Editable controls were not substituted into it.");
+            plan=app.Controller.resumeRun(folder);
         end
 
         function setPlanParameter(app,name,value)
-            name=lower(string(name));
-            mapping=struct( ...
-                "mode",app.Mode,"stimulation_mode",app.Mode, ...
-                "microns_per_pixel",app.MicronsPerPixel, ...
-                "spiral_radius_um",app.SpiralRadius, ...
-                "spiral_density_points_per_volt",app.SpiralDensity, ...
-                "orange_expansion_pixels",app.OrangeExpansion, ...
-                "blue_mask_adjustment_pixels",app.DmdErosion, ...
-                "dmd_erosion_pixels",app.DmdErosion, ...
-                "modulator_voltage",app.ModulatorVoltage, ...
-                "maximum_velocity",app.MaximumVelocity, ...
-                "maximum_acceleration",app.MaximumAcceleration, ...
-                "allow_calibration_extrapolation",app.AllowCalibrationExtrapolation, ...
-                "allow_camera_rate_override",app.AllowCameraRateOverride);
-            key=char(name);
-            if ~isfield(mapping,key)
-                error("adaptive_optopatch:UnknownPlanParameter", ...
-                    "Unknown editable plan parameter: %s",name);
-            end
-            mapping.(key).Value=value;
-            if ismember(name,["mode","stimulation_mode"]), app.modeChanged();
-            else, app.planChanged(); end
+            app.Controller.setPlanParameter(name,value);
         end
 
         function setReferenceData(app,image,info,roiPositions)
@@ -481,27 +211,18 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 info (1,1) struct
                 roiPositions cell = {}
             end
-            app.ReferenceImage=image;
-            app.LoadInfo=info;
-            app.CurrentFovState=struct([]);
-            app.CellIds=strings(0,1);
-            app.NextCellIndex=1;
-            imagesc(app.Axes,image); axis(app.Axes,"image"); app.Axes.YDir="reverse";
-            colormap(app.Axes,"gray"); app.applyContrast();
-            app.restorePolygons(roiPositions);
-            app.planChanged();
+            app.Controller.setReferenceData(image,info,roiPositions);
         end
     end
 
     methods (Access=protected)
-        function protocols=previewResolvedProtocols(app,~)
-            % The unified app resolves an explicit protocol, so its target
-            % preview shows the resolved per-event Blue adjustments, the
-            % resolved Orange expansion, and the resolved 2P spiral geometry
-            % rather than the bundle's default values.
-            protocols={};
-            if isempty(app.PulseProtocol), return; end
-            protocols=app.buildCurrentPlan().resolved_protocols;
+        function renderState(app,state)
+            renderState@adaptive_optopatch.ReferencePreparationApp(app,state);
+            if ~app.UnifiedReady, return; end
+            app.refreshProtocolDisplay(state);
+            app.refreshRunControls(state);
+            app.refreshModeVisibility(state);
+            app.refreshTrialTable();
         end
 
         function value=showPlanningBundleControl(~)
@@ -512,35 +233,6 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             value=false;
         end
 
-        function value=currentPulseDurationMs(app)
-            value=5;
-            if isempty(app.PulseProtocol), return; end
-            protocol=adaptive_optopatch.normalize_protocol(app.PulseProtocol);
-            durations=[];
-            for acquisition=protocol.acquisitions
-                selected=~acquisition.events.is_null & ...
-                    isfinite(acquisition.events.duration_s);
-                durations=[durations;acquisition.events.duration_s(selected)]; %#ok<AGROW>
-            end
-            if ~isempty(durations), value=1000*durations(1); end
-        end
-
-        function planChanged(app)
-            % Marks the editable configuration changed. A frozen run (or one
-            % loaded via resumeRun) is authoritative once it exists and is
-            % never mutated or discarded here: editable edits made afterward
-            % apply only to a future run, started explicitly via
-            % freezeCurrentPlan. "Run next"/"Run all" continue the active
-            % frozen run regardless of later editable changes.
-            if ~app.UnifiedReady || app.PlanState=="RUNNING", return; end
-            app.EditableStateChanged=true;
-            if strlength(app.ActiveRunFolder)==0
-                app.ActiveRunPlan=struct([]);
-                app.PlanState="EDITABLE";
-            end
-            app.updateStateDisplay();
-        end
-
         function planningSessionRestored(app,session)
             if ~isfield(session,"pulse_protocol_path") || ...
                     strlength(string(session.pulse_protocol_path))==0
@@ -548,22 +240,18 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             end
             path=string(session.pulse_protocol_path);
             if isfile(path)
-                app.loadPulseProtocol(path);
+                app.Controller.loadProtocol(path);
             else
-                app.PulseProtocol=struct([]);
-                app.PulseProtocolPath=path;
-                app.PulseProtocolSummary=struct([]);
-                app.updateProtocolDisplay();
-                app.setStatus("Protocol file not found — select a pulse protocol."+ ...
-                    newline+path);
+                app.Controller.forgetMissingProtocol(path);
             end
         end
 
         function savePlanningBundle(app)
             try
-                plan=app.buildCurrentPlan();
+                plan=app.Controller.buildPlan();
                 paths=adaptive_optopatch.save_bundle( ...
-                    app.LoadInfo.snapshot_directory,plan.reference,plan.targets, ...
+                    app.Controller.ReferenceInfo.snapshot_directory, ...
+                    plan.reference,plan.targets, ...
                     plan.manifest,"CreateSubfolder",true,"SessionState",plan.session);
                 adaptive_optopatch.save_protocol( ...
                     fullfile(paths.output_directory,"pulse_protocol.mat"),plan.protocol);
@@ -575,56 +263,6 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
     end
 
     methods (Access=private)
-        function [plan,paths]=saveExecutionBatch( ...
-                app,plan,outputRoot,batchNumber,sourceBatch)
-            paths=adaptive_optopatch.save_bundle(outputRoot, ...
-                plan.reference,plan.targets,plan.manifest, ...
-                "CreateSubfolder",true, ...
-                "SubfolderPrefix","adaptive_optopatch_run", ...
-                "SessionState",plan.session,"FovState",plan.fov_state);
-            identity=make_batch_identity( ...
-                paths.output_directory,batchNumber,sourceBatch);
-            plan.manifest=attach_batch_identity(plan.manifest,identity);
-            plan.session.execution_batch=identity;
-            plan.execution_batch=identity;
-            manifest=plan.manifest; %#ok<NASGU>
-            save(paths.manifest,"manifest");
-            planning_session=plan.session; %#ok<NASGU>
-            save(paths.session,"planning_session","-v7.3");
-            paths.protocol=fullfile(paths.output_directory,"pulse_protocol.mat");
-            save_frozen_protocol_archive(paths.protocol,plan.resolved_protocols, ...
-                plan.manifest.trials.trial_id);
-            paths.protocol_definition=fullfile(paths.output_directory, ...
-                "protocol_definition.mat");
-            adaptive_optopatch.save_protocol(paths.protocol_definition, ...
-                plan.protocol_definition);
-        end
-
-        function trials=currentBatchTrials(app)
-            trials=app.ActiveRunPlan.manifest.trials;
-            checkpoint=batch_checkpoint_path(app.ActiveRunFolder,trials);
-            if strlength(checkpoint)==0 || ~isfile(checkpoint), return; end
-            saved=load(checkpoint,"run");
-            if isfield(saved,"run") && isfield(saved.run,"trials") && ...
-                    height(saved.run.trials)==height(trials)
-                trials=saved.run.trials;
-            end
-        end
-
-        function updateBatchControls(app)
-            if isempty(app.StartNewBatchButton) || ...
-                    ~isvalid(app.StartNewBatchButton), return; end
-            complete=app.startNewBatchEnabled();
-            app.StartNewBatchButton.Enable=matlab.lang.OnOffSwitchState(complete);
-            app.ReturnToEditingButton.Enable= ...
-                matlab.lang.OnOffSwitchState(app.returnToEditingEnabled());
-            if ~isempty(app.ActiveRunPlan) && strlength(app.ActiveRunFolder)>0
-                runnable=~complete && app.PlanState~="RUNNING" && ~app.ControlsLocked;
-                app.RunNextButton.Enable=matlab.lang.OnOffSwitchState(runnable);
-                app.RunAllButton.Enable=matlab.lang.OnOffSwitchState(runnable);
-            end
-        end
-
         function buildUnifiedUI(app)
             app.Figure.Name="Adaptive Optopatch";
             if isa(app.LuminosApp,"adaptive_optopatch.testing.SimulatedLuminosApp")
@@ -648,7 +286,7 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             planningControls=app.Mode.Parent;
             heights=planningControls.RowHeight;
             heights(:)=repmat({21},size(heights));
-            heights(13:19)=repmat({0},1,7);
+            heights(13:18)=repmat({0},1,6);
             planningControls.RowHeight=heights;
             planningControls.RowSpacing=2;
             planningControls.Padding=[4 4 4 4];
@@ -656,7 +294,7 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 app.DarkIntervalMin,app.DarkIntervalMax,app.PreDelay.Parent};
             for k=1:numel(hiddenControls), hiddenControls{k}.Visible="off"; end
             hiddenLabels=["Screen repeats","Pulses / neuron","Pulse duration (ms)", ...
-                "Dark gap min (ms)","Dark gap max (ms)","Pulse command (V)", ...
+                "Dark gap min (ms)","Dark gap max (ms)", ...
                 "Pre / post delay (ms)"];
             for label=hiddenLabels
                 object=findall(app.Figure,"Text",label);
@@ -687,39 +325,20 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             app.ProtocolSummaryArea=uitextarea(controls,"Editable","off", ...
                 "Value","Load a validated pulse_protocol.mat generated by MATLAB.");
             app.ProtocolSummaryArea.Layout.Row=2; app.ProtocolSummaryArea.Layout.Column=[1 8];
-            app.CommandVoltageLabel=uilabel(controls,"Text","mod488 (V)", ...
-                "HorizontalAlignment","right");
-            app.CommandVoltageLabel.Layout.Row=3;
-            app.CommandVoltageLabel.Layout.Column=1;
-            commandGrid=uigridlayout(controls,[1 1]); commandGrid.Padding=0;
-            commandGrid.Layout.Row=3; commandGrid.Layout.Column=2;
-            % Reparenting carries the field's coordinates in the planning
-            % grid with it, which grew this wrapper to that grid's shape and
-            % left the control with zero height -- present, editable, and
-            % invisible. Place it explicitly and pin the wrapper to one cell.
-            app.ModulatorVoltage.Parent=commandGrid;
-            app.ModulatorVoltage.Layout.Row=1;
-            app.ModulatorVoltage.Layout.Column=1;
-            commandGrid.RowHeight={"1x"}; commandGrid.ColumnWidth={"1x"};
-            % Who owns what is a tooltip, not permanent panel space. Neither
-            % the 2P Pockels command nor the OBIS setpoint is settable here,
-            % and the disabled control already says so in 2P mode.
-            app.ModulatorVoltage.Tooltip=["1P mod488 default (V). The 2P " ...
-                "Pockels command comes from the protocol, and the 488 nm " ...
-                "OBIS power from Luminos/React."];
-
             velocityLabel=uilabel(controls,"Text","Max velocity");
-            velocityLabel.Layout.Row=3; velocityLabel.Layout.Column=3;
+            velocityLabel.Layout.Row=3; velocityLabel.Layout.Column=1;
             app.MaximumVelocity=uieditfield(controls,"numeric","Value",1000,"Limits",[eps Inf]);
-            app.MaximumVelocity.Layout.Row=3; app.MaximumVelocity.Layout.Column=4;
+            app.MaximumVelocity.Layout.Row=3; app.MaximumVelocity.Layout.Column=2;
             accelerationLabel=uilabel(controls,"Text","Max acceleration");
-            accelerationLabel.Layout.Row=3; accelerationLabel.Layout.Column=5;
+            accelerationLabel.Layout.Row=3; accelerationLabel.Layout.Column=3;
             app.MaximumAcceleration=uieditfield(controls,"numeric","Value",6e6,"Limits",[eps Inf]);
-            app.MaximumAcceleration.Layout.Row=3; app.MaximumAcceleration.Layout.Column=6;
+            app.MaximumAcceleration.Layout.Row=3; app.MaximumAcceleration.Layout.Column=4;
             app.AllowCalibrationExtrapolation=uicheckbox(controls,"Text","Allow cal extrapolation");
-            app.AllowCalibrationExtrapolation.Layout.Row=3; app.AllowCalibrationExtrapolation.Layout.Column=7;
+            app.AllowCalibrationExtrapolation.Layout.Row=3;
+            app.AllowCalibrationExtrapolation.Layout.Column=[5 6];
             app.AllowCameraRateOverride=uicheckbox(controls,"Text","Camera-rate override");
-            app.AllowCameraRateOverride.Layout.Row=3; app.AllowCameraRateOverride.Layout.Column=8;
+            app.AllowCameraRateOverride.Layout.Row=3;
+            app.AllowCameraRateOverride.Layout.Column=[7 8];
 
             previewButton=uibutton(controls,"Text","Preview", ...
                 "ButtonPushedFcn",@(~,~)app.invoke(@()app.previewCurrentPlan()));
@@ -778,207 +397,28 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             app.TwoPhotonControls={velocityLabel,app.MaximumVelocity, ...
                 accelerationLabel,app.MaximumAcceleration, ...
                 app.AllowCalibrationExtrapolation,app.AllowCameraRateOverride};
-            watched=[app.TwoPhotonControls {app.ModulatorVoltage}];
-            for k=1:numel(watched)
-                if isprop(watched{k},"ValueChangedFcn")
-                    watched{k}.ValueChangedFcn=@(~,~)app.planChanged();
-                end
-            end
-            app.Mode.ValueChangedFcn=@(~,~)app.modeChanged();
-            app.modeChanged();
+            app.bindRunControls();
         end
 
-        function modeChanged(app)
-            is1p=string(app.Mode.Value)=="1p_dmd";
-            set_visible(app.OnePhotonControls,is1p);
-            set_visible(app.TwoPhotonControls,~is1p);
-            app.DmdErosion.Enable=matlab.lang.OnOffSwitchState(is1p);
-            app.SpiralRadius.Enable=matlab.lang.OnOffSwitchState(~is1p);
-            app.SpiralDensity.Enable=matlab.lang.OnOffSwitchState(~is1p);
-            app.updateCommandVoltageControl(is1p);
-            app.planChanged();
-        end
-
-        function updateCommandVoltageControl(app,is1p)
-            % This field is the 1P mod488 default only. A 2P Pockels
-            % command comes from the protocol artifact and can never be
-            % supplied here, so the control is disabled rather than left
-            % looking as though it still applies.
-            if isempty(app.CommandVoltageLabel) || ...
-                    ~isvalid(app.CommandVoltageLabel), return; end
-            app.ModulatorVoltage.Enable=matlab.lang.OnOffSwitchState(is1p);
-        end
-
-        function updateStateDisplay(app)
-            if isempty(app.StateLabel) || ~isvalid(app.StateLabel), return; end
-            switch app.PlanState
-                case "FROZEN"
-                    if app.startNewBatchEnabled()
-                        app.StateLabel.Text="Frozen batch completed";
-                    else
-                        app.StateLabel.Text="Frozen run ready / resumable";
-                    end
-                    app.StateLabel.FontColor=[0 0.5 0];
-                case "RUNNING"
-                    app.StateLabel.Text="● Running frozen plan"; app.StateLabel.FontColor=[0 0.3 0.8];
-                otherwise
-                    app.StateLabel.Text="Editable — current settings run";
-                    app.StateLabel.FontColor=[0 0.35 0.65];
-            end
-            app.updateBatchControls();
-        end
-
-        function run=executeRepeatedBatches(app)
-            if isempty(app.ActiveRunPlan) || strlength(app.ActiveRunFolder)==0
-                app.freezeCurrentPlan();
-            end
-            batchCount=app.RepeatBatchCount.Value;
-            app.PlanState="RUNNING"; app.StopRequested=false;
-            app.setControlsLocked(true); app.updateStateDisplay();
-            cleanup=onCleanup(@()app.finishRunning()); %#ok<NASGU>
-            for batch=1:batchCount
-                app.setStatus(sprintf("Running batch %d of %d",batch,batchCount));
-                run=app.executeCurrentPlan(0,"ManageRunState",false);
-                if app.StopRequested || ~batch_is_complete(run.trials)
-                    return
-                end
-                app.setStatus(sprintf("Completed batch %d of %d",batch,batchCount));
-                if batch<batchCount
-                    app.startNewBatch("","Automatic",true);
-                    app.PlanState="RUNNING";
-                end
+        function bindRunControls(app)
+            %BINDRUNCONTROLS Route run-panel widget edits into the controller.
+            watched={app.MaximumVelocity,"maximum_velocity_v_per_s"; ...
+                app.MaximumAcceleration,"maximum_acceleration_v_per_s2"; ...
+                app.AllowCalibrationExtrapolation,"allow_calibration_extrapolation"; ...
+                app.AllowCameraRateOverride,"allow_camera_rate_override"; ...
+                app.RepeatBatchCount,"repeat_batch_count"};
+            for k=1:size(watched,1)
+                name=watched{k,2};
+                watched{k,1}.ValueChangedFcn= ...
+                    @(source,~)app.planControlEdited(name,source.Value);
             end
         end
 
-        function run=executeCurrentPlan(app,count,options)
-            % Continue an existing active frozen run whenever one exists.
-            % Editable changes since freezing (app.EditableStateChanged) do
-            % not by themselves trigger a new freeze here — only the absence
-            % of an active frozen run does. A new run is created only via an
-            % explicit freezeCurrentPlan call.
-            arguments
-                app
-                count (1,1) double
-                options.ManageRunState (1,1) logical = true
-            end
-            if isempty(app.ActiveRunPlan) || strlength(app.ActiveRunFolder)==0
-                app.freezeCurrentPlan();
-            end
-            plan=app.ActiveRunPlan;
-            if options.ManageRunState
-                app.PlanState="RUNNING"; app.StopRequested=false;
-                app.setControlsLocked(true); app.updateStateDisplay();
-                cleanup=onCleanup(@()app.finishRunning()); %#ok<NASGU>
-            end
-            simulation=isa(app.LuminosApp, ...
-                "adaptive_optopatch.testing.SimulatedLuminosApp");
-            outputRoot="";
-            if simulation, outputRoot=fullfile(app.ActiveRunFolder,"simulation_runs"); end
-            mode=unique(string(plan.manifest.trials.stimulation_mode));
-            frozenControls=app.frozenRunControls(plan);
-            if isequal(mode,"1p_dmd")
-                run=adaptive_optopatch.run_1p_manifest( ...
-                    plan.manifest,plan.targets,app.LuminosApp, ...
-                    "OutputDirectory",app.ActiveRunFolder,"OutputRoot",outputRoot, ...
-                    "Resume",true,"StopAfterTrial",count, ...
-                    "ConfirmLiveOutput",true, ...
-                    "LaserPowerW",frozenControls.laser_power_w, ...
-                    "StopRequestedFcn",@()app.StopRequested);
-            else
-                if ~isfield(plan.reference,"scanner") || ...
-                        ~isfield(plan.reference.scanner,"tform")
-                    error("adaptive_optopatch:FrozenScannerCalibrationMissing", ...
-                        "The frozen reference model does not contain a scanner " + ...
-                        "targeting calibration to execute this run with.");
-                end
-                run=adaptive_optopatch.run_2p_manifest( ...
-                    plan.manifest,plan.targets,app.LuminosApp, ...
-                    "ReleaseLevel","standard", ...
-                    "OutputDirectory",app.ActiveRunFolder,"OutputRoot",outputRoot, ...
-                    "Resume",true,"StopAfterTrial",count, ...
-                    "ConfirmTrajectoryTest",true, ...
-                    "ConfirmLiveOutput",true, ...
-                    "MaximumVelocityVPerS",frozenControls.maximum_velocity_v_per_s, ...
-                    "MaximumAccelerationVPerS2",frozenControls.maximum_acceleration_v_per_s2, ...
-                    "AllowCalibrationExtrapolation",frozenControls.allow_calibration_extrapolation, ...
-                    "AllowCameraRateOverride",frozenControls.allow_camera_rate_override, ...
-                    "StopRequestedFcn",@()app.StopRequested, ...
-                    "ScannerCalibration",plan.reference.scanner);
-            end
-            app.LastRun=run;
-            app.refreshTrialTable(run.trials);
-            app.setStatus("Run stopped normally. Frozen plan: "+app.ActiveRunFolder);
-        end
-
-        function finishRunning(app)
-            app.setControlsLocked(false);
-            app.StopRequested=false;
-            app.StopButton.Text="Stop after current";
-            if app.PlanState=="RUNNING", app.PlanState="FROZEN"; end
-            app.updateStateDisplay();
-        end
-
-        function setControlsLocked(app,state)
-            app.ControlsLocked=state;
-            if state
-                objects=findall(app.Figure,"-property","Enable");
-                app.LockSnapshot=cell(numel(objects),2);
-                for k=1:numel(objects)
-                    app.LockSnapshot{k,1}=objects(k);
-                    app.LockSnapshot{k,2}=objects(k).Enable;
-                    objects(k).Enable="off";
-                end
-                app.StopButton.Enable="on";
-                for k=1:numel(app.RoiObjects)
-                    if isvalid(app.RoiObjects{k}) && isprop(app.RoiObjects{k},"InteractionsAllowed")
-                        app.RoiObjects{k}.InteractionsAllowed="none";
-                    end
-                end
-            else
-                for k=1:size(app.LockSnapshot,1)
-                    object=app.LockSnapshot{k,1};
-                    if isvalid(object), object.Enable=app.LockSnapshot{k,2}; end
-                end
-                app.LockSnapshot={}; app.StopButton.Enable="off";
-                for k=1:numel(app.RoiObjects)
-                    if isvalid(app.RoiObjects{k}) && isprop(app.RoiObjects{k},"InteractionsAllowed")
-                        app.RoiObjects{k}.InteractionsAllowed="all";
-                    end
-                end
-                app.modeChangedWithoutDirty();
-            end
-            drawnow;
-        end
-
-        function modeChangedWithoutDirty(app)
-            is1p=string(app.Mode.Value)=="1p_dmd";
-            set_visible(app.OnePhotonControls,is1p);
-            set_visible(app.TwoPhotonControls,~is1p);
-            app.updateCommandVoltageControl(is1p);
-        end
-
-        function requestStop(app)
-            app.StopRequested=true; app.StopButton.Enable="off";
-            app.StopButton.Text="Stop requested";
-        end
-
-        function chooseResume(app)
-            folder=uigetdir(app.defaultRunRoot(),"Select a frozen Adaptive Optopatch run");
-            if ~isequal(folder,0), app.invoke(@()app.resumeRun(string(folder))); end
-        end
-
-        function chooseProtocol(app)
-            [file,folder]=uigetfile({'*.mat','Pulse protocol MAT (*.mat)'}, ...
-                "Select a validated pulse protocol",pwd);
-            if isequal(file,0), return; end
-            app.invoke(@()app.loadPulseProtocol(string(fullfile(folder,file))));
-        end
-
-        function updateProtocolDisplay(app)
+        function refreshProtocolDisplay(app,state)
             if isempty(app.ProtocolPathField) || ~isvalid(app.ProtocolPathField), return; end
-            if isempty(app.PulseProtocol)
-                if strlength(app.PulseProtocolPath)>0
-                    app.ProtocolPathField.Value=char(app.PulseProtocolPath);
+            if ~state.protocol.loaded
+                if strlength(state.protocol.path)>0
+                    app.ProtocolPathField.Value=char(state.protocol.path);
                     app.ProtocolSummaryArea.Value="Protocol file not found — select a pulse protocol.";
                 else
                     app.ProtocolPathField.Value="No pulse protocol loaded";
@@ -987,12 +427,12 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 end
                 return
             end
-            if strlength(app.PulseProtocolPath)>0
-                app.ProtocolPathField.Value=char(app.PulseProtocolPath);
+            if strlength(state.protocol.path)>0
+                app.ProtocolPathField.Value=char(state.protocol.path);
             else
                 app.ProtocolPathField.Value="In-memory validated protocol";
             end
-            s=app.PulseProtocolSummary;
+            s=state.protocol.summary;
             app.ProtocolSummaryArea.Value=sprintf( ...
                 ['%s — %s | target policy: %s | %d explicit acquisition(s) | ' ...
                  '%d events (%d light), %d conditions | order: %s | seed %g'], ...
@@ -1001,15 +441,61 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 s.condition_count,s.event_order,s.random_seed);
         end
 
-        function invoke(app,operation)
-            try
-                operation();
-            catch exception
-                app.showError(exception);
+        function refreshRunControls(app,state)
+            if isempty(app.StateLabel) || ~isvalid(app.StateLabel), return; end
+            parameters=state.plan_parameters;
+            app.MaximumVelocity.Value=parameters.maximum_velocity_v_per_s;
+            app.MaximumAcceleration.Value=parameters.maximum_acceleration_v_per_s2;
+            app.AllowCalibrationExtrapolation.Value= ...
+                parameters.allow_calibration_extrapolation;
+            app.AllowCameraRateOverride.Value=parameters.allow_camera_rate_override;
+            app.RepeatBatchCount.Value=parameters.repeat_batch_count;
+            switch state.plan_state
+                case "FROZEN"
+                    if state.legal_actions.start_new_batch
+                        app.StateLabel.Text="Frozen batch completed";
+                    else
+                        app.StateLabel.Text="Frozen run ready / resumable";
+                    end
+                    app.StateLabel.FontColor=[0 0.5 0];
+                case "RUNNING"
+                    app.StateLabel.Text="● Running frozen plan";
+                    app.StateLabel.FontColor=[0 0.3 0.8];
+                otherwise
+                    app.StateLabel.Text="Editable — current settings run";
+                    app.StateLabel.FontColor=[0 0.35 0.65];
             end
+            % Enabled state is derived from the backend lifecycle, never the
+            % other way round.
+            app.setControlsLocked(state.plan_state=="RUNNING");
+            app.StartNewBatchButton.Enable= ...
+                matlab.lang.OnOffSwitchState(state.legal_actions.start_new_batch);
+            app.ReturnToEditingButton.Enable= ...
+                matlab.lang.OnOffSwitchState(state.legal_actions.return_to_editing);
+            if state.active_run.frozen
+                runnable=~state.legal_actions.start_new_batch && ...
+                    state.plan_state~="RUNNING";
+                app.RunNextButton.Enable=matlab.lang.OnOffSwitchState(runnable);
+                app.RunAllButton.Enable=matlab.lang.OnOffSwitchState(runnable);
+            end
+            app.StopButton.Enable=matlab.lang.OnOffSwitchState( ...
+                state.legal_actions.stop_after_current);
+            app.StopButton.Text=ternary(state.stop_after_current_requested, ...
+                'Stop requested','Stop after current');
         end
 
-        function refreshTrialTable(app,trials)
+        function refreshModeVisibility(app,state)
+            is1p=state.plan_parameters.stimulation_mode=="1p_dmd";
+            set_visible(app.OnePhotonControls,is1p);
+            set_visible(app.TwoPhotonControls,~is1p);
+            if app.WidgetsLocked, return; end
+            app.DmdErosion.Enable=matlab.lang.OnOffSwitchState(is1p);
+            app.SpiralRadius.Enable=matlab.lang.OnOffSwitchState(~is1p);
+            app.SpiralDensity.Enable=matlab.lang.OnOffSwitchState(~is1p);
+        end
+
+        function refreshTrialTable(app)
+            trials=app.displayTrials();
             n=height(trials); data=cell(n,7);
             for k=1:n
                 resolved=trials.pulse_schedule{k};
@@ -1023,21 +509,90 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             app.TrialTable.Data=data;
         end
 
-        function root=defaultRunRoot(app)
-            root=app.RunRoot;
-            if strlength(root)==0 && isfield(app.LoadInfo,"snapshot_directory")
-                root=string(app.LoadInfo.snapshot_directory);
+        function trials=displayTrials(app)
+            %DISPLAYTRIALS Trial rows the table shows for the active frozen run.
+            trials=table;
+            if isempty(app.Controller.ActiveRunPlan) || ...
+                    strlength(app.Controller.ActiveRunFolder)==0
+                return
             end
-            if strlength(root)==0, root=string(pwd); end
+            lastRun=app.Controller.LastRun;
+            frozen=app.Controller.ActiveRunPlan.manifest.trials;
+            if ~isempty(lastRun) && isfield(lastRun,"trials") && ...
+                    height(lastRun.trials)==height(frozen)
+                trials=lastRun.trials;
+                return
+            end
+            trials=app.Controller.currentBatchTrials();
+        end
+
+        function setControlsLocked(app,state)
+            if state==app.WidgetsLocked, return; end
+            app.WidgetsLocked=state;
+            if state
+                objects=findall(app.Figure,"-property","Enable");
+                app.LockSnapshot=cell(numel(objects),2);
+                for k=1:numel(objects)
+                    app.LockSnapshot{k,1}=objects(k);
+                    app.LockSnapshot{k,2}=objects(k).Enable;
+                    objects(k).Enable="off";
+                end
+                app.StopButton.Enable="on";
+                app.setRoiInteractions("none");
+            else
+                for k=1:size(app.LockSnapshot,1)
+                    object=app.LockSnapshot{k,1};
+                    if isvalid(object), object.Enable=app.LockSnapshot{k,2}; end
+                end
+                app.LockSnapshot={}; app.StopButton.Enable="off";
+                app.setRoiInteractions("all");
+            end
+            drawnow;
+        end
+
+        function setRoiInteractions(app,mode)
+            for k=1:numel(app.RoiObjects)
+                if isvalid(app.RoiObjects{k}) && ...
+                        isprop(app.RoiObjects{k},"InteractionsAllowed")
+                    app.RoiObjects{k}.InteractionsAllowed=mode;
+                end
+            end
+        end
+
+        function requestStop(app)
+            app.Controller.stopAfterCurrent();
+        end
+
+        function chooseResume(app)
+            folder=uigetdir(app.Controller.defaultRunRoot(), ...
+                "Select a frozen Adaptive Optopatch run");
+            if ~isequal(folder,0), app.invoke(@()app.resumeRun(string(folder))); end
+        end
+
+        function chooseProtocol(app)
+            [file,folder]=uigetfile({'*.mat','Pulse protocol MAT (*.mat)'}, ...
+                "Select a validated pulse protocol",pwd);
+            if isequal(file,0), return; end
+            app.invoke(@()app.loadPulseProtocol(string(fullfile(folder,file))));
+        end
+
+        function invoke(app,operation)
+            try
+                operation();
+            catch exception
+                app.showError(exception);
+            end
         end
 
         function chooseRampReview(app)
-            if isempty(app.PulseProtocol) || ...
-                    string(app.PulseProtocol.protocol_type)~="single_cell_blue_ramp"
+            protocol=app.Controller.Protocol;
+            if isempty(protocol) || ...
+                    string(protocol.protocol_type)~="single_cell_blue_ramp"
                 error("adaptive_optopatch:RampProtocolRequired", ...
                     "Load the single-cell Blue ramp protocol used for the acquisition first.");
             end
-            folder=uigetdir(app.defaultRunRoot(),"Select completed ramp acquisition");
+            folder=uigetdir(app.Controller.defaultRunRoot(), ...
+                "Select completed ramp acquisition");
             if isequal(folder,0), return; end
             saved=load(fullfile(folder,"output_data.mat"), ...
                 "adaptive_optopatch_record");
@@ -1048,44 +603,14 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             end
             adaptive_optopatch.RampReviewApp(string(folder), ...
                 saved.adaptive_optopatch_record.pulse_schedule, ...
-                app.currentFovState(),"DecisionAppliedFcn",@(state)app.acceptRampReview(state));
+                app.Controller.currentFovState(), ...
+                "DecisionAppliedFcn",@(state)app.acceptRampReview(state));
         end
 
         function acceptRampReview(app,state)
-            app.CurrentFovState=state;
-            app.updateQc();
-            app.setStatus("Stored ramp calibration decision in the active FOV. Save the FOV to persist it.");
-        end
-
-        function protocol=protocolWithEffectiveVoltage(~,protocol,isNull)
-            protocol=adaptive_optopatch.normalize_protocol(protocol);
-            if isNull, protocol.events.command_voltage_v(:)=0; end
-        end
-
-        function value=captureRunControls(app)
-            value=struct("active_obis_power_w",app.currentObisPowerW(), ...
-                "maximum_velocity_v_per_s",app.MaximumVelocity.Value, ...
-                "maximum_acceleration_v_per_s2",app.MaximumAcceleration.Value, ...
-                "allow_calibration_extrapolation",app.AllowCalibrationExtrapolation.Value, ...
-                "allow_camera_rate_override",app.AllowCameraRateOverride.Value);
-        end
-
-        function value=plannedObisPowerW(app)
-            value=app.currentObisPowerW();
-        end
-
-        function controls=frozenRunControls(~,plan)
-            saved=plan.session.run_controls;
-            controls=struct;
-            % Luminos/React owns the OBIS setpoint. NaN tells the runner to
-            % preserve it; the observed value remains archived in the plan.
-            controls.laser_power_w=NaN;
-            % Command voltages are resolved per event and frozen into the
-            % manifest; there is no run-level voltage control to restore.
-            controls.maximum_velocity_v_per_s=saved.maximum_velocity_v_per_s;
-            controls.maximum_acceleration_v_per_s2=saved.maximum_acceleration_v_per_s2;
-            controls.allow_calibration_extrapolation=saved.allow_calibration_extrapolation;
-            controls.allow_camera_rate_override=saved.allow_camera_rate_override;
+            app.Controller.applyCellState(state);
+            app.setStatus(["Stored ramp calibration decision in the active FOV. " ...
+                "Save the FOV to persist it."]);
         end
     end
 end
@@ -1094,214 +619,8 @@ function set_visible(controls,state)
 for k=1:numel(controls), controls{k}.Visible=matlab.lang.OnOffSwitchState(state); end
 end
 
-function preflight_camera_frames(cameras,durationS,allowOverride)
-original=arrayfun(@(camera)double(camera.frames_requested),cameras);
-cleanup=onCleanup(@()restore_camera_frames(cameras,original));
-adaptive_optopatch.set_camera_frames_for_duration(cameras,durationS, ...
-    "AllowRateLimitOverride",allowOverride);
-end
-
-function restore_camera_frames(cameras,frames)
-for k=1:numel(cameras), cameras(k).frames_requested=frames(k); end
-end
-
-function value=load_required(folder,filename,variable)
-path=fullfile(folder,filename);
-if ~isfile(path)
-    error("adaptive_optopatch:IncompleteFrozenRun", ...
-        "Frozen run is missing %s.",filename);
-end
-saved=load(path,variable);
-if ~isfield(saved,variable)
-    error("adaptive_optopatch:IncompleteFrozenRun", ...
-        "%s does not contain %s.",filename,variable);
-end
-value=saved.(variable);
-end
-
-function value=manifest_advisories(manifest)
-value=struct([]);
-if isfield(manifest,"advisories"), value=manifest.advisories; end
-end
-
-function identity=make_batch_identity(folder,batchNumber,source)
-[~,batchId]=fileparts(char(folder));
-if isempty(source)
-    frozenDefinitionId=string(batchId);
-    frozenDefinitionDirectory=string(folder);
-    rerunOfBatchId="";
-    rerunOfBatchDirectory="";
-else
-    frozenDefinitionId=string(source.frozen_definition_id);
-    frozenDefinitionDirectory=string(source.frozen_definition_directory);
-    rerunOfBatchId=string(source.batch_id);
-    rerunOfBatchDirectory=string(source.batch_directory);
-end
-identity=struct("schema_version","1.0.0", ...
-    "batch_id",string(batchId),"batch_number",double(batchNumber), ...
-    "batch_directory",string(folder), ...
-    "frozen_definition_id",frozenDefinitionId, ...
-    "frozen_definition_directory",frozenDefinitionDirectory, ...
-    "rerun_of_batch_id",rerunOfBatchId, ...
-    "rerun_of_batch_directory",rerunOfBatchDirectory, ...
-    "created_at",string(datetime("now","TimeZone","local")), ...
-    "randomized_schedule_reused",false);
-end
-
-function identity=batch_identity(plan,folder)
-if isfield(plan,"execution_batch") && ~isempty(plan.execution_batch)
-    identity=plan.execution_batch;
-elseif isfield(plan,"manifest") && isfield(plan.manifest,"execution_batch")
-    identity=plan.manifest.execution_batch;
-elseif isfield(plan,"session") && isfield(plan.session,"execution_batch")
-    identity=plan.session.execution_batch;
-else
-    % Compatibility for frozen runs created before execution-batch metadata.
-    identity=make_batch_identity(folder,1,struct([]));
-end
-end
-
-function manifest=attach_batch_identity(manifest,identity)
-manifest.execution_batch=identity;
-n=height(manifest.trials);
-manifest.trials.batch_id=repmat(identity.batch_id,n,1);
-manifest.trials.batch_number=repmat(identity.batch_number,n,1);
-manifest.trials.frozen_definition_id= ...
-    repmat(identity.frozen_definition_id,n,1);
-manifest.trials.rerun_of_batch_id=repmat(identity.rerun_of_batch_id,n,1);
-end
-
-function manifest=reset_execution_state(manifest)
-n=height(manifest.trials);
-manifest.trials.acquisition_status(:)="planned";
-for name=["experiment_directory","analysis_status","error_message"]
-    if ismember(name,string(manifest.trials.Properties.VariableNames))
-        manifest.trials.(name)=repmat("",n,1);
-    end
-end
-for name=["preflight_report","target_configuration","orange_configuration", ...
-        "settings_snapshot","waveform_summary","executed_pulse_schedule"]
-    if ismember(name,string(manifest.trials.Properties.VariableNames))
-        manifest.trials.(name)=cell(n,1);
-    end
-end
-end
-
-function plan=reresolve_batch_schedule(plan)
-mode=string(plan.session.parameters.stimulation_mode);
-defaults=frozen_gui_defaults(plan);
-resolved=adaptive_optopatch.resolve_protocol(plan.protocol_definition, ...
-    plan.fov_state,plan.targets,defaults,"Mode",mode, ...
-    "FreshRandomization",true);
-if numel(resolved)~=height(plan.manifest.trials)
-    error("adaptive_optopatch:FrozenPlanMismatch", ...
-        "Re-resolving the frozen definition changed the acquisition count.");
-end
-plan.resolved_protocols=resolved;
-for k=1:numel(resolved)
-    schedule=resolved{k};
-    events=schedule.events;
-    used=unique(events.target_cell_id(~events.is_null),"stable");
-    if isscalar(used)
-        plan.manifest.trials.target_cell_id(k)=used;
-        plan.manifest.trials.target_index(k)= ...
-            events.target_index(find(~events.is_null,1));
-    else
-        plan.manifest.trials.target_cell_id(k)="multiple";
-        plan.manifest.trials.target_index(k)=NaN;
-    end
-    plan.manifest.trials.pulse_schedule{k}=schedule;
-    plan.manifest.trials.acquisition_duration_s(k)= ...
-        schedule.acquisition_duration_s;
-end
-end
-
-function defaults=frozen_gui_defaults(plan)
-parameters=plan.session.parameters;
-firstSchedule=plan.resolved_protocols{1};
-firstEvent=firstSchedule.events(1,:);
-defaults=struct( ...
-    "command_voltage_v",double(parameters.modulator_voltage), ...
-    "pulse_duration_s",double(firstEvent.duration_s), ...
-    "blue_mask_adjustment_pixels",double(parameters.blue_mask_adjustment_pixels), ...
-    "orange_expansion_pixels",double(parameters.orange_expansion_pixels), ...
-    "spiral_radius_um",double(parameters.spiral_radius_um), ...
-    "spiral_density_points_per_volt", ...
-        double(parameters.spiral_density_points_per_volt));
-end
-
-function path=batch_checkpoint_path(folder,trials)
-path="";
-if strlength(folder)==0 || isempty(trials), return; end
-mode=unique(string(trials.stimulation_mode));
-if isscalar(mode) && mode=="1p_dmd"
-    path=fullfile(folder,"run_checkpoint.mat");
-elseif isscalar(mode) && mode=="2p_spiral"
-    path=fullfile(folder,"run_2p_checkpoint.mat");
-end
-end
-
-function value=batch_is_complete(trials)
-value=~isempty(trials) && all(ismember( ...
-    string(trials.acquisition_status),["completed","analyzed"]));
-end
-
-function save_frozen_protocol_archive(path,protocols,trialIds)
-if isscalar(protocols)
-    assert_resolved_protocol(protocols{1},1);
-    adaptive_optopatch.save_protocol(path,protocols{1});
-    return
-end
-for k=1:numel(protocols)
-    protocols{k}=assert_resolved_protocol(protocols{k},k);
-end
-protocol_set=struct("schema_version","1.0.0", ...
-    "archive_type","resolved_acquisition_protocol_set", ...
-    "acquisition_count",numel(protocols),"trial_id",trialIds(:), ...
-    "protocols",{protocols(:)});
-save(path,"protocol_set","-v7.3");
-end
-
-function protocol=assert_resolved_protocol(protocol,index)
-report=adaptive_optopatch.validate_protocol(protocol);
-if report.passed
-    unresolved=~report.protocol.events.is_null & ...
-        strlength(report.protocol.events.target_cell_id)==0;
-    if any(unresolved)
-        report.issues(end+1)="Every non-null pulse must have a resolved target cell.";
-        report.passed=false;
-    end
-end
-if ~report.passed
-    error("adaptive_optopatch:UnresolvedFrozenProtocol", ...
-        "Acquisition %d is not fully resolved: %s",index,strjoin(report.issues," "));
-end
-protocol=report.protocol;
-end
-
-function [protocol,protocols]=load_frozen_protocol_archive(path)
-saved=load(path);
-if isfield(saved,"protocol")
-    protocol=adaptive_optopatch.load_protocol(path);
-    protocols={protocol};
-elseif isfield(saved,"protocol_set") && ...
-        string(saved.protocol_set.archive_type)=="resolved_acquisition_protocol_set"
-    protocols=saved.protocol_set.protocols;
-    protocol=protocols{1};
-else
-    error("adaptive_optopatch:InvalidFrozenProtocolArchive", ...
-        "Frozen pulse_protocol.mat has no resolved protocol archive.");
-end
-end
-
-function transform=plan_targeting_transform(plan)
-% The transform this plan will be executed with once frozen, so preview
-% draws the trajectory the galvos will actually follow.
-transform=[];
-if isfield(plan,"reference") && isfield(plan.reference,"scanner") && ...
-        isfield(plan.reference.scanner,"tform")
-    transform=plan.reference.scanner.tform;
-end
+function value=ternary(condition,yes,no)
+if condition, value=yes; else, value=no; end
 end
 
 function summary=resolved_command_summary(resolved)

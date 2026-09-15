@@ -109,7 +109,6 @@ classdef TestTwoPhotonPockelsVoltage < matlab.unittest.TestCase
             app.setReferenceData(ones(80,100),unified_info(root), ...
                 {[40 30;60 30;60 50;40 50]});
             app.setCellCalibration("cell_001",0.8);
-            app.setPlanParameter("modulator_voltage",3.3);
 
             app.setPulseProtocol(adaptive_optopatch.generate_screen_protocol( ...
                 "PulseCount",1,"ModulatorVoltage",2.7));
@@ -119,11 +118,6 @@ classdef TestTwoPhotonPockelsVoltage < matlab.unittest.TestCase
             frozen=plan.manifest.trials.pulse_schedule{1};
             testCase.verifyEqual(frozen.events.command_voltage_v,2.7);
             testCase.verifyEqual(frozen.events.command_voltage_source,"event");
-
-            % The control that supplies the 1P mod488 default is disabled in
-            % 2P mode, because nothing typed there can reach the Pockels
-            % command.
-            testCase.verifyEqual(string(app.commandVoltageEnabled()),"off");
 
             % A 2P protocol with no explicit command cannot be planned.
             app.setPulseProtocol( ...
@@ -151,13 +145,19 @@ classdef TestTwoPhotonPockelsVoltage < matlab.unittest.TestCase
                 targets,gui_defaults(3.3),"Mode","1p_dmd");
             testCase.verifyEqual(unique(resolved{1}.events.command_voltage_v),0.8);
 
-            % With no per-cell calibration a 1P screen still falls through to
-            % the GUI default, which remains intentional for 1P.
+            % With no per-cell calibration, an explicit protocol value works
+            % and an editable GUI value cannot fill the missing command.
             uncalibrated=calibrated_fixture(NaN);
-            resolved=adaptive_optopatch.resolve_protocol(definition,uncalibrated, ...
+            explicit=adaptive_optopatch.generate_screen_protocol( ...
+                "PulseCount",1,"ModulatorVoltage",3.3);
+            resolved=adaptive_optopatch.resolve_protocol(explicit,uncalibrated, ...
                 targets,gui_defaults(3.3),"Mode","1p_dmd");
             testCase.verifyEqual(resolved{1}.events.command_voltage_v,3.3);
-            testCase.verifyEqual(resolved{1}.events.command_voltage_source,"gui");
+            testCase.verifyEqual(resolved{1}.events.command_voltage_source,"event");
+            testCase.verifyError(@()adaptive_optopatch.resolve_protocol( ...
+                definition,uncalibrated,targets,gui_defaults(3.3), ...
+                "Mode","1p_dmd"), ...
+                "adaptive_optopatch:UnresolvedProtocolParameter");
         end
     end
 end

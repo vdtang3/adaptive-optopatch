@@ -306,9 +306,11 @@ if ~isempty(fieldnames(cellRecord)) && isfield(cellRecord,fovName) && ...
         isfinite_scalar(cellRecord.(fovName)) && ismember("fov_cell",allowed)
     value=double(cellRecord.(fovName)); source="fov_cell"; return
 end
-guiName=string(meta.gui_field);
-if isfield(gui,guiName) && isfinite_scalar(gui.(guiName)) && ismember("gui",allowed)
-    value=double(gui.(guiName)); source="gui"; return
+if ismember("gui",allowed)
+    guiName=string(meta.gui_field);
+    if isfield(gui,guiName) && isfinite_scalar(gui.(guiName))
+        value=double(gui.(guiName)); source="gui"; return
+    end
 end
 if mode=="2p_spiral" && name=="command_voltage_v"
     error("adaptive_optopatch:MissingTwoPhotonPockelsVoltage", ...
@@ -319,6 +321,12 @@ if mode=="2p_spiral" && name=="command_voltage_v"
          'no GUI default and no per-cell Blue-calibration ' ...
          '(selected_blue_voltage_v) fallback for the 2P Pockels command.']);
 end
+if name=="command_voltage_v"
+    error("adaptive_optopatch:UnresolvedProtocolParameter", ...
+        ['Required command_voltage_v remains unresolved. Set it on the event, ' ...
+        'acquisition, or protocol, or select an explicit per-cell Blue ' ...
+        'calibration for 1P stimulation. The GUI has no voltage fallback.']);
+end
 error("adaptive_optopatch:UnresolvedProtocolParameter", ...
     "Required parameter %s remains unresolved after event, acquisition, FOV-cell, and GUI resolution.",name);
 end
@@ -328,6 +336,11 @@ allowed=["event","acquisition","protocol","fov_cell","gui"];
 if isfield(definition,"parameter_sources") && ...
         isfield(definition.parameter_sources,name)
     allowed=string(definition.parameter_sources.(name));
+end
+if name=="command_voltage_v"
+    % Stimulation amplitude is experiment intent, never an editable GUI
+    % default. A 1P cell calibration remains an explicit FOV-owned source.
+    allowed=setdiff(allowed,"gui","stable");
 end
 if mode=="2p_spiral" && name=="command_voltage_v"
     % The Pockels command is owned by the 2P protocol artifact. The

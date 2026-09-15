@@ -106,22 +106,13 @@ classdef TestGuiPanelPresentation < matlab.unittest.TestCase
             end
         end
 
-        function mod488FieldIsActuallyLaidOutInThePanel(testCase)
-            % The field is reparented out of the planning grid into the
-            % protocol panel, and reparenting carries its old grid
-            % coordinates with it. That grew its one-cell wrapper to the
-            % planning grid's shape and left the control with zero height:
-            % present and editable, but invisible to the experimenter.
+        function editableMod488ControlIsAbsent(testCase)
             app=open_gui(testCase);
-            app.setPlanParameter("mode","1p_dmd");
-            [field,wrapper]=command_voltage_field(testCase,app);
-            testCase.verifyEqual(field.Layout.Row,1);
-            testCase.verifyEqual(field.Layout.Column,1);
-            testCase.verifyNumElements(wrapper.RowHeight,1, ...
-                "The mod488 wrapper must stay one cell.");
-            testCase.verifyNumElements(wrapper.ColumnWidth,1, ...
-                "The mod488 wrapper must stay one cell.");
-            testCase.verifyEqual(string(field.Visible),"on");
+            testCase.verifyEmpty(findall(app.Figure,"Text","mod488 (V)"));
+            testCase.verifyEmpty(findall(app.Figure,"Text","Pulse command (V)"));
+            testCase.verifyError(@()app.setPlanParameter( ...
+                "modulator_voltage",1), ...
+                "adaptive_optopatch:UnknownPlanParameter");
         end
 
         function panelCarriesNoOwnershipCaptionsAndNoPockelsInput(testCase)
@@ -141,13 +132,9 @@ classdef TestGuiPanelPresentation < matlab.unittest.TestCase
             testCase.verifyFalse(any(contains(captions,"Pockels")), ...
                 "No GUI label may present itself as a Pockels control.");
 
-            % The one command-voltage field is the 1P mod488 default, and it
-            % is inert in 2P because that command is protocol-only.
-            testCase.verifyNotEmpty(findall(app.Figure,"Text","mod488 (V)"));
-            app.setPlanParameter("mode","1p_dmd");
-            testCase.verifyEqual(string(app.commandVoltageEnabled()),"on");
-            app.setPlanParameter("mode","2p_spiral");
-            testCase.verifyEqual(string(app.commandVoltageEnabled()),"off");
+            testCase.verifyEmpty(findall(app.Figure,"Text","mod488 (V)"));
+            testCase.verifyNumElements( ...
+                findall(app.Figure,"Text","Draw Polygon Soma"),1);
         end
     end
 end
@@ -164,15 +151,6 @@ tables=findall(app.Figure,"Type","uitable");
 qc=tables(arrayfun( ...
     @(value)any(string(value.ColumnName)=="Cell ID"),tables));
 testCase.verifyNumElements(qc,1);
-end
-
-function [field,wrapper]=command_voltage_field(testCase,app)
-% The panel holds exactly one nested grid, and it wraps the mod488 field.
-grid=protocol_grid(testCase,app);
-wrapper=findobj(grid.Children,"-isa","matlab.ui.container.GridLayout");
-testCase.verifyNumElements(wrapper,1);
-field=wrapper.Children;
-testCase.verifyNumElements(field,1);
 end
 
 function grid=protocol_grid(testCase,app)

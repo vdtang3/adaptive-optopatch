@@ -60,6 +60,14 @@ archiving, acquisition, checkpointing, and resume are one continuous workflow.
 The established standalone guarded 1P and 2P interfaces remain available for
 commissioning workflows.
 
+Session state itself belongs to `adaptive_optopatch.AdaptiveOptopatchController`,
+which can be created without a figure. It owns the reference FOV, canonical soma
+polygons and stable cell IDs, per-cell decisions, editable plan parameters, the
+loaded protocol, the frozen run, and the run lifecycle, and it rejects mutations
+that would corrupt a live acquisition. The GUI is a client: `app.Controller` is
+that object, widgets render `controller.getState()`, and callbacks call
+controller actions. See [Headless controller API](#headless-controller-api).
+
 ## Primary workflow
 
 Start the unified app in the same MATLAB process as Luminos:
@@ -442,6 +450,36 @@ dashed magenta segment shows the dark transition. After
 previewing, the status panel reports double-spiral cycles per optical pulse when
 the reference acquisition contains a nonidentity scanner calibration. Otherwise
 it reports that exact cycle timing is pending calibration.
+
+### Headless controller API
+
+Every step below runs without opening a figure. `getState()` returns a plain
+struct suitable for `jsonencode`; large artifacts (reference image, mask stacks,
+targets, manifests) are fetched through their own accessors instead.
+
+```matlab
+controller = adaptive_optopatch.AdaptiveOptopatchController( ...
+    "LuminosApp", luminosApp, "RunRoot", runRoot);
+
+controller.loadSnapshot("/path/to/Snaps/143212pilot_fov.mat");
+cellId = controller.addSomaPolygon([25 25; 40 25; 40 40; 25 40]);
+controller.updateSomaPolygon(cellId, [26 25; 41 25; 41 40; 26 40]);
+controller.setCellEligibility("cell_002", "StimulationEnabled", false);
+
+controller.setPlanParameter("mode", "1p_dmd");
+controller.setPlanParameter("blue_mask_adjustment_pixels", -1);
+controller.loadProtocol("/path/to/pulse_protocol.mat");
+
+paths = controller.freezeRun();     % archives the frozen run
+run   = controller.runNext();       % or controller.runAll()
+controller.stopAfterCurrent();
+controller.returnToEditing();
+
+state = controller.getState();      % revision, lifecycle, cells, legal actions
+```
+
+`controller.StateChangedFcn` is called with no arguments after every state
+change; the MATLAB GUI uses it to redraw itself.
 
 ### Programmatic API
 

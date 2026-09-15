@@ -69,14 +69,16 @@ classdef TestFovWorkflowCleanup < matlab.unittest.TestCase
             appCleanup=onCleanup(@()delete(app));
             app.setReferenceData(ones(70,90),test_info(root),test_polygon());
             app.setPulseProtocol(adaptive_optopatch.generate_screen_protocol( ...
-                "PulseCount",1));
+                "PulseCount",1,"ModulatorVoltage",1.4));
             app.setPlanParameter("mode","1p_dmd");
             app.previewCurrentPlan();
             report=app.validateCurrentPlan();
-            app.setPlanParameter("modulator_voltage",1.4);
             paths=app.freezeCurrentPlan(root);
             testCase.verifyTrue(report.passed);
             testCase.verifyEqual(app.PlanState,"FROZEN");
+            savedSession=load(paths.session,"planning_session");
+            testCase.verifyFalse(isfield( ...
+                savedSession.planning_session.parameters,"modulator_voltage"));
             for path=[paths.fov_state paths.manifest paths.session paths.protocol]
                 testCase.verifyTrue(isfile(path));
             end
@@ -181,7 +183,7 @@ classdef TestFovWorkflowCleanup < matlab.unittest.TestCase
             appCleanup=onCleanup(@()delete(app));
             app.setReferenceData(ones(70,90),test_info(root),test_polygon());
             app.setPulseProtocol(adaptive_optopatch.generate_screen_protocol( ...
-                "PulseCount",1));
+                "PulseCount",1,"ModulatorVoltage",1));
             app.setPlanParameter("mode","1p_dmd");
             testCase.verifyError(@()app.freezeCurrentPlan(root), ...
                 "adaptive_optopatch:RequiredDeviceMissing");

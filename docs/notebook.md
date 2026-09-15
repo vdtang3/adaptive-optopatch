@@ -770,3 +770,68 @@ triggers, with expected observations `[1 2 3 1 2 3 1 2]`. The tag is validated
 strictly, requires three distinct masks and FLUT capability, and cannot change
 production playlist semantics. Both the three-entry programmed playlist and
 the eight-event expectation are archived for interpreting the acquisition.
+
+## 2026-09-15 — Persistent soma drawing and protocol-owned Blue voltage
+
+Soma annotation is a persistent-until-empty interaction: one button activation
+commits each valid polygon immediately and begins the next, while an empty,
+degenerate, or cancelled polygon exits without changing earlier cells. The AO
+GUI no longer owns a mod488 voltage field or serializes a hidden replacement.
+New plans resolve 1P voltage from event, acquisition, protocol, or explicit
+per-cell FOV calibration; the physical mod488 waveform path is unchanged.
+
+## 2026-09-15 — Session state belongs to a controller, not to the widgets
+
+Adaptive Optopatch is heading for two frontends: the MATLAB GUI it has now,
+and a Luminos React panel later. Nothing about acquisition or transport
+blocked that. What blocked it was ownership: soma geometry lived in
+`drawpolygon` handles, plan values lived in `uieditfield` values, protocol
+identity and the frozen run lived in app properties, and the run lifecycle was
+readable only as which buttons happened to be enabled. A second frontend would
+have had to reimplement all of it.
+
+`AdaptiveOptopatchController` now owns that state and can be constructed
+without a figure. It holds the reference FOV, canonical soma polygons and
+stable cell IDs, per-cell decisions, editable plan parameters, the loaded
+protocol, the frozen run, the active run folder, status, and an explicit
+lifecycle. It orchestrates the existing package functions rather than
+duplicating them: `resolve_protocol`, `build_manifest`, DMD/FLUT planning,
+waveform generation, and both runners are unchanged and still own their
+domains.
+
+The decisive change is ROI ownership. A polygon's vertices are canonical data
+held in a plain struct, rasterized by `soma_polygon_masks` and summarized by
+`summarize_soma_geometry`; the `drawpolygon` object is a view that renders
+those vertices and reports edits back through `updateSomaPolygon`. Geometry
+itself was moved, not rewritten: vertices stay in snapshot intrinsic pixel
+coordinates, `poly2mask` still rasterizes them, and `create_reference_model`
+and `create_fov_state` still produce the schema-2 artifacts, so cropped FOVs,
+binning, and full-sensor centroids behave exactly as before. Zero-area and
+out-of-bounds polygons remain reachable and remain QC `CHECK` rather than
+errors, because rejecting them would abort an interactive drag.
+
+Guards moved with the state. Disabled widgets used to be the only thing
+stopping a soma edit or a plan change during acquisition; the controller now
+refuses them itself with `adaptive_optopatch:AcquisitionActive`, and the GUI
+derives its enabled state from the lifecycle instead of defining it. These are
+data-integrity guards only — no biological or scheduling restriction was
+added, and an editable change made while a run is frozen still applies to the
+next run rather than mutating the archived one.
+
+`getState()` returns a plain struct that `jsonencode` accepts: revision,
+lifecycle, status, FOV metadata, canonical polygons, per-cell rows, protocol
+summary, plan parameters, active-run summary, and which actions are currently
+legal. Reference images, mask stacks, targets, and manifests stay outside it
+and are fetched through their own accessors. A monotonic `Revision` advances
+on every canonical mutation; the MATLAB GUI does not need it, but it is what
+makes stale-state detection possible once a second frontend exists.
+
+One latent bug fell out of the extraction: restoring polygons used to renumber
+cells to `cell_001…N` without moving `next_cell_index`, so the next drawn soma
+could reuse an existing ID in memory. Setting the polygon list now derives the
+next index from the IDs themselves.
+
+Deliberately left in the GUI: the in-progress `drawpolygon` interaction, list
+selection, overlay visibility toggles, file dialogs, planning-bundle discovery
+on snapshot load, and all axes rendering. Those are view concerns, and a React
+frontend will implement its own.

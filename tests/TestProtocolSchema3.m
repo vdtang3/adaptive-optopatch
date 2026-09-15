@@ -81,10 +81,9 @@ classdef TestProtocolSchema3 < matlab.unittest.TestCase
 
             fov.cells(1).selected_blue_voltage_v=NaN;
             fov.reference.cells=fov.cells;
-            resolved=adaptive_optopatch.resolve_protocol(definition,fov,targets,gui, ...
-                "Mode","1p_dmd");
-            testCase.verifyEqual(resolved{1}.events.command_voltage_v,1.1);
-            testCase.verifyEqual(resolved{1}.events.command_voltage_source,"gui");
+            testCase.verifyError(@()adaptive_optopatch.resolve_protocol( ...
+                definition,fov,targets,gui,"Mode","1p_dmd"), ...
+                "adaptive_optopatch:UnresolvedProtocolParameter");
         end
 
         function unresolvedVoltageFailsOnlyWhenNeeded(testCase)

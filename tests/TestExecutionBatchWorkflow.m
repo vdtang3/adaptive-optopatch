@@ -167,7 +167,7 @@ classdef TestExecutionBatchWorkflow < matlab.unittest.TestCase
         function runAllHonorsRepeatedBatchCount(testCase)
             [app,root]=open_batch_app(testCase,"Configure",false);
             configure_round_robin_batch_app(app);
-            field=repeat_field(app); field.Value=3;
+            set_repeat_field(app,3);
 
             run=app.runAll();
             folders=run_folders(root);
@@ -196,7 +196,7 @@ classdef TestExecutionBatchWorkflow < matlab.unittest.TestCase
 
         function oneRepeatedBatchCreatesNoExtraFolder(testCase)
             [app,root]=open_batch_app(testCase);
-            field=repeat_field(app); field.Value=1;
+            set_repeat_field(app,1);
             app.runAll();
             testCase.verifyNumElements(run_folders(root),1);
             testCase.verifyEqual(app.ActiveRunPlan.execution_batch.batch_number,1);
@@ -204,7 +204,7 @@ classdef TestExecutionBatchWorkflow < matlab.unittest.TestCase
 
         function repeatedBatchFailureStopsBeforeNextBatch(testCase)
             [app,root,sim]=open_batch_app(testCase);
-            field=repeat_field(app); field.Value=3;
+            set_repeat_field(app,3);
             sim.FailOnAcquisitionNumber=4;
 
             testCase.verifyError(@()app.runAll(), ...
@@ -262,6 +262,15 @@ end
 
 function field=repeat_field(app)
 field=findall(app.Figure,"Tag","RepeatBatchCount");
+end
+
+function set_repeat_field(app,value)
+% Edit the widget the way an experimenter does: type a value and let the
+% control's callback push it into the controller, which is where the batch
+% count is actually read from at run time.
+field=repeat_field(app);
+field.Value=value;
+field.ValueChangedFcn(field,[]);
 end
 
 function folders=run_folders(root)

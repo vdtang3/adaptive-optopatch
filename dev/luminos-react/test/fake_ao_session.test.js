@@ -56,8 +56,9 @@ test("the allowlist matches the one the MATLAB dispatcher publishes", () => {
   // Kept in step by hand, and asserted here so that drifting apart is a test
   // failure rather than an action that works in the browser and not on the rig.
   assert.deepEqual(new Set(ACTIONS), new Set([
-    "load_snapshot_choice",
-    "set_cell_eligibility", "add_soma", "update_soma", "delete_soma",
+    "load_reference_choice", "load_snapshot_choice", "save_fov",
+    "set_cell_eligibility", "set_cell_blue_voltage",
+    "add_soma", "update_soma", "delete_soma",
     "load_protocol_choice", "set_plan_parameter", "freeze_run",
     "start_new_run", "return_to_editing", "start_new_batch",
     "run_next", "run_all", "stop_after_current",
@@ -531,4 +532,259 @@ test("a stale snapshot load is refused and loads nothing", () => {
 
   assert.equal(response.status, "stale_revision");
   assert.equal(response.state.fov.loaded, false);
+});
+
+// ---------------------------------------------------------------------------
+// The unified Reference/FOV chooser
+//
+// What these pin is the CONTRACT the React tab is written against: one typed
+// listing carrying both kinds, a save that allocates rather than replaces, and
+// a load that dispatches on the kind the listing reported. What each kind
+// actually does to a session is MATLAB's, and is tested in
+// tests/TestAdaptiveOptopatchReferenceChooser.m.
+// ---------------------------------------------------------------------------
+
+test("snapshots and saved FOVs are offered in one typed listing", () => {
+  const session = newSession();
+
+  const before = session.references();
+  assert.ok(before.length > 0);
+  assert.ok(before.every((entry) => entry.kind === "snapshot"),
+    "with nothing saved yet, every entry is a camera snapshot");
+  assert.ok(before.every((entry) => entry.choice_id.length > 0));
+
+  act(session, "save_fov");
+
+  const after = session.references();
+  assert.equal(after.length, before.length + 1);
+  const saved = after.filter((entry) => entry.kind === "ao_fov");
+  assert.equal(saved.length, 1);
+  // Grouped with the snapshot it was drawn on, and named for it.
+  const snapshot = after.find(
+    (entry) => entry.kind === "snapshot" &&
+      entry.reference_id === saved[0].reference_id
+  );
+  assert.ok(snapshot, "a saved FOV is grouped with its snapshot");
+  assert.equal(saved[0].group_index, snapshot.group_index);
+});
+
+test("saving chooses the next available number and replaces nothing", () => {
+  const session = newSession();
+
+  act(session, "save_fov");
+  act(session, "save_fov");
+  act(session, "save_fov");
+
+  const saved = session.references().filter((e) => e.kind === "ao_fov");
+  assert.deepEqual(saved.map((e) => e.fov_number), [1, 2, 3]);
+  const reference = saved[0].reference_id;
+  assert.deepEqual(
+    saved.map((e) => e.choice_id),
+    [1, 2, 3].map((n) => `${reference}_FOV${String(n).padStart(3, "0")}`)
+  );
+  // The camera snapshot is still offered, and still a snapshot.
+  const original = session
+    .references()
+    .find((e) => e.choice_id === reference);
+  assert.ok(original);
+  assert.equal(original.kind, "snapshot");
+});
+
+test("a saved FOV restores cells; its snapshot loads fresh", () => {
+  const session = newSession();
+  act(session, "set_cell_blue_voltage", { cell_id: "cell_002", voltage_v: 2.25 });
+  act(session, "set_cell_eligibility", {
+    cell_id: "cell_003",
+    recording_enabled: false,
+  });
+  const drawn = session.current().cells.length;
+  assert.ok(drawn > 0);
+
+  const bundle = act(session, "save_fov").state;
+  assert.equal(bundle.fov.source_kind, "ao_fov");
+  const savedId = session
+    .references()
+    .find((e) => e.kind === "ao_fov").choice_id;
+  const reference = session
+    .references()
+    .find((e) => e.kind === "snapshot").choice_id;
+
+  // The snapshot: a fresh FOV, no cells.
+  const fresh = act(session, "load_reference_choice", { choice_id: reference });
+  assert.equal(fresh.ok, true, fresh.message);
+  assert.equal(fresh.state.fov.source_kind, "snapshot");
+  assert.deepEqual(fresh.state.cells, []);
+
+  // The bundle: the decisions come back.
+  const restored = act(session, "load_reference_choice", { choice_id: savedId });
+  assert.equal(restored.ok, true, restored.message);
+  assert.equal(restored.state.fov.source_kind, "ao_fov");
+  assert.equal(restored.state.cells.length, drawn);
+  assert.equal(
+    restored.state.cells.find((c) => c.cell_id === "cell_002")
+      .selected_blue_voltage_v,
+    2.25
+  );
+  assert.equal(
+    restored.state.cells.find((c) => c.cell_id === "cell_003").recording_enabled,
+    false
+  );
+});
+
+test("a reference id that was never offered reaches nothing", () => {
+  const session = newSession(EMPTY_FIXTURE);
+  const before = JSON.parse(JSON.stringify(session.current()));
+
+  for (const id of [
+    "/data/Snaps/something.mat",
+    "../elsewhere",
+    "nonesuch",
+    "nonesuch_FOV001",
+  ]) {
+    const response = act(session, "load_reference_choice", { choice_id: id });
+    assert.equal(response.status, "validation_error", id);
+    assert.equal(response.state.fov.loaded, false);
+  }
+  assert.deepEqual(session.current(), before);
+});
+
+test("loading marks exactly one entry current, by path", () => {
+  const session = newSession();
+  act(session, "save_fov");
+  const saved = session.references().find((e) => e.kind === "ao_fov");
+
+  act(session, "load_reference_choice", { choice_id: saved.choice_id });
+
+  const current = session.references().filter((e) => e.is_current);
+  assert.equal(current.length, 1);
+  assert.equal(current[0].choice_id, saved.choice_id);
+});
+
+// ---------------------------------------------------------------------------
+// Blue V
+// ---------------------------------------------------------------------------
+
+test("Blue V is an allowlisted edit with the controller's own range", () => {
+  const session = newSession();
+
+  const ok = act(session, "set_cell_blue_voltage", {
+    cell_id: "cell_001",
+    voltage_v: 1.9,
+  });
+  assert.equal(ok.status, "applied", ok.message);
+  assert.equal(ok.state.cells[0].selected_blue_voltage_v, 1.9);
+
+  for (const voltage of [0, -1, 5.5, "high", NaN]) {
+    const refused = act(session, "set_cell_blue_voltage", {
+      cell_id: "cell_001",
+      voltage_v: voltage,
+    });
+    assert.equal(refused.status, "validation_error", String(voltage));
+    assert.equal(refused.state.cells[0].selected_blue_voltage_v, 1.9,
+      "a refused edit leaves the stored calibration alone");
+  }
+});
+
+test("editing Blue V changes nothing about the loaded protocol", () => {
+  // The claim the React panel makes: this is a stored calibration, not a
+  // command source. Precedence itself is the resolver's and is tested in
+  // MATLAB; what is checked here is that the tab's own edit does not touch
+  // the protocol the panel is showing beside it.
+  const session = newSession();
+  const before = JSON.parse(JSON.stringify(session.current().protocol));
+
+  act(session, "set_cell_blue_voltage", { cell_id: "cell_001", voltage_v: 3.3 });
+
+  assert.deepEqual(session.current().protocol, before);
+});
+
+// ---------------------------------------------------------------------------
+// The previews
+//
+// The GEOMETRY and the SAMPLES this stub produces are invented - see the
+// comments on spatialPreview and waveformPreview. What is asserted here is
+// only the shape the React panels read, and that both are read-only.
+// ---------------------------------------------------------------------------
+
+test("a preview changes nothing about the session", () => {
+  const session = newSession();
+  const before = JSON.parse(JSON.stringify(session.current()));
+
+  session.spatialPreview("1p_dmd");
+  session.spatialPreview("2p_spiral");
+  session.waveformPreview();
+
+  assert.deepEqual(session.current(), before);
+  assert.equal(session.current().revision, before.revision);
+});
+
+test("each spatial preview reports the layers its own modality has", () => {
+  const session = newSession();
+
+  const onePhoton = session.spatialPreview("1p_dmd");
+  assert.equal(onePhoton.available, true);
+  assert.equal(onePhoton.coordinate_space, "snapshot_intrinsic_pixels");
+  assert.ok(onePhoton.blue.length > 0, "1P shows Blue stimulation masks");
+  assert.ok(onePhoton.orange.length > 0, "1P shows Orange recording masks");
+  assert.equal(onePhoton.spiral.length, 0);
+
+  const twoPhoton = session.spatialPreview("2p_spiral");
+  assert.equal(twoPhoton.blue.length, 0, "there are no Blue masks in 2P");
+  assert.ok(twoPhoton.spiral.length > 0);
+  assert.ok(twoPhoton.spiral[0].path_xy.length > 1);
+  assert.equal(twoPhoton.spiral[0].parking_xy.length, 2);
+});
+
+test("a spatial preview carries the revision it describes", () => {
+  // What makes an overlay invalidate: the tab drops one whose revision is no
+  // longer the session's, rather than deciding for itself which edits matter.
+  const session = newSession();
+  const preview = session.spatialPreview("2p_spiral");
+  assert.equal(preview.revision, session.current().revision);
+
+  act(session, "set_cell_eligibility", {
+    cell_id: "cell_001",
+    stimulation_enabled: false,
+  });
+
+  assert.notEqual(preview.revision, session.current().revision);
+});
+
+test("a FOV with no somata says so rather than claiming a preview", () => {
+  const session = newSession(EMPTY_FIXTURE);
+  const empty = session.spatialPreview("1p_dmd");
+  assert.equal(empty.available, false);
+  assert.ok(empty.message.length > 0);
+  assert.deepEqual(empty.blue, []);
+  assert.deepEqual(empty.spiral, []);
+});
+
+test("with no protocol the waveform preview says to load one", () => {
+  const session = newSession(EMPTY_FIXTURE);
+
+  const preview = session.waveformPreview();
+
+  assert.equal(preview.available, false);
+  assert.equal(preview.message, "Load a pulse protocol to preview waveforms.");
+  assert.deepEqual(preview.channels, []);
+  assert.deepEqual(preview.time_s, []);
+});
+
+test("a waveform preview gives one value per time point on every channel", () => {
+  const session = newSession();
+
+  const preview = session.waveformPreview();
+
+  assert.equal(preview.available, true);
+  assert.ok(preview.channels.length > 0);
+  for (const channel of preview.channels) {
+    assert.equal(channel.values.length, preview.time_s.length,
+      `${channel.name} must be plottable against time_s`);
+  }
+  assert.ok(preview.events.length > 0);
+  assert.ok(preview.targets.length > 0);
+  assert.equal(
+    preview.targets.reduce((total, t) => total + t.event_count, 0),
+    preview.events.filter((e) => !e.is_null).length
+  );
 });

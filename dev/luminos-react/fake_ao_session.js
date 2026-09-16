@@ -25,8 +25,11 @@
  * inferred, so that an action added there and not thought about here shows up
  * as an unknown_action in the browser instead of silently doing nothing. */
 export const ACTIONS = [
+  "load_reference_choice",
   "load_snapshot_choice",
+  "save_fov",
   "set_cell_eligibility",
+  "set_cell_blue_voltage",
   "add_soma",
   "update_soma",
   "delete_soma",
@@ -102,6 +105,16 @@ export class FakeAoSession {
     this.protocolChoices = clone(protocolChoices);
     this.snapshotChoices = clone(snapshots.choices ?? []);
     this.snapshotLoads = clone(snapshots.loads ?? []);
+    /* Saved FOV bundles, in memory only.
+     *
+     * Nothing is written to disk - this server never touches the
+     * filesystem - so a "bundle" here is the slice of state a save would
+     * have persisted, kept so that saving in the browser adds an entry to
+     * the chooser and loading it back restores the cells. The NAMING is
+     * real: <snapshot>_FOV###, next unused number, never replacing one, the
+     * same rule next_fov_bundle_path applies. What a bundle CONTAINS is an
+     * imitation; the schema is MATLAB's and is tested there. */
+    this.savedFovs = [];
     this.markCurrentProtocol();
     this.markCurrentSnapshot();
   }
@@ -121,6 +134,51 @@ export class FakeAoSession {
     return clone(this.snapshotChoices);
   }
 
+  /* The unified listing the reference-choices endpoint answers with.
+   *
+   * Built from the snapshot fixture plus whatever has been saved in this
+   * session, grouped the way list_reference_choices groups it: each
+   * snapshot followed by the FOVs saved from it. */
+  references() {
+    const entries = [];
+    this.snapshotChoices.forEach((choice, index) => {
+      entries.push({
+        choice_id: choice.choice_id,
+        kind: "snapshot",
+        label: choice.name,
+        name: choice.name,
+        folder: choice.folder,
+        path: choice.path,
+        loadable: choice.loadable,
+        issue: choice.issue,
+        reference_id: choice.name,
+        fov_number: null,
+        fov_id: "",
+        cell_count: null,
+        recording_enabled_count: null,
+        stimulation_enabled_count: null,
+        calibrated_cell_count: null,
+        camera_name: choice.camera_name,
+        camera_bin: choice.camera_bin,
+        image_size: choice.image_size,
+        roi_origin_xy: choice.roi_origin_xy,
+        roi_size_xy: choice.roi_size_xy,
+        source_snapshot: "",
+        timestamp: choice.timestamp,
+        group_index: index + 1,
+        is_current: false,
+      });
+      this.savedFovs
+        .filter((saved) => saved.reference_id === choice.name)
+        .forEach((saved) => entries.push({ ...clone(saved.choice), group_index: index + 1 }));
+    });
+    const currentPath = this.state?.fov?.source_path ?? "";
+    for (const entry of entries) {
+      entry.is_current = !!currentPath && entry.path === currentPath;
+    }
+    return entries;
+  }
+
   /* The reference image for whatever FOV is currently loaded, or null.
    *
    * Keyed off the state's own fov_id rather than remembered separately, so
@@ -129,6 +187,196 @@ export class FakeAoSession {
   referenceImageFor(fovId) {
     const entry = this.snapshotLoads.find((load) => load.choice_id === fovId);
     return entry ? entry.pixels : null;
+  }
+
+  /* An imitation of controller.spatialPreview, for the overlay to draw.
+   *
+   * THE SHAPE IS REAL AND THE GEOMETRY IS NOT. The payload matches what the
+   * endpoint returns - kinds, coordinate space, outline rings, spiral path
+   * and parking point - so the canvas layer, the mode switching and the
+   * staleness rule can all be exercised. What the numbers MEAN is invented:
+   * the "Blue mask" outline here is the canonical polygon itself rather
+   * than one apply_blue_mask_adjustment eroded, the "Orange" outline is
+   * that polygon scaled about its centroid rather than one imdilate
+   * expanded, and the spiral is an analytic curve rather than the Fermat
+   * spiral Luminos scans. Do not read any of it as Adaptive Optopatch
+   * geometry; the real thing is computed by MATLAB and tested there. */
+  spatialPreview(mode) {
+    const base = {
+      schema_version: "1.0.0",
+      mode,
+      available: false,
+      message: "",
+      source: "",
+      coordinate_space: "snapshot_intrinsic_pixels",
+      image_size: this.state?.fov?.image_size ?? [0, 0],
+      reference_revision: this.state?.fov?.reference_revision ?? 0,
+      revision: this.state?.revision ?? 0,
+      scanner_warning: "",
+      blue: [],
+      orange: [],
+      spiral: [],
+    };
+    if (!this.state) return null;
+    if (!this.state.fov.loaded) {
+      return { ...base, message: "Load a reference FOV to preview targeting." };
+    }
+    if (this.state.cells.length === 0) {
+      return { ...base, message: "Draw at least one soma to preview targeting." };
+    }
+
+    const preview = {
+      ...base,
+      available: true,
+      source: this.state.protocol.loaded ? "resolved_plan" : "bundle_default",
+    };
+    const adjustment =
+      Number(this.state.plan_parameters?.blue_mask_adjustment_pixels ?? -1);
+    const expansion =
+      Number(this.state.plan_parameters?.orange_expansion_pixels ?? 2);
+    const radiusUm = Number(this.state.plan_parameters?.spiral_radius_um ?? 6);
+    const perPixel = Number(this.state.plan_parameters?.microns_per_pixel ?? 0.35);
+    const density =
+      Number(this.state.plan_parameters?.spiral_density_points_per_volt ?? 10);
+
+    this.state.cells.forEach((cell, index) => {
+      const ring = this.state.soma_polygons[index] ?? [];
+      if (ring.length < 3) return;
+      const centre = centroid(ring);
+      const scaled = (factor) =>
+        ring.map(([x, y]) => [
+          centre[0] + (x - centre[0]) * factor,
+          centre[1] + (y - centre[1]) * factor,
+        ]);
+      preview.orange.push({
+        cell_id: cell.cell_id,
+        rings: [scaled(1 + expansion / 10)],
+        pixel_count: cell.area_pixels,
+        adjustment_pixels: null,
+        expansion_pixels: expansion,
+      });
+      if (mode === "1p_dmd") {
+        preview.blue.push({
+          cell_id: cell.cell_id,
+          rings: [scaled(1 + adjustment / 10)],
+          pixel_count: cell.area_pixels,
+          adjustment_pixels: adjustment,
+          expansion_pixels: null,
+        });
+      } else {
+        const radius = radiusUm / (perPixel || 0.35);
+        const path = [];
+        const turns = Math.max(2, Math.round(density));
+        for (let k = 0; k <= 200; k += 1) {
+          const t = k / 200;
+          const theta = t * turns * 2 * Math.PI;
+          path.push([
+            centre[0] + radius * t * Math.cos(theta),
+            centre[1] + radius * t * Math.sin(theta),
+          ]);
+        }
+        preview.spiral.push({
+          cell_id: cell.cell_id,
+          center_xy: centre,
+          radius_pixels: radius,
+          density_points_per_volt: density,
+          parking_xy: [centre[0] + 2.5 * radius, centre[1] + 2.5 * radius],
+          pulse_duration_ms: 5,
+          path_xy: path,
+          cycle_metrics: { calibrated: false },
+        });
+      }
+    });
+    return preview;
+  }
+
+  /* An imitation of controller.waveformPreview, for the plot to draw.
+   *
+   * Again the SHAPE is real and the CONTENT is not. The channels, the event
+   * list, the per-target counts and the decimation fields are what the
+   * endpoint returns, so the panel, its empty states and its refresh
+   * triggers can be exercised; the samples are a made-up train, not a
+   * resolved pulse schedule. Nothing here resolves a protocol, and no
+   * command voltage in it means anything. */
+  waveformPreview() {
+    if (!this.state) return null;
+    const base = {
+      schema_version: "1.0.0",
+      available: false,
+      message: "",
+      mode: this.state.plan_parameters?.stimulation_mode ?? "2p_spiral",
+      revision: this.state.revision,
+      acquisition_id: "",
+      protocol_id: "",
+      duration_s: null,
+      sample_rate_hz: null,
+      decimation_step: 1,
+      truncated: false,
+      window_s: [0, 0],
+      time_s: [],
+      channels: [],
+      events: [],
+      targets: [],
+    };
+    if (!this.state.protocol.loaded) {
+      return { ...base, message: "Load a pulse protocol to preview waveforms." };
+    }
+    if (!this.state.fov.loaded || this.state.cells.length === 0) {
+      return {
+        ...base,
+        message:
+          "A reference FOV with at least one soma is needed before a " +
+          "waveform can be resolved.",
+      };
+    }
+
+    const stimulated = this.state.cells.filter((c) => c.stimulation_enabled);
+    const targets = stimulated.length > 0 ? stimulated : this.state.cells;
+    const pulseCount = Math.max(1, Math.min(20, targets.length * 3));
+    const pulseS = 0.005;
+    const gapS = 0.05;
+    const events = [];
+    for (let k = 0; k < pulseCount; k += 1) {
+      const onset = 0.1 + k * (pulseS + gapS);
+      events.push({
+        cell_id: targets[k % targets.length].cell_id,
+        onset_s: onset,
+        offset_s: onset + pulseS,
+        command_voltage_v: 1.2,
+        is_null: false,
+      });
+    }
+    const duration = events[events.length - 1].offset_s + 0.1;
+
+    const time = [];
+    const command = [];
+    for (const event of events) {
+      time.push(event.onset_s, event.onset_s, event.offset_s, event.offset_s);
+      command.push(0, event.command_voltage_v, event.command_voltage_v, 0);
+    }
+
+    const perTarget = new Map();
+    for (const event of events) {
+      perTarget.set(event.cell_id, (perTarget.get(event.cell_id) ?? 0) + 1);
+    }
+
+    return {
+      ...base,
+      available: true,
+      acquisition_id: "dev_acquisition_001",
+      protocol_id: String(this.state.protocol.summary?.protocol_id ?? ""),
+      duration_s: duration,
+      window_s: [0, duration],
+      time_s: time,
+      channels: [
+        { name: "mod488", units: "V", kind: "analog", values: command },
+      ],
+      events,
+      targets: [...perTarget].map(([cell_id, event_count]) => ({
+        cell_id,
+        event_count,
+      })),
+    };
   }
 
   /* One action, with the same outcomes the MATLAB dispatcher produces:
@@ -197,6 +445,12 @@ export class FakeAoSession {
         return this.deleteSoma(payload);
       case "load_snapshot_choice":
         return this.loadSnapshotChoice(payload);
+      case "load_reference_choice":
+        return this.loadReferenceChoice(payload);
+      case "save_fov":
+        return this.saveFov();
+      case "set_cell_blue_voltage":
+        return this.setCellBlueVoltage(payload);
       case "load_protocol_choice":
         return this.loadProtocolChoice(payload);
       case "set_plan_parameter":
@@ -293,6 +547,8 @@ export class FakeAoSession {
     this.state.fov = {
       ...clone(load.fov),
       reference_revision: previousReference + 1,
+      source_kind: "snapshot",
+      source_path: choice.path,
     };
     this.state.cells = [];
     this.state.soma_polygons = [];
@@ -303,6 +559,141 @@ export class FakeAoSession {
     ];
     this.markCurrentSnapshot();
     this.markEditableChanged();
+  }
+
+  /* Load one entry of the unified chooser, dispatching on its kind.
+   *
+   * The dispatch is the point: a snapshot starts a FRESH FOV, and a saved
+   * FOV RESTORES cells. MATLAB decides which from the listing it produced,
+   * and so does this - never from the shape of the id. */
+  loadReferenceChoice({ choice_id }) {
+    const entry = this.references().find((c) => c.choice_id === choice_id);
+    if (!entry) {
+      throw this.refuse(
+        `No reference is offered as '${choice_id}'. Refresh the list and ` +
+          `choose again.`
+      );
+    }
+    if (!entry.loadable) {
+      throw this.refuse(entry.issue || `${choice_id} could not be loaded.`);
+    }
+    if (entry.kind === "snapshot") {
+      this.loadSnapshotChoice({ choice_id });
+      return;
+    }
+    this.restoreFov(choice_id);
+  }
+
+  /* Restore a bundle saved earlier in this session.
+   *
+   * Cells, their identities, their decisions and their Blue calibration all
+   * come back, which is the difference from loading the snapshot. */
+  restoreFov(choiceId) {
+    const saved = this.savedFovs.find((s) => s.choice.choice_id === choiceId);
+    if (!saved) throw this.refuse(`No saved FOV called ${choiceId}.`);
+    const previousReference = this.state.fov.reference_revision ?? 0;
+    this.state.fov = {
+      ...clone(saved.fov),
+      reference_revision: previousReference + 1,
+      source_kind: "ao_fov",
+      source_path: saved.choice.path,
+    };
+    this.state.cells = clone(saved.cells);
+    this.state.soma_polygons = clone(saved.soma_polygons);
+    this.state.plan_parameters = clone(saved.plan_parameters);
+    this.state.status = [
+      `Loaded persistent FOV ${saved.choice.fov_id} with ` +
+        `${saved.cells.length} stable cells.`,
+    ];
+    this.markEditableChanged();
+  }
+
+  /* Save the current FOV as the next unused numbered bundle.
+   *
+   * The NUMBERING rule is the real one: one past the highest already
+   * present for this snapshot, never replacing an existing bundle and never
+   * touching the snapshot itself. Nothing is written to disk. */
+  saveFov() {
+    if (!this.state.fov.loaded) {
+      throw this.notLegal("Load a reference FOV before saving one.");
+    }
+    const referenceId = this.referenceIdOfLoadedFov();
+    const highest = this.savedFovs
+      .filter((saved) => saved.reference_id === referenceId)
+      .reduce((best, saved) => Math.max(best, saved.choice.fov_number), 0);
+    const number = highest + 1;
+    const name = `${referenceId}_FOV${String(number).padStart(3, "0")}`;
+    const folder = this.state.fov.snapshot_directory || "<dev fixture>";
+    const stimulated = this.state.cells.filter((c) => c.stimulation_enabled);
+    const recorded = this.state.cells.filter((c) => c.recording_enabled);
+    const calibrated = this.state.cells.filter(
+      (c) => typeof c.selected_blue_voltage_v === "number"
+    );
+    const choice = {
+      choice_id: name,
+      kind: "ao_fov",
+      label: `${referenceId} — FOV ${String(number).padStart(3, "0")}`,
+      name,
+      folder,
+      path: `${folder}/${name}.mat`,
+      loadable: true,
+      issue: "",
+      reference_id: referenceId,
+      fov_number: number,
+      fov_id: this.state.fov.fov_id,
+      cell_count: this.state.cells.length,
+      recording_enabled_count: recorded.length,
+      stimulation_enabled_count: stimulated.length,
+      calibrated_cell_count: calibrated.length,
+      camera_name: this.state.fov.camera_name,
+      camera_bin: this.state.fov.camera_bin,
+      image_size: this.state.fov.image_size,
+      roi_origin_xy: this.state.fov.roi_origin_xy,
+      roi_size_xy: this.state.fov.roi_origin_xy,
+      source_snapshot: this.state.fov.snapshot_path,
+      timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
+      group_index: null,
+      is_current: true,
+    };
+    this.savedFovs.push({
+      reference_id: referenceId,
+      choice,
+      fov: clone(this.state.fov),
+      cells: clone(this.state.cells),
+      soma_polygons: clone(this.state.soma_polygons),
+      plan_parameters: clone(this.state.plan_parameters),
+    });
+    this.state.fov.source_kind = "ao_fov";
+    this.state.fov.source_path = choice.path;
+    this.state.status = [
+      `Saved FOV ${choice.fov_id} with ${this.state.cells.length} cells to`,
+      choice.path,
+    ];
+  }
+
+  /* Which snapshot the loaded FOV descends from.
+   *
+   * Taken from the snapshot the reference came from, not from whatever file
+   * was last loaded, so a FOV saved from snap_FOV001 becomes snap_FOV002
+   * rather than snap_FOV001_FOV001 - the same rule fovBundleIdentity
+   * applies in MATLAB. */
+  referenceIdOfLoadedFov() {
+    const path = this.state.fov.snapshot_path ?? "";
+    const stem = path.split(/[\\/]/).pop() ?? "";
+    return stem.replace(/\.mat$/i, "") || this.state.fov.fov_id || "reference";
+  }
+
+  /* The stored per-cell 488 nm calibration, with the controller's own range.
+   *
+   * A CALIBRATION, not a command source: nothing here or in MATLAB lets
+   * this override a protocol that names a command voltage. */
+  setCellBlueVoltage({ cell_id, voltage_v }) {
+    const cell = this.cell(cell_id);
+    const voltage = Number(voltage_v);
+    if (!Number.isFinite(voltage) || voltage <= 0 || voltage > 5) {
+      throw this.refuse("Blue V (1P) must be a finite number in (0,5] V.");
+    }
+    cell.selected_blue_voltage_v = voltage;
   }
 
   loadProtocolChoice({ choice_id }) {
@@ -469,6 +860,7 @@ export class FakeAoSession {
       edit_plan_parameters: editing,
       load_protocol: editing,
       load_fov: editing,
+      save_fov: editing && hasFov,
       freeze_run: editing && hasFov && hasCells && !!state.protocol.loaded,
       run: editing,
       stop_after_current:

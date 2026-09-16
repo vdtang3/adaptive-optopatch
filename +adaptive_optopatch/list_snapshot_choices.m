@@ -20,6 +20,11 @@ function choices=list_snapshot_choices(options)
 %   reason rather than hidden, because an operator who cannot see the file
 %   they just took has no way to find out why.
 %
+%   Saved Adaptive Optopatch FOVs share this folder and this extension.
+%   They are excluded here and listed by list_fov_choices instead, because a
+%   restorable FOV is a different kind of thing from a camera snapshot; see
+%   list_reference_choices for the one listing that offers both.
+%
 %   That costs one image load per candidate, so the listing is capped and
 %   ordered newest first: the snapshot an operator wants is almost always the
 %   one they just took. It is read on demand, never on a poll.
@@ -40,6 +45,13 @@ for root=reshape(roots,1,[])
     listing=dir(fullfile(root,"*.mat"));
     for entry=reshape(listing,1,[])
         if entry.isdir, continue; end
+        % A saved Adaptive Optopatch FOV lives beside the snapshot it was
+        % drawn on and is also a .mat. It is not a camera snapshot and must
+        % not be offered as one: read_reference_snapshot cannot read it, so
+        % without this it would appear here as an unloadable snapshot rather
+        % than in list_fov_choices as the restorable FOV it is.
+        [~,stem]=fileparts(entry.name);
+        if adaptive_optopatch.parse_fov_bundle_name(string(stem)), continue; end
         path=string(fullfile(entry.folder,entry.name));
         if any(seen==path), continue; end
         seen(end+1,1)=path; %#ok<AGROW>

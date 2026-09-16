@@ -278,22 +278,27 @@ gui = launch_adaptive_optopatch_gui(app);   % app is the Rig_Control_App
 ```
 
 The interface's Adaptive Optopatch tab then shows the same session the GUI is
-editing, and can drive it. Four endpoints:
+editing, and can drive it. One write endpoint and six reads:
 
 | Endpoint | Direction | What it does |
 | --- | --- | --- |
 | `get_adaptive_optopatch_state_js` | read | `controller.getState()`. Polled about once a second. Carries no image, mask, waveform or manifest. |
 | `get_adaptive_optopatch_reference_image_js` | read | The reference FOV as a flat uint8 column-major list. Fetched only when `fov.reference_revision` changes. |
-| `get_adaptive_optopatch_snapshot_choices_js` | read | `controller.snapshotChoices()`. Read on demand, never on the poll. |
+| `get_adaptive_optopatch_reference_choices_js` | read | `controller.referenceChoices()` — camera snapshots and saved FOVs in one typed listing. Read on demand, never on the poll. |
+| `get_adaptive_optopatch_snapshot_choices_js` | read | `controller.snapshotChoices()` — the snapshot-only listing, still available. Read on demand. |
 | `get_adaptive_optopatch_protocol_choices_js` | read | `controller.protocolChoices()`. Read on demand, never on the poll. |
+| `get_adaptive_optopatch_spatial_preview_js` | read | `controller.spatialPreview(mode)` — canonical Blue/Orange mask outlines and 2P spiral geometry, as coordinates. Hardware-inert. |
+| `get_adaptive_optopatch_waveform_preview_js` | read | `controller.waveformPreview()` — the commands the planning window plots, as samples. Hardware-inert. |
 | `adaptive_optopatch_action_js` | write | One named action from the allowlist below, with the revision the caller was looking at. |
 
 Every write goes through `adaptive_optopatch.apply_controller_action`, whose
 `action_names()` is the complete list of what a frontend may invoke:
 
 ```text
-load_snapshot_choice  load_protocol_choice
-set_cell_eligibility  add_soma  update_soma  delete_soma
+load_reference_choice  load_snapshot_choice  load_protocol_choice
+save_fov
+set_cell_eligibility  set_cell_blue_voltage
+add_soma  update_soma  delete_soma
 set_plan_parameter
 freeze_run  start_new_run  return_to_editing  start_new_batch
 run_next  run_all  stop_after_current
@@ -312,21 +317,95 @@ Every reply, applied or refused, carries `controller.getState()` afterwards, so
 a frontend replaces its view with the authoritative state either way rather than
 guessing and waiting for a poll to repair it.
 
-Camera snapshots and pulse protocols are chosen by a **stable id**, never by a
-path. `snapshotChoices()` lists `<datafolder>/Snaps/*.mat` — the folder
-`Camera_Snap` writes into — newest first, capped, with each candidate opened
-through the same reader `loadSnapshot` uses so that `loadable` means "loading
-this would succeed". The id is the snapshot's stem, which is what Luminos
-already calls a snapshot everywhere else: `Camera_Snap` writes `<stem>.tiff`,
-`<stem>.mat` and a browser-visible `<stem>.png` from one stem, and the
-patterning image pickers hand that same stem to `Load_Ref_Im_JS`. A choice_id
-that is a path resolves to nothing.
+References and pulse protocols are chosen by a **stable id**, never by a path.
+A choice_id that is a path resolves to nothing.
 
-Still MATLAB-only, deliberately: loading or saving an Adaptive Optopatch FOV
-bundle, and resuming a run, each need a file chosen on the rig's filesystem;
-per-cell Blue voltage and any command voltage are resolver-owned provenance,
-not an editable control; clearing every soma and sending the Orange mask are
-not on the list.
+#### The unified Reference/FOV chooser
+
+`referenceChoices()` lists everything a session can start a field of view from,
+in one listing with two `kind`s:
+
+| kind | What it is | What loading it does |
+| --- | --- | --- |
+| `snapshot` | A Luminos camera snap, `<stem>.mat` in `<datafolder>/Snaps`. | Canonical `loadSnapshot`. A **fresh** FOV: the picture, the camera identity, the crop, the DMD transforms recorded with the snap — and no cells. |
+| `ao_fov` | A saved Adaptive Optopatch FOV, `<stem>_FOV###.mat` beside it. | Canonical `loadFov`. **Restores** soma geometry, stable cell identities, recording/stimulation decisions, Blue calibration and reference provenance. |
+
+They are offered together because to an operator that is one question — which
+field am I working on — and kept typed because they are not interchangeable: an
+Adaptive Optopatch FOV is never read through the snapshot reader and never
+reported as a camera snap. The listing groups each snapshot with the FOVs saved
+from it, `fov.source_kind` says which kind the loaded reference came from, and
+`list_snapshot_choices` excludes bundles so one never appears as an unreadable
+snapshot.
+
+Every candidate is opened through the reader that loading uses — the snapshot
+reader for a snap, `load_fov_state` for a bundle — so `loadable` means "loading
+this would succeed". The id is the file's stem, unique across both kinds because
+a bundle's always ends in `_FOV###`; for a snapshot that is also what Luminos
+calls it everywhere else (`Camera_Snap` writes `<stem>.tiff`, `<stem>.mat` and a
+browser-visible `<stem>.png` from one stem, and the patterning image pickers
+hand the same stem to `Load_Ref_Im_JS`).
+
+#### Saving a FOV
+
+`save_fov` carries no path and no name. The bundle goes beside the camera
+snapshot the FOV descends from, at the next unused number:
+
+```text
+Snaps/120000ao_cam-OrcaFusion.mat          the camera snapshot
+Snaps/120000ao_cam-OrcaFusion_FOV001.mat   saved once
+Snaps/120000ao_cam-OrcaFusion_FOV002.mat   saved again
+```
+
+The number is one past the highest already present for that snapshot, checked
+against the filesystem, so **nothing is ever replaced** — not an earlier bundle
+and not the snapshot, which is the one file in a session that cannot be
+regenerated. A FOV saved from `..._FOV001` becomes `..._FOV002`, not
+`..._FOV001_FOV001`, because the name is derived from `reference.source_snapshot`
+rather than from whatever file was last loaded. The bundle is the existing
+schema-2 FOV state written by the existing `save_fov_state`; there is no second
+persistence format.
+
+#### Per-cell Blue V
+
+`set_cell_blue_voltage` is the same edit the MATLAB cell table makes, through
+the same `controller.setCellBlueVoltage`: it writes `selected_blue_voltage_v`
+in the canonical FOV cell record, validated to (0, 5] V. It is a stored
+**calibration**, not a command source. `resolve_protocol` still owns
+command-voltage precedence — `event > acquisition > protocol > fov_cell` — so a
+protocol that names `command_voltage_v` is unaffected by it, and for `2p_spiral`
+the tiers are narrowed to `event > acquisition > protocol` so a 488 nm
+calibration can never become a Pockels command.
+
+#### The two previews
+
+Both are read-only and hardware-inert, and both are computed by the same
+canonical code the MATLAB planning window's Preview button uses:
+
+- **spatial** — `build_target_bundle` and `build_target_preview` for the masks
+  (`apply_blue_mask_adjustment` for Blue, the bundle's expansion for Orange) and
+  `generate_spiral_preview` for the 2P scan path. Returned as `bwboundaries`
+  rings and spiral points in snapshot-intrinsic pixels, so a browser draws
+  geometry MATLAB measured rather than eroding or spiralling anything itself.
+  With a protocol loaded the geometry is the resolved acquisitions'
+  (`source = "resolved_plan"`); without one it is the bundle's defaults.
+- **waveform** — `build_2p_plan_preview` → `build_2p_trial_waveforms` for the
+  galvo X/Y and Pockels commands, and `flatten_pulse_schedule` for the 1P mod488
+  step trace and its per-event targets and voltages.
+
+Neither programs a DMD, moves a scanner, opens a shutter or writes a DAQ output;
+both resolve hardware with `ApplyCalibration=false`; and neither changes
+controller state or bumps the revision. Each carries the revision it describes,
+so a frontend drops an overlay that no longer matches rather than deciding for
+itself which edits mattered. Orange illumination and the camera trigger are not
+reported, because those are built against live devices at execution setup and a
+preview does not manufacture stand-ins for them.
+
+Still MATLAB-only, deliberately: **resuming a run** needs a run folder chosen on
+the rig's filesystem and there is no MATLAB-owned listing of resumable runs yet;
+`set_cell_calibration` writes a calibration snapshot and belongs with the
+Blue-ramp review that measures it; clearing every soma and sending the Orange
+mask are not on the list.
 
 ### Test 0: the interface reads controller state
 

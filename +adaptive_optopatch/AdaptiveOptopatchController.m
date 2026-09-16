@@ -25,6 +25,16 @@ classdef AdaptiveOptopatchController < handle
         ReferenceInfo struct = struct([])
         %REFERENCEREVISION Bumped whenever the displayed reference image changes.
         ReferenceRevision (1,1) double = 0
+        %REFERENCESOURCEKIND Which of the two things the reference came from.
+        %   "snapshot" for a fresh FOV read from a Luminos camera snap,
+        %   "ao_fov" for a saved Adaptive Optopatch FOV whose cells and
+        %   decisions were restored, "" before anything is loaded or when a
+        %   reference was installed directly rather than from a file. A
+        %   frontend needs this to say WHICH entry of the unified chooser is
+        %   in use, and an AO FOV must never be reported as a camera snap.
+        ReferenceSourceKind (1,1) string = ""
+        %REFERENCESOURCEPATH The file the reference was loaded from.
+        ReferenceSourcePath (1,1) string = ""
         FovGeometry struct
         %CELLSTATE Per-cell decisions and calibration carried across edits.
         CellState struct = struct([])
@@ -64,6 +74,8 @@ classdef AdaptiveOptopatchController < handle
         ProtocolChoiceCache = []
         %SNAPSHOTCHOICECACHE The listing loadSnapshotChoice resolves against.
         SnapshotChoiceCache = []
+        %REFERENCECHOICECACHE The listing loadReferenceChoice resolves against.
+        ReferenceChoiceCache = []
     end
 
     methods
@@ -128,6 +140,7 @@ classdef AdaptiveOptopatchController < handle
                 "edit_plan_parameters",editing, ...
                 "load_protocol",editing, ...
                 "load_fov",editing, ...
+                "save_fov",editing && hasFov, ...
                 "freeze_run",editing && hasFov && hasCells && ...
                     ~isempty(controller.Protocol), ...
                 "run",editing, ...
@@ -160,6 +173,8 @@ classdef AdaptiveOptopatchController < handle
             [image,info]=adaptive_optopatch.read_reference_snapshot(snapshotPath);
             controller.matchSimulatedReferenceCamera(info.metadata.voltage_camera);
             controller.adoptReference(image,info);
+            controller.ReferenceSourceKind="snapshot";
+            controller.ReferenceSourcePath=snapshotPath;
             controller.setStatus(sprintf(['Loaded snapshot:\n%s\nCamera: %s, ' ...
                 '%d × %d pixels, binning %.3g.'],info.snapshot_path, ...
                 info.camera_name,info.image_size(2),info.image_size(1), ...
@@ -221,6 +236,112 @@ classdef AdaptiveOptopatchController < handle
             controller.loadSnapshot(choices(index).path);
         end
 
+        function choices=referenceChoices(controller)
+            %REFERENCECHOICES Everything this session can start a FOV from.
+            %   One listing, two kinds: camera snapshots and saved Adaptive
+            %   Optopatch FOVs (see list_reference_choices). MATLAB
+            %   discovers them; a frontend picks a choice_id out of this
+            %   list and sends that and nothing else.
+            %
+            %   Read from disk on demand rather than carried in getState(),
+            %   which is polled and must stay cheap - this opens an image
+            %   per snapshot and a MAT per bundle to answer `loadable`
+            %   honestly.
+            choices=adaptive_optopatch.list_reference_choices( ...
+                "Roots",controller.snapshotSearchRoots());
+            currentPath=controller.ReferenceSourcePath;
+            for k=1:numel(choices)
+                choices(k).is_current=strlength(currentPath)>0 && ...
+                    choices(k).path==currentPath;
+            end
+            controller.ReferenceChoiceCache=choices;
+        end
+
+        function loadReferenceChoice(controller,choiceId)
+            %LOADREFERENCECHOICE Load one entry named by referenceChoices().
+            %   The id is resolved against a listing this controller
+            %   produced, never treated as a path, exactly as
+            %   loadSnapshotChoice does - and for the same reason.
+            %
+            %   The listing says which of the two canonical paths the entry
+            %   takes, and this dispatches to it unchanged:
+            %
+            %     snapshot -> loadSnapshot, a fresh FOV with no cells
+            %     ao_fov   -> loadFov, restoring geometry, stable IDs,
+            %                 eligibility, calibration and provenance
+            %
+            %   Nothing here blends the two. An Adaptive Optopatch FOV is
+            %   not read through the snapshot reader and does not pretend to
+            %   be a camera snap.
+            arguments
+                controller
+                choiceId (1,1) string
+            end
+            choices=controller.ReferenceChoiceCache;
+            if isempty(choices) || ~known_and_present(choices,choiceId)
+                % Re-listed when the id is unknown OR the file behind it has
+                % gone since the listing was made. Both mean the same thing
+                % to an operator - the list is out of date - and a stale
+                % cache must not become a file-not-found naming a path they
+                % never chose.
+                choices=controller.referenceChoices();
+            end
+            index=find([choices.choice_id]==choiceId,1);
+            if isempty(index)
+                error("adaptive_optopatch:UnknownReferenceChoice", ...
+                    "No reference is offered as '%s'. Refresh the list " + ...
+                    "and choose again.",choiceId);
+            end
+            choice=choices(index);
+            if ~choice.loadable
+                % The listing already opened this file and could not read
+                % it. Refused here with the reason it recorded, rather than
+                % left to fail deeper as a raw MAT-file error: an operator
+                % gets MATLAB's own explanation, and a genuine fault stays
+                % distinguishable from a file that is simply not loadable.
+                error("adaptive_optopatch:UnloadableReferenceChoice", ...
+                    "'%s' cannot be loaded: %s Refresh the list if this " + ...
+                    "has since changed.",choiceId,choice.issue);
+            end
+            switch choice.kind
+                case "snapshot"
+                    controller.loadSnapshot(choice.path);
+                case "ao_fov"
+                    controller.loadFov(choice.path);
+                otherwise
+                    error("adaptive_optopatch:UnknownReferenceKind", ...
+                        "'%s' is offered as kind '%s', which this " + ...
+                        "package does not know how to load.", ...
+                        choiceId,choice.kind);
+            end
+        end
+
+        function [path,fovState]=saveNextFov(controller)
+            %SAVENEXTFOV Save the current FOV as the next numbered bundle.
+            %   Writes <snapshot>_FOV###.mat beside the camera snapshot this
+            %   FOV was drawn on, taking the next unused number. It never
+            %   replaces an existing bundle and never touches the snapshot
+            %   itself - see next_fov_bundle_path.
+            %
+            %   The bundle is the existing schema-2 FOV state, written by
+            %   the existing save_fov_state, so what comes back through
+            %   loadFov is what every other saved FOV carries. There is
+            %   deliberately no second persistence format for "the FOV a
+            %   browser saved".
+            controller.assertNotRunning("Saving a FOV");
+            [folder,stem]=controller.fovBundleIdentity();
+            path=adaptive_optopatch.next_fov_bundle_path(folder,stem);
+            fovState=controller.saveFov(path);
+            % The listing now has an entry it did not have, and the newly
+            % written bundle is what the session is working from.
+            controller.ReferenceSourceKind="ao_fov";
+            controller.ReferenceSourcePath=path;
+            controller.ReferenceChoiceCache=[];
+            controller.setStatus(sprintf( ...
+                "Saved FOV %s with %d cells to\n%s", ...
+                fovState.fov_id,numel(fovState.cells),path));
+        end
+
         function setReferenceData(controller,image,info,somaPolygons)
             %SETREFERENCEDATA Install a reference image and optional somata.
             arguments
@@ -235,8 +356,19 @@ classdef AdaptiveOptopatchController < handle
         end
 
         function fovState=loadFov(controller,path)
+            %LOADFOV Restore a saved Adaptive Optopatch FOV from its bundle.
+            %   The canonical path for kind="ao_fov" in the unified chooser,
+            %   and the one the MATLAB planning window's file dialog uses.
+            %   Everything about what a bundle contains, and what restoring
+            %   it means, is setFovState's; this adds only the file.
+            arguments
+                controller
+                path (1,1) string
+            end
             fovState=adaptive_optopatch.load_fov_state(path);
             controller.setFovState(fovState);
+            controller.ReferenceSourceKind="ao_fov";
+            controller.ReferenceSourcePath=path;
         end
 
         function setFovState(controller,fovState)
@@ -251,6 +383,11 @@ classdef AdaptiveOptopatchController < handle
             controller.ReferenceImage=single(reference.reference_image);
             controller.ReferenceInfo=reference_info_from_model(reference);
             controller.ReferenceRevision=controller.ReferenceRevision+1;
+            % A saved FOV, whether or not it arrived from a file: loadFov
+            % adds the path afterwards. Never "snapshot" - the cells and
+            % decisions restored here are exactly what a snapshot has none of.
+            controller.ReferenceSourceKind="ao_fov";
+            controller.ReferenceSourcePath="";
             polygons=fovState.canonical_roi_polygons;
             if isempty(polygons)
                 polygons=masks_to_polygons(fovState.canonical_roi_masks);
@@ -825,6 +962,157 @@ classdef AdaptiveOptopatchController < handle
             if ~isempty(durations), value=1000*durations(1); end
         end
 
+        function preview=spatialPreview(controller,mode)
+            %SPATIALPREVIEW Canonical targeting geometry, as outlines to draw.
+            %   The same preview the MATLAB planning window draws with
+            %   "Preview targets", in the same coordinates, computed by the
+            %   same canonical code: buildSpatialArtifacts for the target
+            %   bundle, build_target_preview for the masks and spiral
+            %   specifications - which derive Blue masks through
+            %   apply_blue_mask_adjustment and 2P geometry through
+            %   apply_acquisition_parameters when a protocol is loaded - and
+            %   generate_spiral_preview for the scan path itself.
+            %
+            %   What is returned is OUTLINES, not masks: bwboundaries of the
+            %   same logical masks the GUI plots, in snapshot-intrinsic
+            %   pixels, so a frontend draws the boundary MATLAB computed
+            %   rather than rasterising or eroding anything itself. Nothing
+            %   here reconstructs erosion, expansion or spiral geometry
+            %   outside the canonical functions.
+            %
+            %   READ ONLY AND HARDWARE-INERT. It builds artifacts in memory
+            %   and measures them. No mask is programmed, no scanner moves,
+            %   no DAQ output is written, and the controller's canonical
+            %   state is unchanged - including ScannerWarning, which
+            %   buildSpatialArtifacts refreshes and which is restored here
+            %   and reported in the payload instead, so that asking for a
+            %   preview cannot change what the state poll says.
+            arguments
+                controller
+                mode (1,1) string ...
+                    {mustBeMember(mode,["1p_dmd","2p_spiral"])}
+            end
+            preview=struct("schema_version","1.0.0","mode",mode, ...
+                "available",false,"message","","source","", ...
+                "coordinate_space","snapshot_intrinsic_pixels", ...
+                "image_size",controller.referenceImageSize(), ...
+                "reference_revision",controller.ReferenceRevision, ...
+                "revision",controller.Revision,"scanner_warning","");
+            preview.blue=empty_outline_array();
+            preview.orange=empty_outline_array();
+            preview.spiral=empty_spiral_array();
+            if isempty(controller.ReferenceImage)
+                preview.message="Load a reference FOV to preview targeting.";
+                return
+            end
+            if isempty(controller.FovGeometry.polygons)
+                preview.message="Draw at least one soma to preview targeting.";
+                return
+            end
+            warningBefore=controller.ScannerWarning;
+            restore=onCleanup(@()set_scanner_warning(controller,warningBefore));
+            [~,targets]=controller.buildSpatialArtifacts( ...
+                "PulseDurationMs",controller.currentPulseDurationMs());
+            canonical=adaptive_optopatch.build_target_preview(targets,mode, ...
+                "ResolvedProtocols",controller.resolvedProtocolsForPreview(), ...
+                "ScannerTransform",targets.scanner_transform, ...
+                "ScannerSampleRateHz",targets.parameters.scanner_sample_rate_hz);
+            preview.available=true;
+            preview.source=string(canonical.source);
+            preview.scanner_warning=controller.ScannerWarning;
+            for k=1:numel(canonical.orange)
+                preview.orange(end+1,1)=mask_outline( ...
+                    canonical.orange(k).mask,canonical.orange(k).cell_id, ...
+                    "expansion_pixels", ...
+                    canonical.orange(k).expansion_pixels);
+            end
+            for k=1:numel(canonical.blue)
+                preview.blue(end+1,1)=mask_outline( ...
+                    canonical.blue(k).mask,canonical.blue(k).cell_id, ...
+                    "adjustment_pixels", ...
+                    canonical.blue(k).adjustment_pixels);
+            end
+            for k=1:numel(canonical.spiral)
+                preview.spiral(end+1,1)= ...
+                    spiral_geometry(canonical.spiral(k));
+            end
+        end
+
+        function preview=waveformPreview(controller,options)
+            %WAVEFORMPREVIEW Plotting-ready commands for the frozen-shape plan.
+            %   The same thing the MATLAB planning window's Preview button
+            %   plots, produced by the same canonical code and handed over
+            %   as numbers instead of drawn into an axes:
+            %
+            %     2p_spiral   build2pPreviewWaveforms, which is
+            %                 build_2p_plan_preview -> build_2p_trial_waveforms:
+            %                 the galvo X and Y commands and the Pockels
+            %                 command, in volts, at the scanner sample rate.
+            %
+            %     1p_dmd      flatten_pulse_schedule on the resolved
+            %                 acquisition, rendered as the mod488 step trace
+            %                 the GUI plots, plus every event's target,
+            %                 timing and command voltage.
+            %
+            %   No schedule resolution, no waveform synthesis and no
+            %   attenuation happens anywhere but in those functions. A
+            %   frontend receives samples and draws them.
+            %
+            %   READ ONLY AND HARDWARE-INERT. Both paths resolve hardware
+            %   with ApplyCalibration=false - the live scanner's targeting
+            %   transform is never overwritten - and neither writes a DAQ
+            %   output, programs a DMD, moves a scanner nor touches a
+            %   shutter. Nothing is committed and no revision is bumped.
+            %
+            %   Only the channels the canonical preview produces are
+            %   reported. Orange illumination and the camera trigger are not
+            %   among them: those are built by
+            %   build_luminos_1p_waveform_config and
+            %   build_luminos_2p_waveform_config at execution setup, against
+            %   live devices, and a read-only preview does not manufacture
+            %   stand-ins for them. The acquisition duration every channel
+            %   is drawn against is reported instead.
+            arguments
+                controller
+                %MAXIMUMPOINTS Samples per channel a view is asked to draw.
+                options.MaximumPoints (1,1) double ...
+                    {mustBePositive,mustBeInteger} = 4000
+            end
+            mode=controller.PlanParameters.stimulation_mode;
+            preview=struct("schema_version","1.0.0","available",false, ...
+                "message","","mode",mode,"revision",controller.Revision, ...
+                "acquisition_id","","protocol_id","", ...
+                "duration_s",NaN,"sample_rate_hz",NaN, ...
+                "decimation_step",1,"truncated",false, ...
+                "window_s",[0 0],"time_s",[]);
+            preview.channels=empty_channel_array();
+            preview.events=empty_waveform_event_array();
+            preview.targets=empty_target_summary_array();
+            if isempty(controller.Protocol)
+                preview.message="Load a pulse protocol to preview waveforms.";
+                return
+            end
+            if isempty(controller.ReferenceImage) || ...
+                    isempty(controller.FovGeometry.polygons)
+                preview.message=["A reference FOV with at least one soma " ...
+                    "is needed before a waveform can be resolved."];
+                return
+            end
+            warningBefore=controller.ScannerWarning;
+            restore=onCleanup(@()set_scanner_warning(controller,warningBefore));
+            plan=controller.buildPlan();
+            preview.protocol_id=string(plan.protocol.protocol_id);
+            if mode=="2p_spiral"
+                preview=fill_2p_waveform_preview(preview, ...
+                    controller.build2pPreviewWaveforms(plan), ...
+                    options.MaximumPoints);
+            else
+                preview=fill_1p_waveform_preview(preview,plan, ...
+                    options.MaximumPoints);
+            end
+            preview.available=true;
+        end
+
         function configuration=sendOrangeRecordingMask(controller)
             [~,targets]=controller.buildSpatialArtifacts();
             configuration=adaptive_optopatch.prepare_luminos_orange_mask( ...
@@ -1175,6 +1463,11 @@ classdef AdaptiveOptopatchController < handle
         function adoptReference(controller,image,info)
             controller.ReferenceImage=image;
             controller.ReferenceInfo=info;
+            % Cleared rather than left behind: whatever installed this
+            % reference sets it afterwards, and a stale provenance would
+            % have the chooser mark the wrong entry as the loaded one.
+            controller.ReferenceSourceKind="";
+            controller.ReferenceSourcePath="";
             controller.ReferenceRevision=controller.ReferenceRevision+1;
             controller.CellState=struct([]);
             controller.FovGeometry=adaptive_optopatch.create_fov_geometry( ...
@@ -1211,6 +1504,37 @@ classdef AdaptiveOptopatchController < handle
                 "blue_mask_adjustment_pixels",NaN, ...
                 parameters.blue_mask_adjustment_pixels);
             controller.PlanParameters=parameters;
+        end
+
+        function [folder,stem]=fovBundleIdentity(controller)
+            %FOVBUNDLEIDENTITY Where a saved FOV goes, and what it is called.
+            %   Both are derived from the CAMERA SNAPSHOT this FOV descends
+            %   from, not from whatever file was last loaded. A FOV saved
+            %   from snap_FOV001 is therefore snap_FOV002 and not
+            %   snap_FOV001_FOV001: reference.source_snapshot survives a
+            %   save/load round trip, so the whole chain of bundles stays
+            %   named for, and grouped with, the one snapshot they all view.
+            if isempty(controller.ReferenceImage)
+                error("adaptive_optopatch:NothingToSave", ...
+                    "Load a reference FOV before saving one.");
+            end
+            snapshotPath=info_string(controller.ReferenceInfo,"snapshot_path");
+            folder=""; stem="";
+            if strlength(snapshotPath)>0
+                [folder,stem]=fileparts(snapshotPath);
+                folder=string(folder); stem=string(stem);
+            end
+            if strlength(stem)==0
+                % A reference installed directly rather than read from a
+                % file - the FOV still has an identity, and it is the one
+                % every artifact built from it already uses.
+                stem=info_string(controller.ReferenceInfo,"snapshot_name");
+            end
+            if strlength(folder)==0
+                roots=controller.snapshotSearchRoots();
+                roots=roots(strlength(roots)>0);
+                if ~isempty(roots), folder=roots(1); end
+            end
         end
 
         function roots=snapshotSearchRoots(controller)
@@ -1378,10 +1702,16 @@ classdef AdaptiveOptopatchController < handle
         end
 
         function summary=fovSummary(controller)
+            % source_kind and source_path report WHICH entry of the unified
+            % chooser is loaded and which kind it was, so a view can say
+            % whether the cells on screen were restored from a saved FOV or
+            % drawn on a fresh snapshot in this session.
             geometry=controller.FovGeometry;
             summary=struct("loaded",~isempty(controller.ReferenceImage), ...
                 "fov_id","","rig_name","","camera_name","","camera_bin",NaN, ...
                 "snapshot_path","","snapshot_directory","", ...
+                "source_kind",controller.ReferenceSourceKind, ...
+                "source_path",controller.ReferenceSourcePath, ...
                 "image_size",geometry.image_size, ...
                 "roi_origin_xy",[NaN NaN], ...
                 "reference_revision",controller.ReferenceRevision, ...
@@ -1460,6 +1790,199 @@ classdef AdaptiveOptopatchController < handle
             summary.batch_complete=batch_is_complete(trials);
         end
     end
+end
+
+function set_scanner_warning(controller,value)
+%SET_SCANNER_WARNING Put back the warning a read-only preview refreshed.
+%   buildSpatialArtifacts re-reads the live scanner calibration and records
+%   what it found. That is the right thing during planning and the wrong
+%   thing during a preview: the preview reports the warning in its own
+%   payload, and the state poll must not change because somebody looked.
+controller.ScannerWarning=value;
+end
+
+% -----------------------------------------------------------------------
+% Spatial preview
+% -----------------------------------------------------------------------
+
+function outline=mask_outline(mask,cellId,parameterName,parameterValue)
+%MASK_OUTLINE One canonical mask, as the boundaries the GUI plots.
+%   bwboundaries of exactly the mask build_target_preview produced, in
+%   [row column] which is [y x] in snapshot-intrinsic pixels - the same
+%   conversion the MATLAB axes do when they plot p(:,2) against p(:,1).
+%   Several rings are possible for one mask and all are returned; nothing
+%   here closes, simplifies or smooths them.
+boundaries=bwboundaries(logical(mask));
+rings=cell(numel(boundaries),1);
+for k=1:numel(boundaries)
+    ring=boundaries{k};
+    rings{k}=[ring(:,2) ring(:,1)];
+end
+outline=empty_outline();
+outline.cell_id=string(cellId);
+outline.rings=rings;
+outline.pixel_count=sum(logical(mask),"all");
+outline.(parameterName)=double(parameterValue);
+end
+
+function outline=empty_outline()
+% rings is assigned rather than passed to struct(): a cell value there is
+% read as one struct element per cell entry, and {} would produce an empty
+% struct array instead of a struct with an empty cell in it.
+outline=struct("cell_id","","pixel_count",0, ...
+    "adjustment_pixels",NaN,"expansion_pixels",NaN);
+outline.rings={};
+end
+
+function outlines=empty_outline_array()
+outlines=repmat(empty_outline(),0,1);
+end
+
+function geometry=spiral_geometry(entry)
+%SPIRAL_GEOMETRY One target's 2P scan geometry, as points to draw.
+%   The circle bounding the spiral, the spiral path itself, and the
+%   automatic off-cell parking point with the dark transition to it - the
+%   three things the MATLAB preview draws. The path comes from
+%   generate_spiral_preview, which is Luminos's Fermat spiral; it is not
+%   recomputed anywhere else.
+geometry=empty_spiral();
+geometry.cell_id=string(entry.cell_id);
+geometry.center_xy=double(entry.center_xy);
+geometry.radius_pixels=double(entry.radius_pixels);
+geometry.density_points_per_volt=double(entry.density_points_per_volt);
+geometry.parking_xy=double(entry.parking_xy);
+geometry.pulse_duration_ms=double(entry.pulse_duration_ms);
+geometry.cycle_metrics=entry.cycle_metrics;
+if all(isfinite(geometry.center_xy)) && isfinite(geometry.radius_pixels) && ...
+        geometry.radius_pixels>0 && isfinite(geometry.density_points_per_volt) && ...
+        geometry.density_points_per_volt>0
+    % Capped well below the function's own default: this is a path drawn
+    % in a browser, and a spiral that would need fifty thousand points to
+    % render is one nobody can see the turns of anyway.
+    geometry.path_xy=adaptive_optopatch.generate_spiral_preview( ...
+        geometry.center_xy,geometry.radius_pixels, ...
+        geometry.density_points_per_volt,"MaximumDisplayPoints",2000);
+end
+end
+
+function geometry=empty_spiral()
+geometry=struct("cell_id","","center_xy",[NaN NaN],"radius_pixels",NaN, ...
+    "density_points_per_volt",NaN,"parking_xy",[NaN NaN], ...
+    "pulse_duration_ms",NaN,"path_xy",zeros(0,2), ...
+    "cycle_metrics",struct("calibrated",false));
+end
+
+function geometries=empty_spiral_array()
+geometries=repmat(empty_spiral(),0,1);
+end
+
+% -----------------------------------------------------------------------
+% Waveform preview
+% -----------------------------------------------------------------------
+
+function channel=make_channel(name,units,values,kind)
+channel=struct("name",string(name),"units",string(units), ...
+    "kind",string(kind),"values",reshape(double(values),1,[]));
+end
+
+function channels=empty_channel_array()
+channels=repmat(make_channel("","",[],"analog"),0,1);
+end
+
+function event=empty_waveform_event()
+event=struct("cell_id","","onset_s",NaN,"offset_s",NaN, ...
+    "command_voltage_v",NaN,"is_null",false);
+end
+
+function events=empty_waveform_event_array()
+events=repmat(empty_waveform_event(),0,1);
+end
+
+function summary=empty_target_summary()
+summary=struct("cell_id","","event_count",0);
+end
+
+function summaries=empty_target_summary_array()
+summaries=repmat(empty_target_summary(),0,1);
+end
+
+function preview=fill_2p_waveform_preview(preview,waveforms,maximumPoints)
+%FILL_2P_WAVEFORM_PREVIEW Galvo and Pockels commands, decimated for a view.
+%   Uniform decimation, exactly as the MATLAB preview axes do it: these are
+%   dense sample vectors at the scanner rate and a plot cannot show them
+%   all. The step is reported so a view can say what it is drawing.
+rate=double(waveforms.sample_rate_hz);
+n=numel(waveforms.x_v);
+step=max(1,ceil(n/maximumPoints));
+index=1:step:n;
+preview.sample_rate_hz=rate;
+preview.duration_s=double(waveforms.actual_acquisition_duration_s);
+preview.decimation_step=step;
+preview.time_s=(index-1)/rate;
+preview.window_s=[0 preview.duration_s];
+preview.channels=[ ...
+    make_channel("Galvo X","V",waveforms.x_v(index),"analog")
+    make_channel("Galvo Y","V",waveforms.y_v(index),"analog")
+    make_channel("Pockels","V",waveforms.pockels_v(index),"analog")];
+% The illuminated windows, from the same per-pulse record the waveform was
+% built from, so an event boundary lands exactly where the command changes.
+for k=1:numel(waveforms.per_pulse)
+    pulse=waveforms.per_pulse(k);
+    event=empty_waveform_event();
+    event.onset_s=double(pulse.on_sample)/rate;
+    event.offset_s=double(pulse.off_sample)/rate;
+    preview.events(end+1,1)=event;
+end
+end
+
+function preview=fill_1p_waveform_preview(preview,plan,maximumPoints)
+%FILL_1P_WAVEFORM_PREVIEW The mod488 step trace and the events behind it.
+%   The first resolved acquisition of the frozen-shape plan, flattened by
+%   flatten_pulse_schedule - which is where a resolved event's concrete
+%   command voltage comes from - and rendered as the same rising/falling
+%   edge trace the MATLAB preview plots.
+resolved=plan.manifest.trials.pulse_schedule{1};
+preview.acquisition_id=string(resolved.acquisition_id);
+preview.duration_s=double(resolved.acquisition_duration_s);
+pulses=adaptive_optopatch.flatten_pulse_schedule(resolved);
+
+% Four edge samples per pulse. A long round robin would ask a browser to
+% draw more than it usefully can, so the trace is cut at a whole pulse and
+% the window it covers is reported rather than the pulses being thinned,
+% which would show a schedule that was never scheduled.
+maximumPulses=max(1,floor(maximumPoints/4));
+if height(pulses)>maximumPulses
+    pulses=pulses(1:maximumPulses,:);
+    preview.truncated=true;
+end
+preview.window_s=[0 max(double(pulses.offset_s(end)),0)];
+if ~preview.truncated, preview.window_s=[0 preview.duration_s]; end
+
+onset=double(pulses.onset_s); offset=double(pulses.offset_s);
+command=double(pulses.modulator_voltage);
+zero=zeros(height(pulses),1);
+preview.time_s=reshape([onset onset offset offset]',1,[]);
+preview.channels=make_channel("mod488","V", ...
+    reshape([zero command command zero]',1,[]),"analog");
+preview.sample_rate_hz=NaN;
+
+isNull=logical(pulses.is_null);
+cellIds=string(pulses.target_cell_id);
+for k=1:height(pulses)
+    event=empty_waveform_event();
+    event.cell_id=cellIds(k);
+    event.onset_s=onset(k);
+    event.offset_s=offset(k);
+    event.command_voltage_v=command(k);
+    event.is_null=isNull(k);
+    preview.events(end+1,1)=event;
+end
+for id=reshape(unique(cellIds(~isNull),"stable"),1,[])
+    summary=empty_target_summary();
+    summary.cell_id=id;
+    summary.event_count=sum(cellIds==id & ~isNull);
+    preview.targets(end+1,1)=summary;
+end
 end
 
 function parameters=default_plan_parameters()

@@ -62,6 +62,9 @@ const AO_ACTION_METHOD = "adaptive_optopatch_action_js";
 const AO_IMAGE_METHOD = "get_adaptive_optopatch_reference_image_js";
 const AO_PROTOCOLS_METHOD = "get_adaptive_optopatch_protocol_choices_js";
 const AO_SNAPSHOTS_METHOD = "get_adaptive_optopatch_snapshot_choices_js";
+const AO_REFERENCES_METHOD = "get_adaptive_optopatch_reference_choices_js";
+const AO_SPATIAL_PREVIEW_METHOD = "get_adaptive_optopatch_spatial_preview_js";
+const AO_WAVEFORM_PREVIEW_METHOD = "get_adaptive_optopatch_waveform_preview_js";
 
 // The fixtures that go with the state one. Beside it, and named after it.
 //
@@ -340,6 +343,18 @@ const appMethod = (method, args, session) => {
 
     case AO_SNAPSHOTS_METHOD:
       return session.snapshots();
+
+    case AO_REFERENCES_METHOD:
+      return session.references();
+
+    // The mode is the first argument the MATLAB function declares after the
+    // app, so args[0] here. An unrecognised one is refused there; the stub
+    // passes whatever it is through and lets the session answer.
+    case AO_SPATIAL_PREVIEW_METHOD:
+      return session.spatialPreview(args?.[0] ?? "2p_spiral");
+
+    case AO_WAVEFORM_PREVIEW_METHOD:
+      return session.waveformPreview();
 
     default:
       return undefined;

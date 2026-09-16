@@ -1097,3 +1097,88 @@ Deliberately left in the GUI: the in-progress `drawpolygon` interaction, list
 selection, overlay visibility toggles, file dialogs, planning-bundle discovery
 on snapshot load, and all axes rendering. Those are view concerns, and a React
 frontend will implement its own.
+
+## 2026-09-16 — One chooser for references, and previews that compute nothing
+
+The React tab could start a session from a camera snapshot but not from a
+saved FOV, so the step that carries the experiment's actual decisions —
+somata, stable identities, eligibility, Blue calibration — still needed the
+MATLAB window. The obstacle was never transport; it was that `load_fov` took a
+path, and a browser must not send one. `snapshotChoices()` had already solved
+that shape, so the fix was to widen it rather than to invent a second one.
+
+`referenceChoices()` lists both in one typed listing. A `snapshot` entry loads
+through `loadSnapshot` and yields a fresh FOV with no cells; an `ao_fov` entry
+loads through `loadFov` and restores everything the bundle holds. They are one
+list because to an operator they are one question — which field am I working
+on — and typed rather than blended because an Adaptive Optopatch FOV must
+never be read as a camera snap. `list_snapshot_choices` now excludes bundles,
+which it had been listing as unreadable snapshots.
+
+Saving allocates and never replaces. A bundle is written beside the snapshot
+it descends from as `<snapshot>_FOV###`, at one past the highest number
+present, re-checked against the filesystem. The name comes from
+`reference.source_snapshot`, which survives a round trip, so a FOV saved from
+`_FOV001` becomes `_FOV002` rather than `_FOV001_FOV001` and the whole chain
+stays grouped with the one snapshot it views. `save_fov` therefore needs no
+path and no name from the caller, exactly as `freeze_run` needs no output
+root. The artifact is the existing schema-2 state through the existing
+`save_fov_state`; there is deliberately no second persistence format for "a
+FOV a browser saved". `fov.source_kind` and `fov.source_path` were added so a
+frontend can say which entry is loaded and whether its cells were restored or
+drawn — the summary's `snapshot_path` names the ancestor snapshot either way
+and cannot answer that.
+
+`set_cell_blue_voltage` was added to the allowlist. It had been absent on the
+grounds that per-cell Blue voltage is provenance rather than an editable
+control, which was the wrong reading of it: the MATLAB cell table has always
+edited exactly this value through exactly this controller method, and calling
+the same edit unsafe in one frontend and routine in the other was the
+inconsistency. What makes it safe is not where it is typed but
+`resolve_protocol`, which is unchanged: `event > acquisition > protocol >
+fov_cell` means a protocol naming a voltage is unaffected, and the narrowing
+to `event > acquisition > protocol` for `2p_spiral` means a 488 nm calibration
+cannot reach a Pockels command. Both directions are asserted now, including
+that the `fov_cell` tier still resolves when nothing else defines one —
+without which the first assertion would pass for a value that never resolves
+at all.
+
+The two previews are read-only accessors over the code the planning window's
+Preview button already calls: `build_target_preview` and
+`generate_spiral_preview` for geometry, `build_2p_trial_waveforms` and
+`flatten_pulse_schedule` for commands. What crosses the wire is `bwboundaries`
+rings and spiral points in snapshot-intrinsic pixels, and decimated sample
+vectors — coordinates and numbers, not masks and not a description a frontend
+would have to interpret. Nothing is rasterised, eroded or spiralled in a
+browser, and nothing new computes geometry.
+
+Making them honestly read-only took one deliberate choice.
+`buildSpatialArtifacts` refreshes `ScannerWarning`, so asking for a preview
+would have changed `getState()` without bumping the revision — a state poll
+altered by somebody looking at something. The warning is now saved and
+restored around the call and reported in the preview's own payload instead.
+Both previews carry the revision they describe, which is what lets a frontend
+drop a stale overlay instead of deciding for itself which edits moved
+geometry; every canonical mutation bumps the revision, so the rule needs no
+list of which ones matter.
+
+The waveform preview reports only the channels the canonical preview produces.
+Orange illumination and the camera trigger are built by the Luminos waveform
+configurators at execution setup, against live devices, and a preview that
+manufactured stand-ins for them would be showing an experiment nobody
+configured. A long 1P schedule is windowed at a whole pulse rather than
+thinned, because a thinned step trace draws a schedule that was never
+scheduled.
+
+Two presentation faults were fixed on the same pass. The tab had been
+displaying the seven legacy timing defaults — pulses per neuron, pulse
+duration, dark-gap bounds, pre and post delays — whether or not a protocol was
+loaded. `buildPlan` strips those from the saved session and every onset comes
+from the protocol script, so they described nothing; where experiment timing
+belongs the tab now says to load a protocol, and once one is loaded shows only
+what `summarize_protocol` reports about it. And wheel-zoom over the canvas
+scrolled the page as well as zooming, because React attaches `wheel` at the
+root as a passive listener and `preventDefault()` on a passive listener does
+nothing. The canvas now attaches its own listener with `{ passive: false }`
+and removes it on unmount. Nothing is disabled document-wide: the listener is
+on the element, so scrolling anywhere else is untouched.

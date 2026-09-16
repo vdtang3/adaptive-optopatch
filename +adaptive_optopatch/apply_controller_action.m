@@ -117,19 +117,42 @@ end
 
 function names=action_names()
 %ACTION_NAMES Every action a frontend may invoke, and nothing else.
-%   Deliberately absent, and why:
+%   Present now, and why - these three were absent while the reason for
+%   their absence held, and the reason has since been removed:
 %
-%     load_fov / save_fov / resume_run
-%         all take a filesystem path chosen by the operator. A browser
-%         cannot pick one, and it must not be allowed to send one. These
-%         stay in the MATLAB GUI until a MATLAB-owned chooser exists for
-%         them, the way snapshotChoices() and protocolChoices() are for
-%         camera snapshots and protocols.
+%     load_reference_choice
+%         the chooser that snapshotChoices() and protocolChoices() were the
+%         model for now exists for saved FOVs too. referenceChoices() lists
+%         camera snapshots and saved Adaptive Optopatch FOVs together, each
+%         typed and each with a choice_id, and this takes that id and
+%         nothing else. There is still no way to send a path.
 %
-%     set_cell_blue_voltage / set_cell_calibration
-%         the per-cell 488 nm calibration is provenance a frontend displays,
-%         not a command source it edits. Command-voltage precedence is
-%         owned by the resolver.
+%     save_fov
+%         takes no path at all. WHERE a FOV is written, and what it is
+%         called, is the session's decision - beside the snapshot it was
+%         drawn on, at the next unused number - exactly as freeze_run's
+%         output root is. A browser asks for a save; it does not name a file.
+%
+%     set_cell_blue_voltage
+%         the per-cell 488 nm CALIBRATION, which the MATLAB cell table has
+%         always been able to edit through the same controller method. It
+%         is stored provenance, not a command source: resolve_protocol owns
+%         command-voltage precedence and a stored calibration is the tier it
+%         reaches only when the event, the acquisition and the protocol have
+%         none. Editing it here cannot override a protocol that names a
+%         voltage, and cannot reach a 2P Pockels command at all.
+%
+%   Deliberately still absent, and why:
+%
+%     resume_run
+%         takes a run folder chosen by the operator. A browser cannot
+%         present that chooser, and there is no MATLAB-owned listing of
+%         resumable runs yet.
+%
+%     set_cell_calibration
+%         writes a calibration SNAPSHOT - the pulse duration and OBIS power
+%         a value was measured at - and belongs with the Blue-ramp review
+%         that measures them, not with a typed-in number.
 %
 %     clear_somata
 %         one click that discards every soma in the FOV. It stays where it
@@ -139,8 +162,11 @@ function names=action_names()
 %         drives a DMD. Hardware output is not something a state-editing
 %         surface should carry.
 names=[ ...
+    "load_reference_choice"
     "load_snapshot_choice"
+    "save_fov"
     "set_cell_eligibility"
+    "set_cell_blue_voltage"
     "add_soma"
     "update_soma"
     "delete_soma"
@@ -165,6 +191,29 @@ function run_action(controller,action,payload)
 %   experiment: validation, identity, eligibility, QC, legality and
 %   execution all remain the controller's.
 switch action
+    case "load_reference_choice"
+        % One id, out of a listing MATLAB produced, naming either a camera
+        % snapshot or a saved Adaptive Optopatch FOV. Which of the two it
+        % is, and therefore whether this starts a fresh FOV or restores
+        % saved cells and decisions, is decided inside
+        % loadReferenceChoice against that listing - not here, and never
+        % by the caller.
+        controller.loadReferenceChoice(required_text(payload,"choice_id"));
+
+    case "save_fov"
+        % No path, and no number. The bundle goes beside the snapshot this
+        % FOV was drawn on, at the next unused number, and never replaces
+        % one that is already there.
+        controller.saveNextFov();
+
+    case "set_cell_blue_voltage"
+        % The stored per-cell 488 nm calibration, through the same
+        % controller method the MATLAB cell table edits it with. The
+        % controller validates the value; the resolver still owns what a
+        % run actually commands.
+        controller.setCellBlueVoltage(required_text(payload,"cell_id"), ...
+            required_field(payload,"voltage_v"));
+
     case "load_snapshot_choice"
         % The browser sends a choice_id from a listing MATLAB produced, and
         % nothing else. Resolving it to a file, and reading the camera

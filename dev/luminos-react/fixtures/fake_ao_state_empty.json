@@ -18,6 +18,8 @@
     "camera_bin": null,
     "snapshot_path": "",
     "snapshot_directory": "",
+    "source_kind": "",
+    "source_path": "",
     "image_size": [
       0,
       0
@@ -72,6 +74,7 @@
     "edit_plan_parameters": true,
     "load_protocol": true,
     "load_fov": true,
+    "save_fov": false,
     "freeze_run": false,
     "run": true,
     "stop_after_current": false,

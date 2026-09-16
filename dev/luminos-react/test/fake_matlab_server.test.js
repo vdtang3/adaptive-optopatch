@@ -89,6 +89,52 @@ test("get_properties answers with a shape, because callers read numDevices first
   assert.equal(reply.numDevices, 0);
 });
 
+test("every Adaptive Optopatch read is routed to the session, by its real name", () => {
+  // The method names are the ones
+  // luminos-private/src/Experimental_Scripts/js declares, so swapping this
+  // server for the real one is backend wiring and no frontend change. A
+  // name typed wrong here answers `undefined`, which the browser reads as
+  // null and the tab renders as "not available" - a silent hole rather than
+  // an error, which is why it is worth a test.
+  const called = [];
+  const session = {
+    current: () => ({ revision: 1 }),
+    choices: () => { called.push("protocols"); return []; },
+    snapshots: () => { called.push("snapshots"); return []; },
+    references: () => { called.push("references"); return []; },
+    spatialPreview: (mode) => { called.push(`spatial:${mode}`); return { available: false }; },
+    waveformPreview: () => { called.push("waveform"); return { available: false }; },
+    referenceImage: () => null,
+  };
+  const call = (method, args) =>
+    replyFor({ type: "app_method", method, args }, session);
+
+  call("get_adaptive_optopatch_protocol_choices_js", []);
+  call("get_adaptive_optopatch_snapshot_choices_js", []);
+  call("get_adaptive_optopatch_reference_choices_js", []);
+  call("get_adaptive_optopatch_spatial_preview_js", ["1p_dmd"]);
+  call("get_adaptive_optopatch_waveform_preview_js", []);
+
+  assert.deepEqual(called, [
+    "protocols", "snapshots", "references", "spatial:1p_dmd", "waveform",
+  ]);
+});
+
+test("a spatial preview with no mode asked for still asks for one", () => {
+  // The MATLAB endpoint declares a default and validates the argument; the
+  // stub must not hand it undefined and get a different answer.
+  let asked = null;
+  const session = {
+    current: () => null,
+    spatialPreview: (mode) => { asked = mode; return { available: false }; },
+  };
+  replyFor(
+    { type: "app_method", method: "get_adaptive_optopatch_spatial_preview_js" },
+    session
+  );
+  assert.equal(asked, "2p_spiral");
+});
+
 // ---------------------------------------------------------------------------
 // Over a real socket
 // ---------------------------------------------------------------------------

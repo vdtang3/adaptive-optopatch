@@ -75,7 +75,10 @@ Requests it recognises:
 | `app_method adaptive_optopatch_action_js` | the same reply envelope MATLAB produces |
 | `app_method get_adaptive_optopatch_reference_image_js` | the loaded snapshot's image, binary-framed |
 | `app_method get_adaptive_optopatch_snapshot_choices_js` | the snapshot listing fixture |
+| `app_method get_adaptive_optopatch_reference_choices_js` | the snapshot listing plus whatever has been saved in this session, typed by `kind` |
 | `app_method get_adaptive_optopatch_protocol_choices_js` | the protocol listing fixture |
+| `app_method get_adaptive_optopatch_spatial_preview_js` | an imitated targeting overlay — see below |
+| `app_method get_adaptive_optopatch_waveform_preview_js` | an imitated command trace — see below |
 | `get_properties` | `{ numDevices: 0 }` |
 | `set_property` | `1` |
 | `dev_method` | JS_Server's `device_missing` reply |
@@ -92,6 +95,9 @@ mirrors the parts of the contract the frontend is written against:
 - the same reply envelope, carrying the state after the action whether it was
   applied or refused
 - `legal_actions` and `lifecycle` recomputed rather than carried over
+- `fov.source_kind` and `fov.source_path`, so the chooser can mark the loaded
+  entry and the tab can say whether cells were restored or drawn
+- the `(0, 5] V` range the controller enforces on a per-cell Blue calibration
 
 `load_snapshot_choice` is the one action that does not imitate anything: it
 REPLAYS what the real controller did. The FOV it installs and the image it
@@ -99,6 +105,35 @@ then serves were both captured from a real `loadSnapshotChoice`, so camera
 identity, crop origin, binning and image size are MATLAB's numbers rather than
 the stub's. A stub that invented them would let a frontend bug that mishandles
 a cropped frame pass unnoticed here and fail on the rig.
+`load_reference_choice` dispatches to it for a `snapshot` entry, and to an
+in-memory restore for an `ao_fov` one.
+
+### Saved FOVs exist only in memory
+
+This server never touches the filesystem, so `save_fov` writes no file. What it
+keeps is the slice of state a real save would have persisted, so that saving in
+the browser adds an entry to the chooser and loading it back restores the
+cells. The **naming** is the real rule — `<snapshot>_FOV###`, next unused
+number, never replacing one, never renaming through a chain of saves — because
+that is what the frontend displays and groups on. What a bundle **contains** is
+an imitation; the schema is MATLAB's and is tested in
+`tests/TestAdaptiveOptopatchReferenceChooser.m`.
+
+### The previews are shaped right and drawn wrong
+
+`spatialPreview` and `waveformPreview` return payloads whose SHAPE matches the
+endpoints — kinds, coordinate space, outline rings, spiral path, parking point,
+channels, event list, per-target counts, decimation fields — so the canvas
+overlay, the mode switching, the staleness rule, the plot and all their empty
+states can be exercised without MATLAB.
+
+The NUMBERS are invented. The "Blue mask" outline is the canonical polygon
+scaled about its centroid rather than one `apply_blue_mask_adjustment` eroded,
+the spiral is an analytic curve rather than the Fermat spiral Luminos scans,
+and the waveform is a made-up pulse train rather than a resolved schedule. **Do
+not read any of it as Adaptive Optopatch geometry or timing.** The real ones are
+computed by MATLAB and tested in
+`tests/TestAdaptiveOptopatchFrontendPreviews.m`.
 
 Everything **below** that — what a polygon means, how a cell is named, whether a
 protocol is valid, when a plan may be frozen, what a run does — is a plausible
@@ -228,6 +263,13 @@ whole trigger for a frontend refetching the image), that the served image
 follows the snapshot that was loaded, that a new reference discards the somata
 drawn on the old one, and that an id that was never offered - a path, in
 particular - is refused.
+
+And it covers the unified chooser as the tab reads it: that both kinds arrive
+in one listing grouped by reference, that saving allocates the next number
+without replacing anything, that a saved FOV restores cells while its snapshot
+loads fresh, that exactly one entry is marked current, that Blue V is refused
+outside the controller's range and leaves the stored value alone, and that
+neither preview changes the session.
 
 ## The React tab itself
 

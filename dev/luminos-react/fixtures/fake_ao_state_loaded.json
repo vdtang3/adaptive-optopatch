@@ -7,7 +7,7 @@
   "stop_after_current_requested": false,
   "status": [
     "Frozen run plan created before acquisition:",
-    "<dev fixture>/tp8c706b77_f44e_4f59_91ae_ce1a5dcc2be1/adaptive_optopatch_run_x120000ao_full_cam_OrcaFusion_20260916_151653"
+    "<dev fixture>/tp519b59cc_e68f_4af3_b7c3_f08d93b94abe/adaptive_optopatch_run_x120000ao_full_cam_OrcaFusion_20260916_173132"
   ],
   "scanner_warning": "",
   "fov": {
@@ -16,8 +16,10 @@
     "rig_name": "Virtual_Upright",
     "camera_name": "Orca Fusion",
     "camera_bin": 1,
-    "snapshot_path": "<dev fixture>/tpd1641fe8_4543_4d80_96fb_a2b8a0f01868/120000ao_full_cam-OrcaFusion.mat",
-    "snapshot_directory": "<dev fixture>/tpd1641fe8_4543_4d80_96fb_a2b8a0f01868",
+    "snapshot_path": "<dev fixture>/tpff5a7fa9_b8de_4c8d_8abe_288bdfcb819c/120000ao_full_cam-OrcaFusion.mat",
+    "snapshot_directory": "<dev fixture>/tpff5a7fa9_b8de_4c8d_8abe_288bdfcb819c",
+    "source_kind": "snapshot",
+    "source_path": "<dev fixture>/tpff5a7fa9_b8de_4c8d_8abe_288bdfcb819c/120000ao_full_cam-OrcaFusion.mat",
     "image_size": [
       128,
       160
@@ -221,8 +223,8 @@
   },
   "active_run": {
     "frozen": true,
-    "folder": "<dev fixture>/tp8c706b77_f44e_4f59_91ae_ce1a5dcc2be1/adaptive_optopatch_run_x120000ao_full_cam_OrcaFusion_20260916_151653",
-    "batch_id": "adaptive_optopatch_run_x120000ao_full_cam_OrcaFusion_20260916_151653",
+    "folder": "<dev fixture>/tp519b59cc_e68f_4af3_b7c3_f08d93b94abe/adaptive_optopatch_run_x120000ao_full_cam_OrcaFusion_20260916_173132",
+    "batch_id": "adaptive_optopatch_run_x120000ao_full_cam_OrcaFusion_20260916_173132",
     "batch_number": 1,
     "trial_count": 2,
     "completed_trial_count": 0,
@@ -233,6 +235,7 @@
     "edit_plan_parameters": true,
     "load_protocol": true,
     "load_fov": true,
+    "save_fov": true,
     "freeze_run": true,
     "run": true,
     "stop_after_current": false,

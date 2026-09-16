@@ -78,9 +78,7 @@ loads=repmat(struct("choice_id","","fov",struct(),"rows",0,"columns",0, ...
     "pixels",[]),0,1);
 for k=1:numel(choices)
     controller.loadSnapshotChoice(choices(k).choice_id);
-    fov=controller.getState().fov;
-    fov.snapshot_directory=redact_temporary(fov.snapshot_directory);
-    fov.snapshot_path=redact_temporary(fov.snapshot_path);
+    fov=redact_fov_paths(controller.getState().fov);
     image=controller.referenceDisplayImage();
     loads(end+1,1)=struct("choice_id",choices(k).choice_id,"fov",fov, ...
         "rows",size(image,1),"columns",size(image,2), ...
@@ -212,11 +210,19 @@ if isfield(state,"active_run") && isfield(state.active_run,"folder")
     state.active_run.folder=redact_temporary(state.active_run.folder);
 end
 if isfield(state,"fov")
-    state.fov.snapshot_directory=redact_temporary(state.fov.snapshot_directory);
-    state.fov.snapshot_path=redact_temporary(state.fov.snapshot_path);
+    state.fov=redact_fov_paths(state.fov);
 end
 state.status=redact_temporary(state.status);
 write_json(target,state);
+end
+
+function fov=redact_fov_paths(fov)
+% Every path the FOV summary carries, in one place - including
+% source_path, which names the file the reference was actually loaded from
+% and is a temporary directory here.
+for field=["snapshot_directory","snapshot_path","source_path"]
+    if isfield(fov,field), fov.(field)=redact_temporary(fov.(field)); end
+end
 end
 
 function choices=redact_choice_paths(choices)

@@ -126,7 +126,7 @@ const withServer = async (fixturePath, body) => {
   const raw = (text) => socket.write(text);
 
   try {
-    await body({ request, raw, waiters, socket, fixture: running.fixture });
+    await body({ request, raw, waiters, socket, session: running.session });
   } finally {
     socket.destroy();
     await running.close();
@@ -212,7 +212,7 @@ test("the AO state served is the controller's own getState payload", () =>
     }
     assert.equal(state.lifecycle, "frozen");
     assert.equal(state.fov.loaded, true);
-    assert.equal(state.cells.length, 2);
+    assert.equal(state.cells.length, 3);
   }));
 
 // E. batch request handling
@@ -298,7 +298,7 @@ test("shutdown returns promptly with the relay still connected", async () => {
 });
 
 test("bumping the revision changes what the next poll is told", () =>
-  withServer(LOADED_FIXTURE, async ({ request, fixture }) => {
+  withServer(LOADED_FIXTURE, async ({ request, session }) => {
     const ask = () =>
       request({
         type: "app_method",
@@ -307,7 +307,7 @@ test("bumping the revision changes what the next poll is told", () =>
       });
 
     const before = await ask();
-    fixture.bumpRevision(); // what the SIGUSR2 handler calls
+    session.bumpRevision(); // what the SIGUSR2 handler calls
     const after = await ask();
 
     assert.equal(after.revision, before.revision + 1);

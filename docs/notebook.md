@@ -1,5 +1,122 @@
 # Engineering notebook
 
+## 2026-09-16 — The write surface is a list somebody wrote down
+
+React can now change an Adaptive Optopatch session, and the whole of what it
+can change is `action_names()` in
+`+adaptive_optopatch/apply_controller_action.m`: thirteen names, each mapped by
+an explicit `switch` to exactly one controller call. There is no
+`controller.(action)(...)` anywhere. The alternative — a generic bridge that
+resolves a method name off a live experiment controller — would have made
+"what can a browser do to a run" unanswerable without reading the whole class,
+and would have grown new capabilities every time the controller did.
+
+The list lives HERE rather than in Luminos, and Luminos's
+`adaptive_optopatch_action_js` is three lines of resolve-and-delegate. Two
+reasons. Luminos is shared by the whole lab and which Adaptive Optopatch
+operations exist is not its business — the same reason it holds no AO paths.
+And `Rig_Control_App` cannot be constructed on Linux, so an allowlist in
+Luminos would be the one part of the production write path that could never be
+tested here; in this repository it is covered by
+`tests/TestAdaptiveOptopatchActions.m` against the real controller. It is not a
+weaker boundary either way: JS_Server already lets a browser call any app
+method, so the trust edge is "anything in Luminos" with or without this file.
+
+Deliberately absent, and why: anything taking a filesystem path chosen by the
+operator (`loadSnapshot`, `loadFov`, `saveFov`, `resumeRun`) — a browser cannot
+present that chooser and must not be handed a path to send; `setCellBlueVoltage`
+and `setCellCalibration` — the per-cell 488 nm value is provenance a frontend
+displays, not a command source it edits; `clearSomata` — one click that
+discards every soma; `sendOrangeRecordingMask` — hardware output has no place
+on a state-editing surface. Protocols were the one path-shaped operation worth
+solving, and `list_protocol_choices` solves it by inverting the direction:
+MATLAB lists what it is willing to load, React returns one `choice_id`, and no
+request can name a file the listing did not offer.
+
+Every action carries the revision its caller was looking at, and is refused
+without mutating anything if the controller has moved on. That is not conflict
+resolution — the MATLAB GUI and the tab are still two views of one session and
+last writer wins — it is the guarantee that an action means what the operator
+saw. `stop_after_current` is exempt, because a run bumps the revision
+continuously as it reports progress and requiring a fresh one would make
+stopping fail exactly when it is wanted; it is also the only action legal while
+an acquisition is active, which `apply_controller_action` enforces for
+`runNext` and `runAll` because the controller does not (the MATLAB GUI disables
+its buttons instead, and a second frontend cannot be relied on to have done the
+same).
+
+A refusal is a RESULT, not an exception. It comes back with `ok:false`, a
+`status` naming which kind it was, and `controller.getState()` afterwards — so
+a rejected request leaves the browser agreeing with the backend immediately
+rather than waiting for a poll to repair it. The envelope deliberately has no
+field called `error`: the browser's MATLAB bridge reads that name as "the call
+threw", discards the result and raises a snackbar, which is the wrong treatment
+for an answer.
+
+## 2026-09-16 — The reference image is its own endpoint, and half a pixel is the whole transform
+
+`get_adaptive_optopatch_reference_image_js` is separate from the state poll
+because the state poll runs about once a second behind every tab that is
+mounted, which is all of them. An image field on `getState()` would be a camera
+frame per second forever. The state snapshot instead reports
+`fov.image_size` and `fov.reference_revision`, and a view fetches the pixels
+only when that revision changes.
+
+It returns a uint8 ROW VECTOR, not a matrix and not a struct. JS_Server can
+frame either a JSON value or one binary array, never a struct containing one,
+so the dimensions cannot travel with the pixels — and a matrix would arrive as
+nested rows through the JSON path and flat through the binary path, which is
+two shapes for the frontend to handle depending on how big the image happened
+to be. A vector is the same flat, column-major list either way. If the
+reference changes between the poll that reported its size and the fetch, the
+length will not match and the browser discards it; the next poll reports the
+new revision and it refetches. That is cheaper and more robust than a lock.
+
+The eight-bit stretch is applied in MATLAB, by `reference_display_image`, using
+`reference_contrast_limits` — which `ReferencePreparationApp.applyContrast` now
+also calls. One rule, so the planning axes and any other frontend show the same
+picture of the same FOV rather than each inventing a mapping. The result is a
+display artifact: canonical intensities stay in `controller.ReferenceImage`, and
+nothing measures anything from what goes over the wire.
+
+The coordinate contract is the part worth being exact about. Canonical soma
+vertices are snapshot-intrinsic pixels — MATLAB's own indexing, one-based, pixel
+centres at integers, what `create_fov_geometry` states and `poly2mask` assumes.
+The browser's SVG viewBox is the same grid measured from the image's top-left
+corner and zero-based, so the two differ by exactly half a pixel in each axis
+and by nothing else. There is no flip (the planning axes draw with `YDir
+reverse`, so row 1 is at the top in both), no transpose, no binning factor, no
+crop origin, and no camera transform. Those are real and they are all applied on
+this side already: the reference image IS the cropped, binned snapshot, and
+full-sensor world limits live in the reference model where the DMD and scanner
+calibrations read them. A browser applying any of them a second time would put
+every soma in the wrong place. Zoom and pan move the viewBox, so pointer
+positions invert through the SVG's own screen transform and the half pixel is
+still the only correction.
+
+## 2026-09-16 — What React is allowed to think is editable
+
+The controller holds eighteen plan parameters and they are not all the same kind
+of thing. React offers the eleven the MATLAB GUI routes into
+`setPlanParameter`, gated by stimulation mode the way
+`refreshModeVisibility` gates them, and shows the other seven read-only.
+
+Those seven — screen repeats, pulses per neuron, pulse duration, both dark-gap
+bounds, and the pre and post delays — are the ones `AdaptiveOptopatchApp`
+already hides, because pulse-protocol scripts own biological timing and write an
+explicit onset for every event; `buildPlan` strips them out of the saved session
+entirely. Making them typeable in a second frontend would have quietly
+reintroduced a GUI tier under the protocol, which is the thing removing the
+mod488 field was about. They are shown rather than dropped because an operator
+who has used the older GUI will look for them, and "the protocol owns this" is
+a more useful answer than their absence.
+
+No control has a default of its own. A frontend default is a second source of
+truth for a planning value, and the first time it disagreed the operator would
+be running something other than what the panel showed. Every control renders
+what MATLAB sent and writes back through the action endpoint; a number box holds
+typed text only while it is focused.
+
 ## 2026-09-16 — One controller per Luminos session, two frontends over it
 
 Luminos now owns an optional Adaptive Optopatch controller and hands the same

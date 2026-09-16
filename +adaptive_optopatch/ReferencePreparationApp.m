@@ -417,11 +417,12 @@ classdef ReferencePreparationApp < handle
         end
 
         function applyContrast(app)
-            values=double(app.Controller.ReferenceImage(:));
-            values=values(isfinite(values));
-            if isempty(values), return; end
-            limits=prctile(values,[1 99.8]);
-            if limits(2)>limits(1), app.Axes.CLim=limits; end
+            % One display rule, shared with reference_display_image, so the
+            % axes here and a non-MATLAB view of the same FOV stretch it the
+            % same way.
+            limits=adaptive_optopatch.reference_contrast_limits( ...
+                app.Controller.ReferenceImage);
+            if ~isempty(limits), app.Axes.CLim=limits; end
         end
 
         function addRoi(app)

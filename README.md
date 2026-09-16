@@ -278,9 +278,43 @@ gui = launch_adaptive_optopatch_gui(app);   % app is the Rig_Control_App
 ```
 
 The interface's Adaptive Optopatch tab then shows the same session the GUI is
-editing. The tab is read-only for now: it polls
-`get_adaptive_optopatch_state_js`, which returns `controller.getState()` and
-nothing else. Every action still happens in the MATLAB GUI.
+editing, and can drive it. Four endpoints:
+
+| Endpoint | Direction | What it does |
+| --- | --- | --- |
+| `get_adaptive_optopatch_state_js` | read | `controller.getState()`. Polled about once a second. Carries no image, mask, waveform or manifest. |
+| `get_adaptive_optopatch_reference_image_js` | read | The reference FOV as a flat uint8 column-major list. Fetched only when `fov.reference_revision` changes. |
+| `get_adaptive_optopatch_protocol_choices_js` | read | `controller.protocolChoices()`. Read on demand, never on the poll. |
+| `adaptive_optopatch_action_js` | write | One named action from the allowlist below, with the revision the caller was looking at. |
+
+Every write goes through `adaptive_optopatch.apply_controller_action`, whose
+`action_names()` is the complete list of what a frontend may invoke:
+
+```text
+set_cell_eligibility  add_soma  update_soma  delete_soma
+load_protocol_choice  set_plan_parameter
+freeze_run  start_new_run  return_to_editing  start_new_batch
+run_next  run_all  stop_after_current
+```
+
+Each maps by an explicit `switch` to exactly one controller call. There is no
+dynamic dispatch, and an action absent from the list is refused.
+
+A request carries `expected_revision`; if the controller has moved on — because
+the MATLAB GUI edited the same session — the action is refused with status
+`stale_revision` and nothing is mutated. `stop_after_current` is exempt (a run
+bumps the revision continuously) and is the only action accepted while an
+acquisition is active.
+
+Every reply, applied or refused, carries `controller.getState()` afterwards, so
+a frontend replaces its view with the authoritative state either way rather than
+guessing and waiting for a poll to repair it.
+
+Still MATLAB-only, deliberately: loading a snapshot, loading or saving a FOV,
+and resuming a run each need a file chosen on the rig's filesystem; per-cell
+Blue voltage and any command voltage are resolver-owned provenance, not an
+editable control; clearing every soma and sending the Orange mask are not on the
+list.
 
 ### Test 0: the interface reads controller state
 
@@ -527,10 +561,33 @@ controller.stopAfterCurrent();
 controller.returnToEditing();
 
 state = controller.getState();      % revision, lifecycle, cells, legal actions
+
+choices  = controller.protocolChoices();          % what may be loaded, by id
+protocol = controller.loadProtocolChoice("round_robin_seed_3001");
+picture  = controller.referenceDisplayImage();    % uint8, for a view to paint
 ```
 
 `controller.StateChangedFcn` is called with no arguments after every state
 change; the MATLAB GUI uses it to redraw itself.
+
+A non-MATLAB frontend goes through one function rather than calling these
+directly:
+
+```matlab
+response = adaptive_optopatch.apply_controller_action( ...
+    controller, "add_soma", struct("vertices_xy", [25 25; 40 25; 40 40; 25 40]), ...
+    controller.Revision);
+
+response.ok        % false for a refusal, which is a result and not an exception
+response.status    % applied | stale_revision | not_legal | validation_error | ...
+response.message   % what to tell the operator
+response.state     % controller.getState() afterwards, refused or not
+```
+
+`controller.ProtocolRoot` is the folder `protocolChoices()` offers from; empty
+means `adaptive_optopatch.default_protocol_root()`, which is
+`pulse-protocols/generated`. The folder of an already loaded protocol is always
+included, so a protocol loaded from elsewhere stays selectable.
 
 ### Programmatic API
 
@@ -660,6 +717,25 @@ Camera points are `[x y]`, with `x` indexing columns and `y` indexing rows of
 `frames1.bin`. ROI masks are exactly the acquired camera ROI size. Do not
 pre-warp masks into DMD or galvo coordinates. The live Luminos device applies
 its current calibration, camera ROI offset, and binning.
+
+Canonical soma vertices are snapshot/FOV intrinsic pixels: one-based, pixel
+centres at integers, so the image spans `0.5 .. columns+0.5` in x and
+`0.5 .. rows+0.5` in y. This is what `create_fov_geometry` documents, what
+`poly2mask` assumes, and what every saved FOV holds.
+
+A browser canvas that draws the reference image at its own origin works in the
+same grid measured from the top-left corner and zero-based, so the only
+conversion is half a pixel in each axis:
+
+```text
+canonical x = canvas x + 0.5        canvas x = canonical x - 0.5
+canonical y = canvas y + 0.5        canvas y = canonical y - 0.5
+```
+
+Nothing else. No flip (row 1 is at the top in both), no transpose, no binning
+factor, no crop origin, no camera transform — those are applied on this side
+already, and applying any of them a second time in a frontend would put every
+soma in the wrong place.
 
 ## Calibration ownership
 

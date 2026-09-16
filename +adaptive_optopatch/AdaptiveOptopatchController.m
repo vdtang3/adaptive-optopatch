@@ -44,11 +44,19 @@ classdef AdaptiveOptopatchController < handle
         %   to redraw itself from getState().
         StateChangedFcn = []
         RunRoot (1,1) string = ""
+        %PROTOCOLROOT Folder protocolChoices() offers protocols from.
+        %   Empty means adaptive_optopatch.default_protocol_root(), which is
+        %   where the generators under pulse-protocols/ write. A session that
+        %   keeps its protocols elsewhere sets this once; no frontend ever
+        %   names a folder.
+        ProtocolRoot (1,1) string = ""
     end
 
     properties (Access=private)
         LuminosApp = []
         CellSummaryCache = []
+        %PROTOCOLCHOICECACHE The listing loadProtocolChoice resolves against.
+        ProtocolChoiceCache = []
     end
 
     methods
@@ -205,6 +213,24 @@ classdef AdaptiveOptopatchController < handle
             adaptive_optopatch.save_fov_state(path,fovState);
             controller.CellState=fovState;
             controller.bumpRevision();
+        end
+
+        function display=referenceDisplayImage(controller)
+            %REFERENCEDISPLAYIMAGE Eight-bit view of the reference FOV.
+            %   Deliberately not part of getState(): a state snapshot is read
+            %   about once a second by every open frontend, and an image on
+            %   that poll would put a camera frame on the wire each time. A
+            %   view fetches this separately, and only when
+            %   fov.reference_revision says the reference has changed.
+            %
+            %   Same size as the reference image, so a pixel here is the same
+            %   pixel there and snapshot-intrinsic coordinates carry over
+            %   unchanged. Empty before a reference is loaded.
+            %
+            %   READ ONLY: it derives a picture from state that already
+            %   exists and bumps no revision.
+            display=adaptive_optopatch.reference_display_image( ...
+                controller.ReferenceImage);
         end
 
         function setSomaPolygons(controller,polygons,options)
@@ -459,6 +485,48 @@ classdef AdaptiveOptopatchController < handle
                 adaptive_optopatch.summarize_protocol(report.protocol);
             controller.markEditableChanged();
             controller.bumpRevision();
+        end
+
+        function choices=protocolChoices(controller)
+            %PROTOCOLCHOICES Protocols a frontend may ask to have loaded.
+            %   MATLAB discovers them; a frontend chooses a choice_id out of
+            %   this list. Read from disk on demand rather than carried in
+            %   getState(), which is polled and must stay cheap.
+            %
+            %   The folder of an already loaded protocol is always included,
+            %   so a protocol loaded from somewhere else stays selectable and
+            %   is marked is_current.
+            choices=adaptive_optopatch.list_protocol_choices( ...
+                "Roots",controller.protocolSearchRoots());
+            for k=1:numel(choices)
+                choices(k).is_current=strlength(controller.ProtocolPath)>0 && ...
+                    choices(k).path==controller.ProtocolPath;
+            end
+            controller.ProtocolChoiceCache=choices;
+        end
+
+        function protocol=loadProtocolChoice(controller,choiceId)
+            %LOADPROTOCOLCHOICE Load one protocol named by protocolChoices().
+            %   The id is resolved against a listing this controller produced,
+            %   never treated as a path. An id that is not in the current
+            %   listing is rejected rather than guessed at - which is what
+            %   happens when a file has been removed since the frontend last
+            %   asked.
+            arguments
+                controller
+                choiceId (1,1) string
+            end
+            choices=controller.ProtocolChoiceCache;
+            if isempty(choices) || ~any([choices.choice_id]==choiceId)
+                choices=controller.protocolChoices();
+            end
+            index=find([choices.choice_id]==choiceId,1);
+            if isempty(index)
+                error("adaptive_optopatch:UnknownProtocolChoice", ...
+                    "No pulse protocol is offered as '%s'. Refresh the " + ...
+                    "protocol list and choose again.",choiceId);
+            end
+            protocol=controller.loadProtocol(choices(index).path);
         end
 
         function forgetMissingProtocol(controller,path)
@@ -1081,6 +1149,17 @@ classdef AdaptiveOptopatchController < handle
                 "blue_mask_adjustment_pixels",NaN, ...
                 parameters.blue_mask_adjustment_pixels);
             controller.PlanParameters=parameters;
+        end
+
+        function roots=protocolSearchRoots(controller)
+            %PROTOCOLSEARCHROOTS Folders protocolChoices() reads, in order.
+            roots=controller.ProtocolRoot;
+            if strlength(roots)==0
+                roots=adaptive_optopatch.default_protocol_root();
+            end
+            if strlength(controller.ProtocolPath)>0
+                roots(end+1,1)=string(fileparts(controller.ProtocolPath));
+            end
         end
 
         function value=referenceImageSize(controller)

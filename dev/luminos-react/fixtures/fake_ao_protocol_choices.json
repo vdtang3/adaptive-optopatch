@@ -1,0 +1,32 @@
+[
+  {
+    "choice_id": "round_robin_seed_3001",
+    "name": "round_robin_seed_3001",
+    "folder": "<dev fixture protocols>",
+    "path": "<dev fixture protocols>/round_robin_seed_3001.mat",
+    "loadable": true,
+    "issue": "",
+    "protocol_id": "round_robin_seed_3001",
+    "protocol_type": "round_robin",
+    "target_policy": "multi_target_continuous",
+    "event_order": "randomized",
+    "acquisition_count": 1,
+    "event_count": 1,
+    "is_current": false
+  },
+  {
+    "choice_id": "single_cell_blue_ramp",
+    "name": "single_cell_blue_ramp",
+    "folder": "<dev fixture protocols>",
+    "path": "<dev fixture protocols>/single_cell_blue_ramp.mat",
+    "loadable": true,
+    "issue": "",
+    "protocol_id": "single_cell_blue_ramp",
+    "protocol_type": "single_cell_blue_ramp",
+    "target_policy": "each_stimulation_enabled_cell",
+    "event_order": "ordered",
+    "acquisition_count": 1,
+    "event_count": 50,
+    "is_current": false
+  }
+]

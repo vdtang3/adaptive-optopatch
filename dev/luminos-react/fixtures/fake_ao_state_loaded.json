@@ -7,24 +7,24 @@
   "stop_after_current_requested": false,
   "status": [
     "Frozen run plan created before acquisition:",
-    "<dev fixture>/tp22d86588_371f_41cd_a9fb_d2c201d85d95/adaptive_optopatch_run_dev_fixture_fov_20260916_113110"
+    "<dev fixture>/tp22599c9e_c28a_4bee_91ce_abf43ad3ab30/adaptive_optopatch_run_dev_fixture_fov_20260916_140520"
   ],
   "scanner_warning": "",
   "fov": {
     "loaded": true,
     "fov_id": "dev_fixture_fov",
     "rig_name": "Virtual_Upright",
-    "camera_name": "",
-    "camera_bin": null,
-    "snapshot_path": "<dev fixture>/tp22d86588_371f_41cd_a9fb_d2c201d85d95/snapshot.mat",
-    "snapshot_directory": "<dev fixture>/tp22d86588_371f_41cd_a9fb_d2c201d85d95",
+    "camera_name": "Orca Fusion",
+    "camera_bin": 1,
+    "snapshot_path": "<dev fixture>/tp22599c9e_c28a_4bee_91ce_abf43ad3ab30/snapshot.mat",
+    "snapshot_directory": "<dev fixture>/tp22599c9e_c28a_4bee_91ce_abf43ad3ab30",
     "image_size": [
-      80,
-      100
+      128,
+      160
     ],
     "reference_revision": 1,
-    "cell_count": 2,
-    "next_cell_index": 3,
+    "cell_count": 3,
+    "next_cell_index": 4,
     "image_coordinate_space": "snapshot_intrinsic_pixels"
   },
   "cells": [
@@ -33,65 +33,145 @@
       "recording_enabled": true,
       "stimulation_enabled": true,
       "selected_blue_voltage_v": 1.4,
-      "area_pixels": 225,
+      "area_pixels": 339,
       "centroid_xy": [
-        33,
-        33
+        38.032448377581119,
+        39.943952802359881
       ],
-      "edge_distance_pixels": 25,
+      "edge_distance_pixels": 27,
       "qc_status": "PASS",
-      "vertex_count": 4
+      "vertex_count": 8
     },
     {
       "cell_id": "cell_002",
       "recording_enabled": true,
       "stimulation_enabled": false,
       "selected_blue_voltage_v": null,
-      "area_pixels": 225,
+      "area_pixels": 284,
       "centroid_xy": [
-        68,
-        48
+        104.06338028169014,
+        56.017605633802816
       ],
-      "edge_distance_pixels": 25,
+      "edge_distance_pixels": 46,
       "qc_status": "PASS",
-      "vertex_count": 4
+      "vertex_count": 8
+    },
+    {
+      "cell_id": "cell_003",
+      "recording_enabled": true,
+      "stimulation_enabled": true,
+      "selected_blue_voltage_v": null,
+      "area_pixels": 408,
+      "centroid_xy": [
+        72.053921568627445,
+        98.0171568627451
+      ],
+      "edge_distance_pixels": 18,
+      "qc_status": "PASS",
+      "vertex_count": 8
     }
   ],
   "soma_polygons": [
     [
       [
-        25,
-        25
-      ],
-      [
-        40,
-        25
-      ],
-      [
-        40,
+        49,
         40
       ],
       [
-        25,
+        45.778174593052022,
+        47.778174593052022
+      ],
+      [
+        38,
+        51
+      ],
+      [
+        30.221825406947978,
+        47.778174593052022
+      ],
+      [
+        27,
         40
+      ],
+      [
+        30.221825406947975,
+        32.221825406947978
+      ],
+      [
+        38,
+        29
+      ],
+      [
+        45.778174593052022,
+        32.221825406947978
       ]
     ],
     [
       [
+        114,
+        56
+      ],
+      [
+        111.07106781186548,
+        63.071067811865476
+      ],
+      [
+        104,
+        66
+      ],
+      [
+        96.928932188134524,
+        63.071067811865476
+      ],
+      [
+        94,
+        56
+      ],
+      [
+        96.928932188134524,
+        48.928932188134524
+      ],
+      [
+        104,
+        46
+      ],
+      [
+        111.07106781186548,
+        48.928932188134524
+      ]
+    ],
+    [
+      [
+        84,
+        98
+      ],
+      [
+        80.485281374238568,
+        106.48528137423857
+      ],
+      [
+        72,
+        110
+      ],
+      [
+        63.514718625761432,
+        106.48528137423857
+      ],
+      [
         60,
-        40
+        98
       ],
       [
-        75,
-        40
+        63.514718625761432,
+        89.514718625761432
       ],
       [
-        75,
-        55
+        72,
+        86
       ],
       [
-        60,
-        55
+        80.485281374238568,
+        89.514718625761432
       ]
     ]
   ],
@@ -137,10 +217,10 @@
   },
   "active_run": {
     "frozen": true,
-    "folder": "<dev fixture>/tp22d86588_371f_41cd_a9fb_d2c201d85d95/adaptive_optopatch_run_dev_fixture_fov_20260916_113110",
-    "batch_id": "adaptive_optopatch_run_dev_fixture_fov_20260916_113110",
+    "folder": "<dev fixture>/tp22599c9e_c28a_4bee_91ce_abf43ad3ab30/adaptive_optopatch_run_dev_fixture_fov_20260916_140520",
+    "batch_id": "adaptive_optopatch_run_dev_fixture_fov_20260916_140520",
     "batch_number": 1,
-    "trial_count": 1,
+    "trial_count": 2,
     "completed_trial_count": 0,
     "batch_complete": false
   },

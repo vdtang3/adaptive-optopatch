@@ -36,6 +36,7 @@ import net from "net";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { FakeAoSession } from "./fake_ao_session.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -53,6 +54,19 @@ const DEFAULT_FIXTURE = path.join(HERE, "fixtures", "fake_ao_state_empty.json");
 // swapping this server for the real one is backend wiring and no frontend
 // change at all.
 const AO_STATE_METHOD = "get_adaptive_optopatch_state_js";
+
+// The write endpoint and the two on-demand reads that go with it. Named
+// exactly as luminos-private/src/Experimental_Scripts/js does, so swapping this
+// server for the real one is backend wiring and no frontend change at all.
+const AO_ACTION_METHOD = "adaptive_optopatch_action_js";
+const AO_IMAGE_METHOD = "get_adaptive_optopatch_reference_image_js";
+const AO_PROTOCOLS_METHOD = "get_adaptive_optopatch_protocol_choices_js";
+
+// The fixtures that go with the state one. Beside it, and named after it.
+const DEFAULT_IMAGE_FIXTURE = path.join(
+  HERE, "fixtures", "fake_ao_reference_image.json");
+const DEFAULT_PROTOCOLS_FIXTURE = path.join(
+  HERE, "fixtures", "fake_ao_protocol_choices.json");
 
 // Which tabs the shell renders. Main is included because useTabs starts on it,
 // and because a rig with no devices is exactly the case every tab is already
@@ -98,6 +112,42 @@ export const encodeReply = (event, data) =>
     (character) => "\\u" + character.charCodeAt(0).toString(16).padStart(4, "0")
   ) + "\n";
 
+/* JS_Server sends a numeric array larger than SMALL_DATA_SIZE as raw bytes
+ * after its metadata line, in the array's own class, rather than as JSON -
+ * jsonencode on an array that size costs more than the transfer. Anything
+ * smaller goes as ordinary JSON.
+ *
+ * Mirrored here, threshold and all, because the two paths reach the browser
+ * DIFFERENTLY: the relay hands a decoded binary array over as a flat list of
+ * numbers, while a JSON reply arrives as whatever shape jsonencode produced.
+ * A stub that always used one path would let the frontend be written against
+ * a framing production does not use for the size of image that matters.
+ *
+ * Exported for the tests: this is the one piece of wire format here that is
+ * not a single line of JSON. */
+export const SMALL_DATA_SIZE = 1e4;
+
+export const encodeArrayReply = (event, values, arrClass = "uint8") => {
+  const header = JSON.stringify({
+    event,
+    arrLength: values.length,
+    arrClass,
+  }) + "\n";
+  return Buffer.concat([
+    Buffer.from(header, "utf8"),
+    Buffer.from(Uint8Array.from(values).buffer),
+  ]);
+};
+
+/* A numeric array a reply should carry, tagged so writeReply can choose the
+ * framing JS_Server would have chosen for it. */
+export class NumericArrayReply {
+  constructor(values, arrClass = "uint8") {
+    this.values = values;
+    this.arrClass = arrClass;
+  }
+}
+
 // JS_Server.runAndWriteBack tags a method that legitimately returned nothing,
 // because write() has no way to frame an empty MATLAB value. matlabHelpers
 // turns the tag back into null. This is what an unrecognised request gets.
@@ -117,45 +167,73 @@ const deviceMissing = (devtype, method) => ({
 // Fixture
 // ---------------------------------------------------------------------------
 
-/* The Adaptive Optopatch state this server serves.
+/* The Adaptive Optopatch session this server serves.
  *
- * The file is a real AdaptiveOptopatchController.getState() snapshot, produced
- * by generate_ao_fixtures.m - see README.md. It is reloaded when it changes on
- * disk, so a fixture can be edited while the interface is open.
+ * The files are real endpoint output, produced by generate_ao_fixtures.m from
+ * an actual AdaptiveOptopatchController - see README.md. The state fixture is
+ * reloaded when it changes on disk, so it can be edited while the interface is
+ * open; editing it DISCARDS anything clicked in the browser since, which is
+ * the point of editing it.
  *
- * `revisionOffset` is added to the fixture's own revision. It exists only so
- * that a developer can make the state visibly change under a running frontend
- * (kill -USR2 <pid>) and watch the tab replace its view. Nothing else adjusts
- * what the fixture says. */
-class AoStateFixture {
-  constructor(fixturePath, log) {
-    this.path = fixturePath;
+ * Once loaded, the state is MUTABLE: FakeAoSession applies actions to it so
+ * that the frontend's click -> action -> new authoritative state loop can be
+ * exercised. What that session does with an action is a development
+ * imitation, not Adaptive Optopatch semantics - see fake_ao_session.js.
+ *
+ * The reference image and the protocol listing are separate fixtures because
+ * they are separate endpoints: neither belongs on the state poll.
+ *
+ * `bumpRevision` exists so that a developer can make the state visibly change
+ * under a running frontend (kill -USR2 <pid>) and watch the tab replace its
+ * view. */
+class AoDevSession {
+  constructor({ statePath, imagePath, protocolsPath, log }) {
+    this.statePath = statePath;
+    this.imagePath = imagePath;
+    this.protocolsPath = protocolsPath;
     this.log = log;
-    this.revisionOffset = 0;
-    this.state = this.read();
+    this.image = this.readImage();
+    this.reload();
   }
 
-  read() {
+  reload() {
+    this.session = new FakeAoSession(
+      this.readJson(this.statePath, null, "AO state"),
+      this.readJson(this.protocolsPath, [], "protocol choices")
+    );
+    // The fixture is a snapshot of derived state too; recomputing it here
+    // means a hand-edited fixture cannot leave legal_actions disagreeing with
+    // the lifecycle it was edited into.
+    if (this.session.state) this.session.refreshDerivedState();
+  }
+
+  readJson(file, fallback, what) {
     try {
-      const state = JSON.parse(fs.readFileSync(this.path, "utf8"));
-      this.log(`fixture loaded: ${this.path}`);
-      return state;
+      const value = JSON.parse(fs.readFileSync(file, "utf8"));
+      this.log(`${what} fixture loaded: ${file}`);
+      return value;
     } catch (error) {
       // A missing or broken fixture must not take the server down: the point of
       // this process is to keep answering so the frontend's error path is the
       // thing under test, not this file's.
-      this.log(`fixture UNREADABLE (${error.message}); serving null AO state`);
-      return null;
+      this.log(`${what} fixture UNREADABLE (${error.message}); serving none`);
+      return fallback;
     }
   }
 
-  /** Reload on the next change, and bump the revision so the frontend notices. */
+  readImage() {
+    const fixture = this.readJson(this.imagePath, null, "reference image");
+    if (!fixture || !Array.isArray(fixture.pixels)) return null;
+    return fixture.pixels;
+  }
+
+  /** Reload on the next change, so a fixture can be edited while it runs. */
   watch() {
     try {
-      this.watcher = fs.watch(this.path, { persistent: false }, () => {
-        this.state = this.read();
-        this.revisionOffset += 1;
-        this.log(`fixture changed -> revision offset ${this.revisionOffset}`);
+      this.watcher = fs.watch(this.statePath, { persistent: false }, () => {
+        this.reload();
+        this.bumpRevision();
+        this.log("state fixture changed -> reloaded");
       });
     } catch (error) {
       this.log(`not watching the fixture: ${error.message}`);
@@ -163,17 +241,33 @@ class AoStateFixture {
   }
 
   bumpRevision() {
-    this.revisionOffset += 1;
-    this.log(`revision offset -> ${this.revisionOffset}`);
+    if (!this.session.state) return;
+    this.session.state.revision += 1;
+    this.log(`revision -> ${this.session.state.revision}`);
   }
 
   current() {
-    if (!this.state) return null;
-    if (this.revisionOffset === 0) return this.state;
-    return {
-      ...this.state,
-      revision: (this.state.revision ?? 0) + this.revisionOffset,
-    };
+    return this.session.current();
+  }
+
+  choices() {
+    return this.session.choices();
+  }
+
+  /* What the reference-image endpoint returns: the flat uint8 list, or null
+   * when no reference is loaded. Read only - calling it never changes the
+   * state, exactly as the real endpoint never does. */
+  referenceImage() {
+    if (!this.session.state?.fov?.loaded) return null;
+    return this.image;
+  }
+
+  apply(action, payload, expectedRevision) {
+    const response = this.session.apply(action, payload, expectedRevision);
+    this.log(
+      `  action ${action} -> ${response.status} (revision ${response.revision})`
+    );
+    return response;
   }
 
   close() {
@@ -205,7 +299,7 @@ const appProperty = (name) => {
 };
 
 /** What `app_method <method>(...)` answers. undefined means "not recognised". */
-const appMethod = (method, args, fixture) => {
+const appMethod = (method, args, session) => {
   switch (method) {
     case "get":
       return appProperty(args?.[0]);
@@ -217,7 +311,27 @@ const appMethod = (method, args, fixture) => {
       return { devices: [], count: 0, attaching: false };
 
     case AO_STATE_METHOD:
-      return fixture.current();
+      return session.current();
+
+    // The write endpoint. Arguments arrive in the order the MATLAB function
+    // declares them: (app, action, payload, expected_revision), so args[0..2]
+    // here.
+    case AO_ACTION_METHOD:
+      return session.apply(args?.[0], args?.[1] ?? {}, args?.[2] ?? null);
+
+    // Framed the way JS_Server would frame it for its size - binary for a real
+    // FOV, JSON for a small one - so the frontend's decoder is exercised on
+    // the path production actually uses.
+    case AO_IMAGE_METHOD: {
+      const pixels = session.referenceImage();
+      if (!pixels || pixels.length === 0) return null;
+      return pixels.length > SMALL_DATA_SIZE
+        ? new NumericArrayReply(pixels, "uint8")
+        : pixels;
+    }
+
+    case AO_PROTOCOLS_METHOD:
+      return session.choices();
 
     default:
       return undefined;
@@ -225,10 +339,10 @@ const appMethod = (method, args, fixture) => {
 };
 
 /** The reply payload for one request, or undefined when nothing is recognised. */
-export const replyFor = (request, fixture) => {
+export const replyFor = (request, session) => {
   switch (request?.type) {
     case "app_method":
-      return appMethod(request.method, request.args, fixture);
+      return appMethod(request.method, request.args, session);
 
     // getPropertiesForMultipleDevices reads numDevices off the reply before
     // anything else, so a rig with none of that device has to answer with a
@@ -269,21 +383,32 @@ const describe = (request) => {
 export const startFakeMatlabServer = ({
   port = MATLAB_PORT,
   fixturePath = DEFAULT_FIXTURE,
+  imagePath = DEFAULT_IMAGE_FIXTURE,
+  protocolsPath = DEFAULT_PROTOCOLS_FIXTURE,
   watchFixture = false,
   log = console.log,
 } = {}) => {
-  const fixture = new AoStateFixture(fixturePath, log);
-  if (watchFixture) fixture.watch();
+  const session = new AoDevSession({
+    statePath: fixturePath,
+    imagePath,
+    protocolsPath,
+    log,
+  });
+  if (watchFixture) session.watch();
 
   // A request with no return_event wants no answer - JS_Server has nowhere to
   // write one either.
   const writeReply = (socket, returnEvent, payload) => {
     if (!returnEvent || socket.destroyed) return;
+    if (payload instanceof NumericArrayReply) {
+      socket.write(encodeArrayReply(returnEvent, payload.values, payload.arrClass));
+      return;
+    }
     socket.write(encodeReply(returnEvent, payload));
   };
 
   const handleRequest = (request, socket) => {
-    const payload = replyFor(request, fixture);
+    const payload = replyFor(request, session);
 
     if (payload === undefined) {
       // Not recognised. Answered anyway, and loudly: a request left unanswered
@@ -356,9 +481,9 @@ export const startFakeMatlabServer = ({
 
   return {
     server,
-    fixture,
+    session,
     close: () => {
-      fixture.close();
+      session.close();
       for (const socket of open) socket.destroy();
       return new Promise((resolve) => server.close(resolve));
     },
@@ -412,7 +537,7 @@ const runFromCommandLine = () => {
 
   // A visible state change under a running frontend, for checking that polling
   // really does replace the view rather than merging into it.
-  process.on("SIGUSR2", () => running.fixture.bumpRevision());
+  process.on("SIGUSR2", () => running.session.bumpRevision());
 
   const shutdown = async () => {
     console.log("\nstopping");

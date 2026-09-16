@@ -44,14 +44,29 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
 
     methods
         function app=AdaptiveOptopatchApp(options)
+            %ADAPTIVEOPTOPATCHAPP Open the unified planning and runner app.
+            %   Controller is the session's existing controller, when one
+            %   already owns the state this app is to display - a Luminos
+            %   session sharing its controller between the interface's
+            %   Adaptive Optopatch tab and this GUI. Omitted, the app builds
+            %   its own, which is what standalone use has always done.
             arguments
                 options.LuminosApp = []
                 options.Visible (1,1) string {mustBeMember(options.Visible,["on","off"])} = "on"
                 options.RunRoot (1,1) string = ""
+                options.Controller = []
             end
             app@adaptive_optopatch.ReferencePreparationApp( ...
-                "LuminosApp",options.LuminosApp,"Visible",options.Visible);
-            app.Controller.RunRoot=options.RunRoot;
+                "LuminosApp",options.LuminosApp,"Visible",options.Visible, ...
+                "Controller",options.Controller);
+            % Only when the caller actually named one. This used to assign
+            % unconditionally, which is the same thing for a controller this
+            % app just built - a new one's RunRoot is already "" - but would
+            % wipe the run root off a shared controller that had been given one
+            % before the GUI was opened.
+            if strlength(options.RunRoot)>0
+                app.Controller.RunRoot=options.RunRoot;
+            end
             app.buildUnifiedUI();
             app.UnifiedReady=true;
             app.refreshFromController();

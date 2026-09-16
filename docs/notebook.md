@@ -1,5 +1,54 @@
 # Engineering notebook
 
+## 2026-09-16 — One controller per Luminos session, two frontends over it
+
+Luminos now owns an optional Adaptive Optopatch controller and hands the same
+handle to everyone who asks:
+`Rig_Control_App.getAdaptiveOptopatchController` builds one lazily the first
+time it is called and returns that one thereafter. The read-only endpoint
+`get_adaptive_optopatch_state_js` reports `controller.getState()` through it, so
+the interface's Adaptive Optopatch tab and the MATLAB planning GUI are two views
+of one state rather than two states that happen to look alike. Two controllers
+would mean two different answers to "what would be run", which is the one thing
+that must never be ambiguous.
+
+The AO side of that is one optional argument. `ReferencePreparationApp` already
+accepted `Controller`; `AdaptiveOptopatchApp` did not forward it, so the GUI
+operators actually launch always built its own. It now forwards it, and
+`launch_adaptive_optopatch_gui` asks the Luminos app it was already given for
+the session's controller — duck-typed on `ismethod`, so the simulated backend
+and any Luminos predating this simply fall through to building one, and
+standalone AO is unchanged. Opening the GUI also no longer assigns `RunRoot`
+unless the caller named one; the old unconditional assignment was harmless for a
+controller the GUI had just built and wiped the run root off a shared one.
+
+`StateChangedFcn` is a single property, not a listener list, so whoever assigns
+last owns it — and the planning GUI assigns it in its constructor. Luminos
+therefore installs no callback at all, which is why React polls instead: it
+reads `getState()` and compares revisions, so the GUI keeps its callback and
+nothing has to arbitrate. This is also why a small event framework was not
+worth building; the only client that would use one is the GUI, which already
+has it. Two planning GUIs on one controller would still contend, as they always
+have.
+
+Luminos discovers Adaptive Optopatch by asking whether
+`adaptive_optopatch.AdaptiveOptopatchController` resolves on the MATLAB path —
+the `addpath` the VU startup already performs. No path is committed to Luminos,
+the check is repeated per call so adding the repository mid-session works, and a
+rig without this package gets an empty controller, which the endpoint turns into
+the null the tab already renders as "no Adaptive Optopatch controller". A
+controller that is present but throws is different and is reported once, loudly,
+rather than being folded into "not installed".
+
+On shutdown Luminos releases the reference rather than deleting the controller.
+It owns no figure, device, file handle or timer, so dropping the reference is
+the whole of its cleanup; deleting it would invalidate the handle a planning GUI
+still has open.
+
+Still read-only. There are no write endpoints, no reference image on the wire,
+and no ROI editing in the interface — the tab polls state and renders it, and
+`legal_actions` is displayed rather than acted on.
+
 ## 2026-09-16 — The Luminos React dev harness belongs here, the tab's home is still open
 
 The fake-MATLAB development server, the AO state fixtures, the fixture

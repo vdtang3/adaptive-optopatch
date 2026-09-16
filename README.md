@@ -257,6 +257,57 @@ The displayed path should end in `Virtual_Upright`. Put the `addpath` and
 `setenv` commands in the VU MATLAB `startup.m` after the first successful test,
 or configure the environment variable permanently in Windows.
 
+### Enabling the Adaptive Optopatch tab in the Luminos interface
+
+Nothing further is required. The `addpath(packageRoot)` above is exactly what
+Luminos looks for: `Rig_Control_App.getAdaptiveOptopatchController` checks
+whether `adaptive_optopatch.AdaptiveOptopatchController` resolves on the MATLAB
+path and, if it does, builds one controller for the session. Luminos commits no
+path of its own, and a rig without this repository reports Adaptive Optopatch as
+unavailable and is otherwise unaffected.
+
+The path is read at first use rather than at Luminos startup, so adding it to an
+already-running session and reopening the tab is enough.
+
+There is exactly one controller per Luminos session, and every frontend is a
+view of it. Open the MATLAB planning GUI the usual way and it attaches to that
+same controller rather than building a second one:
+
+```matlab
+gui = launch_adaptive_optopatch_gui(app);   % app is the Rig_Control_App
+```
+
+The interface's Adaptive Optopatch tab then shows the same session the GUI is
+editing. The tab is read-only for now: it polls
+`get_adaptive_optopatch_state_js`, which returns `controller.getState()` and
+nothing else. Every action still happens in the MATLAB GUI.
+
+### Test 0: the interface reads controller state
+
+Read-only, and it starts nothing. Run it before the acquisition tests below.
+
+1. Start Luminos on the Virtual Upright as usual and open the interface.
+2. Switch to the Adaptive Optopatch tab. It should show `Lifecycle: editing`,
+   `Plan state: EDITABLE`, `Revision: 0`, no FOV and no protocol.
+   - "This Luminos session has no Adaptive Optopatch controller" means the
+     `addpath` above has not been run in this MATLAB process.
+3. Leave the tab open for a minute. The revision must stay at 0: polling reads
+   state and never changes it.
+4. Open the planning GUI with `launch_adaptive_optopatch_gui(app)`. Confirm
+   `gui.Controller == app.getAdaptiveOptopatchController()` is `true` - one
+   controller, two views.
+5. Load a reference FOV and draw a soma in the GUI. The tab's revision, cell
+   count and FOV fields must follow within a second or two, without reloading
+   the page.
+6. Load a pulse protocol in the GUI. The tab's protocol panel must fill in.
+7. Close the GUI. The tab keeps working and keeps showing the same state: the
+   controller belongs to the Luminos session, not to the window.
+8. Reopen the GUI. It attaches to the same controller, with the FOV, cells and
+   protocol still there, and `app.getAdaptiveOptopatchController()` is
+   unchanged.
+9. Confirm nothing was triggered by any of the above: no camera snap, no DMD
+   output, no change to the 488 modulator, no acquisition.
+
 ### Test 1: offline package tests
 
 This test does not require Luminos or connected hardware:

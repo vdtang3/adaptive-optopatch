@@ -1,5 +1,63 @@
 # Engineering notebook
 
+## 2026-09-16 — A snapshot is chosen by its stem, not by its path
+
+Loading the first camera snapshot was the last step of the normal workflow
+that still required the MATLAB planning window, and it required it for one
+reason: it needed a file chooser. `snapshotChoices()` and
+`load_snapshot_choice` remove that, the same way `protocolChoices()` removed
+it for pulse protocols — MATLAB lists what it is willing to load, the browser
+returns one id, and the file is resolved on this side.
+
+The id is the snapshot's STEM, and that is a reuse rather than an invention.
+`Camera_Snap` writes `<stem>.tiff`, `<stem>.mat` and a browser-visible
+`<stem>.png` from one stem, and Luminos's own patterning image pickers already
+identify a snapshot by exactly that stem — they hand it to `Load_Ref_Im_JS`,
+which ignores the extension and resolves the `.mat` beside it. So a snapshot is
+called the same thing in the Adaptive Optopatch tab as in the DMD tab, and a
+frontend that wants the thumbnail Luminos already serves can find it by name.
+
+What was NOT reused is how the patterning picker gets there. It reads
+`datafolder` in the browser, concatenates `/Snaps/<name>`, and sends that
+string. That is a path on the wire, and it is the thing this contract exists to
+avoid: a browser that can name a path can name any path. Here the browser sends
+the id alone and `loadSnapshotChoice` resolves it against a listing this
+controller produced. A choice_id that happens to be a full path resolves to
+nothing, which is a test.
+
+Its listing source was not reused either, and that was the harder call. The
+picker lists the relay's copies of today's snaps under
+`User_Interface/relay/imgs` — PNGs, written for the browser to display. That is
+the right source for a thumbnail and the wrong one for this: it cannot say
+whether the `.mat` Adaptive Optopatch actually reads is present, cannot report
+the camera identity, crop origin or binning recorded inside it, and covers one
+day's folder rather than the session's Snaps directory. So
+`list_snapshot_choices` reads `<datafolder>/Snaps/*.mat` itself and opens each
+candidate through `read_reference_snapshot` — the same function `loadSnapshot`
+uses — so that `loadable` means "loading this would succeed" rather than "this
+file looks plausible". A snap from the wrong camera is listed with that reason
+rather than hidden, because an operator who cannot see the snap they just took
+has no way to find out why.
+
+Opening every candidate costs an image load each, so the listing is capped at
+forty and ordered newest first by file time. That is also the right order:
+the snapshot somebody wants is almost always the one they just took.
+
+Loading itself is `loadSnapshot`, unchanged and shared with the MATLAB GUI.
+Nothing about a snapshot is interpreted anywhere else: camera identity, crop
+origin, binning and the DMD transforms recorded with the snap are read once, in
+`read_reference_snapshot`, and the browser is told the results. `fov` gained
+`roi_origin_xy` so a view can say WHICH crop is loaded; it is reported, not
+applied — canonical vertices stay intrinsic to the reference image, and the
+half-pixel canvas conversion is still the only transform a frontend performs.
+
+One error-contract fix fell out of it. `read_reference_snapshot` called
+`whos('-file', ...)` unguarded, so a truncated or foreign MAT file threw
+MATLAB's raw file error rather than an `adaptive_optopatch:` one — which the
+action dispatcher then classified as an internal failure and reported with a
+console warning, when it is an unusable input and nothing more. It now raises
+`InvalidSnapshot` like every other malformed snapshot.
+
 ## 2026-09-16 — The write surface is a list somebody wrote down
 
 React can now change an Adaptive Optopatch session, and the whole of what it

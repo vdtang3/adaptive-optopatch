@@ -37,7 +37,8 @@ const readJson = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
 const newSession = (fixture = LOADED_FIXTURE) => {
   const session = new FakeAoSession(
     readJson(fixture),
-    readJson(path.join(FIXTURES, "fake_ao_protocol_choices.json"))
+    readJson(path.join(FIXTURES, "fake_ao_protocol_choices.json")),
+    readJson(path.join(FIXTURES, "fake_ao_snapshots.json"))
   );
   session.refreshDerivedState();
   return session;
@@ -55,6 +56,7 @@ test("the allowlist matches the one the MATLAB dispatcher publishes", () => {
   // Kept in step by hand, and asserted here so that drifting apart is a test
   // failure rather than an action that works in the browser and not on the rig.
   assert.deepEqual(new Set(ACTIONS), new Set([
+    "load_snapshot_choice",
     "set_cell_eligibility", "add_soma", "update_soma", "delete_soma",
     "load_protocol_choice", "set_plan_parameter", "freeze_run",
     "start_new_run", "return_to_editing", "start_new_batch",
@@ -410,3 +412,123 @@ test("the protocol listing is served on its own endpoint, not on the state poll"
     assert.ok(!("protocol_choices" in session.current()),
       "The state snapshot must stay free of the protocol listing.");
   }));
+
+// ---------------------------------------------------------------------------
+// Starting a session from a snapshot
+// ---------------------------------------------------------------------------
+
+test("an empty session offers snapshots but has no FOV", () => {
+  const session = newSession(EMPTY_FIXTURE);
+  assert.equal(session.current().fov.loaded, false);
+  assert.ok(session.snapshots().length >= 2);
+  for (const choice of session.snapshots()) {
+    assert.equal(typeof choice.choice_id, "string");
+    assert.ok(choice.choice_id.length > 0);
+    // The listing is what a frontend reads before anything is loaded, so it
+    // has to carry enough to tell two crops of one field apart.
+    assert.equal(choice.image_size.length, 2);
+    assert.equal(choice.roi_origin_xy.length, 2);
+  }
+});
+
+test("choosing a snapshot loads its FOV and nothing else", () => {
+  const session = newSession(EMPTY_FIXTURE);
+  const cropped = session.snapshots()
+    .find((c) => c.roi_origin_xy[0] > 0);
+  assert.ok(cropped, "the fixture should include a cropped snapshot");
+
+  const response = act(session, "load_snapshot_choice", {
+    choice_id: cropped.choice_id,
+  });
+
+  assert.equal(response.ok, true, response.message);
+  const fov = response.state.fov;
+  assert.equal(fov.loaded, true);
+  assert.equal(fov.fov_id, cropped.choice_id);
+  // Straight from what the real controller reported, not recomputed here.
+  assert.deepEqual(fov.image_size, cropped.image_size);
+  assert.deepEqual(fov.roi_origin_xy, cropped.roi_origin_xy);
+  assert.equal(fov.camera_bin, cropped.camera_bin);
+  assert.equal(fov.camera_name, cropped.camera_name);
+});
+
+test("loading a snapshot advances the reference revision", () => {
+  // This is the whole trigger for a frontend refetching the image.
+  const session = newSession(EMPTY_FIXTURE);
+  const before = session.current().fov.reference_revision;
+  const choice = session.snapshots()[0];
+
+  const response = act(session, "load_snapshot_choice", {
+    choice_id: choice.choice_id,
+  });
+
+  assert.ok(response.state.fov.reference_revision > before);
+});
+
+test("the served image follows the snapshot that was loaded", () => {
+  const session = newSession(EMPTY_FIXTURE);
+  assert.equal(session.referenceImageFor(session.current().fov.fov_id), null);
+
+  for (const choice of session.snapshots()) {
+    const response = session.apply("load_snapshot_choice",
+      { choice_id: choice.choice_id }, session.state.revision);
+    assert.equal(response.ok, true, response.message);
+    const pixels = session.referenceImageFor(response.state.fov.fov_id);
+    const [rows, columns] = response.state.fov.image_size;
+    assert.equal(pixels.length, rows * columns,
+      `${choice.choice_id}: pixels must match the announced image_size`);
+  }
+});
+
+test("a new reference discards the somata drawn on the old one", () => {
+  // Cell geometry is indices into a particular frame, so the controller
+  // clears it when it adopts a new reference. A stub that kept them would
+  // let a frontend bug that draws stale overlays pass unnoticed.
+  const session = newSession();
+  assert.ok(session.current().cells.length > 0);
+  const other = session.snapshots().find((c) => !c.is_current);
+
+  const response = act(session, "load_snapshot_choice", {
+    choice_id: other.choice_id,
+  });
+
+  assert.deepEqual(response.state.cells, []);
+  assert.deepEqual(response.state.soma_polygons, []);
+  assert.equal(response.state.legal_actions.freeze_run, false);
+  assert.equal(response.state.legal_actions.edit_cells, true);
+});
+
+test("the loaded snapshot is marked current in the listing", () => {
+  const session = newSession(EMPTY_FIXTURE);
+  assert.ok(!session.snapshots().some((c) => c.is_current));
+  const choice = session.snapshots()[1];
+
+  act(session, "load_snapshot_choice", { choice_id: choice.choice_id });
+
+  const current = session.snapshots().filter((c) => c.is_current);
+  assert.equal(current.length, 1);
+  assert.equal(current[0].choice_id, choice.choice_id);
+});
+
+test("a snapshot id that was never offered is refused", () => {
+  const session = newSession(EMPTY_FIXTURE);
+  const before = JSON.parse(JSON.stringify(session.current()));
+
+  for (const id of ["/data/Snaps/something.mat", "../elsewhere", "nonesuch"]) {
+    const response = act(session, "load_snapshot_choice", { choice_id: id });
+    assert.equal(response.status, "validation_error", id);
+    assert.equal(response.state.fov.loaded, false);
+  }
+  assert.deepEqual(session.current(), before);
+});
+
+test("a stale snapshot load is refused and loads nothing", () => {
+  const session = newSession(EMPTY_FIXTURE);
+  const choice = session.snapshots()[0];
+
+  const response = session.apply("load_snapshot_choice",
+    { choice_id: choice.choice_id }, session.state.revision - 1);
+
+  assert.equal(response.status, "stale_revision");
+  assert.equal(response.state.fov.loaded, false);
+});

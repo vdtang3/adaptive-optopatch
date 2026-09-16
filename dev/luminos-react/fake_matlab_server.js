@@ -61,10 +61,16 @@ const AO_STATE_METHOD = "get_adaptive_optopatch_state_js";
 const AO_ACTION_METHOD = "adaptive_optopatch_action_js";
 const AO_IMAGE_METHOD = "get_adaptive_optopatch_reference_image_js";
 const AO_PROTOCOLS_METHOD = "get_adaptive_optopatch_protocol_choices_js";
+const AO_SNAPSHOTS_METHOD = "get_adaptive_optopatch_snapshot_choices_js";
 
 // The fixtures that go with the state one. Beside it, and named after it.
-const DEFAULT_IMAGE_FIXTURE = path.join(
-  HERE, "fixtures", "fake_ao_reference_image.json");
+//
+// The snapshots fixture carries the reference images too, one per snapshot,
+// because which image the endpoint should return is decided by which snapshot
+// is loaded. Keeping them together is what stops the pixels and the announced
+// image_size drifting apart.
+const DEFAULT_SNAPSHOTS_FIXTURE = path.join(
+  HERE, "fixtures", "fake_ao_snapshots.json");
 const DEFAULT_PROTOCOLS_FIXTURE = path.join(
   HERE, "fixtures", "fake_ao_protocol_choices.json");
 
@@ -187,19 +193,19 @@ const deviceMissing = (devtype, method) => ({
  * under a running frontend (kill -USR2 <pid>) and watch the tab replace its
  * view. */
 class AoDevSession {
-  constructor({ statePath, imagePath, protocolsPath, log }) {
+  constructor({ statePath, snapshotsPath, protocolsPath, log }) {
     this.statePath = statePath;
-    this.imagePath = imagePath;
+    this.snapshotsPath = snapshotsPath;
     this.protocolsPath = protocolsPath;
     this.log = log;
-    this.image = this.readImage();
     this.reload();
   }
 
   reload() {
     this.session = new FakeAoSession(
       this.readJson(this.statePath, null, "AO state"),
-      this.readJson(this.protocolsPath, [], "protocol choices")
+      this.readJson(this.protocolsPath, [], "protocol choices"),
+      this.readJson(this.snapshotsPath, {}, "snapshots")
     );
     // The fixture is a snapshot of derived state too; recomputing it here
     // means a hand-edited fixture cannot leave legal_actions disagreeing with
@@ -219,12 +225,6 @@ class AoDevSession {
       this.log(`${what} fixture UNREADABLE (${error.message}); serving none`);
       return fallback;
     }
-  }
-
-  readImage() {
-    const fixture = this.readJson(this.imagePath, null, "reference image");
-    if (!fixture || !Array.isArray(fixture.pixels)) return null;
-    return fixture.pixels;
   }
 
   /** Reload on the next change, so a fixture can be edited while it runs. */
@@ -254,12 +254,17 @@ class AoDevSession {
     return this.session.choices();
   }
 
-  /* What the reference-image endpoint returns: the flat uint8 list, or null
-   * when no reference is loaded. Read only - calling it never changes the
-   * state, exactly as the real endpoint never does. */
+  snapshots() {
+    return this.session.snapshots();
+  }
+
+  /* What the reference-image endpoint returns: the flat uint8 list for the
+   * FOV currently loaded, or null when none is. Read only - calling it never
+   * changes the state, exactly as the real endpoint never does. */
   referenceImage() {
-    if (!this.session.state?.fov?.loaded) return null;
-    return this.image;
+    const fov = this.session.state?.fov;
+    if (!fov?.loaded) return null;
+    return this.session.referenceImageFor(fov.fov_id);
   }
 
   apply(action, payload, expectedRevision) {
@@ -333,6 +338,9 @@ const appMethod = (method, args, session) => {
     case AO_PROTOCOLS_METHOD:
       return session.choices();
 
+    case AO_SNAPSHOTS_METHOD:
+      return session.snapshots();
+
     default:
       return undefined;
   }
@@ -383,14 +391,14 @@ const describe = (request) => {
 export const startFakeMatlabServer = ({
   port = MATLAB_PORT,
   fixturePath = DEFAULT_FIXTURE,
-  imagePath = DEFAULT_IMAGE_FIXTURE,
+  snapshotsPath = DEFAULT_SNAPSHOTS_FIXTURE,
   protocolsPath = DEFAULT_PROTOCOLS_FIXTURE,
   watchFixture = false,
   log = console.log,
 } = {}) => {
   const session = new AoDevSession({
     statePath: fixturePath,
-    imagePath,
+    snapshotsPath,
     protocolsPath,
     log,
   });

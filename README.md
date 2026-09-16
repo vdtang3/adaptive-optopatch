@@ -284,6 +284,7 @@ editing, and can drive it. Four endpoints:
 | --- | --- | --- |
 | `get_adaptive_optopatch_state_js` | read | `controller.getState()`. Polled about once a second. Carries no image, mask, waveform or manifest. |
 | `get_adaptive_optopatch_reference_image_js` | read | The reference FOV as a flat uint8 column-major list. Fetched only when `fov.reference_revision` changes. |
+| `get_adaptive_optopatch_snapshot_choices_js` | read | `controller.snapshotChoices()`. Read on demand, never on the poll. |
 | `get_adaptive_optopatch_protocol_choices_js` | read | `controller.protocolChoices()`. Read on demand, never on the poll. |
 | `adaptive_optopatch_action_js` | write | One named action from the allowlist below, with the revision the caller was looking at. |
 
@@ -291,8 +292,9 @@ Every write goes through `adaptive_optopatch.apply_controller_action`, whose
 `action_names()` is the complete list of what a frontend may invoke:
 
 ```text
+load_snapshot_choice  load_protocol_choice
 set_cell_eligibility  add_soma  update_soma  delete_soma
-load_protocol_choice  set_plan_parameter
+set_plan_parameter
 freeze_run  start_new_run  return_to_editing  start_new_batch
 run_next  run_all  stop_after_current
 ```
@@ -310,11 +312,21 @@ Every reply, applied or refused, carries `controller.getState()` afterwards, so
 a frontend replaces its view with the authoritative state either way rather than
 guessing and waiting for a poll to repair it.
 
-Still MATLAB-only, deliberately: loading a snapshot, loading or saving a FOV,
-and resuming a run each need a file chosen on the rig's filesystem; per-cell
-Blue voltage and any command voltage are resolver-owned provenance, not an
-editable control; clearing every soma and sending the Orange mask are not on the
-list.
+Camera snapshots and pulse protocols are chosen by a **stable id**, never by a
+path. `snapshotChoices()` lists `<datafolder>/Snaps/*.mat` — the folder
+`Camera_Snap` writes into — newest first, capped, with each candidate opened
+through the same reader `loadSnapshot` uses so that `loadable` means "loading
+this would succeed". The id is the snapshot's stem, which is what Luminos
+already calls a snapshot everywhere else: `Camera_Snap` writes `<stem>.tiff`,
+`<stem>.mat` and a browser-visible `<stem>.png` from one stem, and the
+patterning image pickers hand that same stem to `Load_Ref_Im_JS`. A choice_id
+that is a path resolves to nothing.
+
+Still MATLAB-only, deliberately: loading or saving an Adaptive Optopatch FOV
+bundle, and resuming a run, each need a file chosen on the rig's filesystem;
+per-cell Blue voltage and any command voltage are resolver-owned provenance,
+not an editable control; clearing every soma and sending the Orange mask are
+not on the list.
 
 ### Test 0: the interface reads controller state
 
@@ -562,6 +574,8 @@ controller.returnToEditing();
 
 state = controller.getState();      % revision, lifecycle, cells, legal actions
 
+snaps    = controller.snapshotChoices();          % camera snaps, by id
+controller.loadSnapshotChoice("143212pilot_cam-OrcaFusion");
 choices  = controller.protocolChoices();          % what may be loaded, by id
 protocol = controller.loadProtocolChoice("round_robin_seed_3001");
 picture  = controller.referenceDisplayImage();    % uint8, for a view to paint
@@ -588,6 +602,12 @@ response.state     % controller.getState() afterwards, refused or not
 means `adaptive_optopatch.default_protocol_root()`, which is
 `pulse-protocols/generated`. The folder of an already loaded protocol is always
 included, so a protocol loaded from elsewhere stays selectable.
+
+`controller.SnapshotRoot` is the same idea for `snapshotChoices()`; empty means
+the attached Luminos session's own `<datafolder>/Snaps`, resolved by
+`adaptive_optopatch.luminos_snapshot_root`. The folder of the currently loaded
+snapshot is always included, so the reference in use stays visible even after
+the Snaps folder rolls over to a new day.
 
 ### Programmatic API
 

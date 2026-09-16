@@ -73,7 +73,8 @@ Requests it recognises:
 | `app_method get_device_availability_js` | `{ devices: [], count: 0, attaching: false }` |
 | `app_method get_adaptive_optopatch_state_js` | the in-memory session state |
 | `app_method adaptive_optopatch_action_js` | the same reply envelope MATLAB produces |
-| `app_method get_adaptive_optopatch_reference_image_js` | the image fixture, binary-framed |
+| `app_method get_adaptive_optopatch_reference_image_js` | the loaded snapshot's image, binary-framed |
+| `app_method get_adaptive_optopatch_snapshot_choices_js` | the snapshot listing fixture |
 | `app_method get_adaptive_optopatch_protocol_choices_js` | the protocol listing fixture |
 | `get_properties` | `{ numDevices: 0 }` |
 | `set_property` | `1` |
@@ -91,6 +92,13 @@ mirrors the parts of the contract the frontend is written against:
 - the same reply envelope, carrying the state after the action whether it was
   applied or refused
 - `legal_actions` and `lifecycle` recomputed rather than carried over
+
+`load_snapshot_choice` is the one action that does not imitate anything: it
+REPLAYS what the real controller did. The FOV it installs and the image it
+then serves were both captured from a real `loadSnapshotChoice`, so camera
+identity, crop origin, binning and image size are MATLAB's numbers rather than
+the stub's. A stub that invented them would let a frontend bug that mishandles
+a cropped frame pass unnoticed here and fail on the rig.
 
 Everything **below** that — what a polygon means, how a cell is named, whether a
 protocol is valid, when a plan may be frozen, what a run does — is a plausible
@@ -112,6 +120,9 @@ Three terminals.
 cd ~/code/cohen-lab/software/adaptive-optopatch/dev/luminos-react
 node fake_matlab_server.js --fixture fixtures/fake_ao_state_loaded.json
 #   or: npm run fake-matlab          (serves fake_ao_state_empty.json)
+#
+# Start from the EMPTY fixture to exercise the normal startup workflow:
+# the tab opens with no FOV, and a snapshot is chosen from the tab itself.
 
 # 2. the real Luminos relay           (luminos-private)
 cd ~/code/cohen-lab/software/luminos-private/src/User_Interface/relay
@@ -143,12 +154,23 @@ is exactly what `JS_Server` would put on the wire as a reply's `data` field.
 - `fake_ao_state_loaded.json` — a 128 × 160 reference FOV with three somata (one
   calibrated, one excluded from stimulation), a connectivity-screen protocol,
   and a frozen run.
-- `fake_ao_reference_image.json` — that FOV's reference image, as
-  `reference_display_image` produces it: uint8, column-major, 20 480 pixels.
-  Small on purpose. It is a deterministic synthetic field — a seeded noisy
-  background with three Gaussian cells — because a committed fixture has to be
-  small and a real snapshot is not, and because the canonical polygons have to
-  sit on structure that is identical on every machine.
+- `fake_ao_snapshots.json` — the camera snapshots a session can start from, and
+  what loading each one actually did. Three parts: `choices`, which is what
+  `controller.snapshotChoices()` reported; and per choice a `fov` (the FOV
+  summary the controller produced after loading it) and its reference image
+  (uint8, column-major, exactly what the image endpoint returns).
+
+  Two snapshots, and the second one matters: **160 × 128 at sensor origin
+  [0, 0], bin 1**, and **140 × 96 at [512, 300], bin 2** — cropped, binned and
+  non-square, because that is the normal case on the Virtual Upright and is
+  exactly where a frontend that quietly assumed a square full-sensor image
+  would go wrong. Switching between the two in a browser proves the canvas
+  follows the reference rather than a remembered aspect ratio.
+
+  The images are deterministic synthetic fields — a seeded noisy background
+  with Gaussian cells — because a committed fixture has to be small and a real
+  snapshot is not, and because the canonical polygons have to sit on structure
+  that is identical on every machine.
 - `fake_ao_protocol_choices.json` — what `controller.protocolChoices()` reported
   for this repository's `pulse-protocols/generated`, with the generating
   machine's paths redacted.
@@ -198,6 +220,14 @@ after the action, a stale request changing nothing, revisions advancing by one,
 no reply carrying a field named `error` (which the browser's bridge reads as a
 thrown exception), and the reference image arriving binary-framed at the size
 the state snapshot announced.
+
+It also covers starting a session from a snapshot: that an empty session offers
+snapshots and has no FOV, that choosing one installs the FOV the real
+controller produced for it, that the reference revision advances (which is the
+whole trigger for a frontend refetching the image), that the served image
+follows the snapshot that was loaded, that a new reference discards the somata
+drawn on the old one, and that an id that was never offered - a path, in
+particular - is refused.
 
 ## The React tab itself
 

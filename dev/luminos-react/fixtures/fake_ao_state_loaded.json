@@ -1,26 +1,30 @@
 {
   "schema_version": "1.0.0",
-  "revision": 7,
+  "revision": 8,
   "lifecycle": "frozen",
   "plan_state": "FROZEN",
   "editable_state_changed": false,
   "stop_after_current_requested": false,
   "status": [
     "Frozen run plan created before acquisition:",
-    "<dev fixture>/tp22599c9e_c28a_4bee_91ce_abf43ad3ab30/adaptive_optopatch_run_dev_fixture_fov_20260916_140520"
+    "<dev fixture>/tp8c706b77_f44e_4f59_91ae_ce1a5dcc2be1/adaptive_optopatch_run_x120000ao_full_cam_OrcaFusion_20260916_151653"
   ],
   "scanner_warning": "",
   "fov": {
     "loaded": true,
-    "fov_id": "dev_fixture_fov",
+    "fov_id": "120000ao_full_cam-OrcaFusion",
     "rig_name": "Virtual_Upright",
     "camera_name": "Orca Fusion",
     "camera_bin": 1,
-    "snapshot_path": "<dev fixture>/tp22599c9e_c28a_4bee_91ce_abf43ad3ab30/snapshot.mat",
-    "snapshot_directory": "<dev fixture>/tp22599c9e_c28a_4bee_91ce_abf43ad3ab30",
+    "snapshot_path": "<dev fixture>/tpd1641fe8_4543_4d80_96fb_a2b8a0f01868/120000ao_full_cam-OrcaFusion.mat",
+    "snapshot_directory": "<dev fixture>/tpd1641fe8_4543_4d80_96fb_a2b8a0f01868",
     "image_size": [
       128,
       160
+    ],
+    "roi_origin_xy": [
+      0,
+      0
     ],
     "reference_revision": 1,
     "cell_count": 3,
@@ -217,8 +221,8 @@
   },
   "active_run": {
     "frozen": true,
-    "folder": "<dev fixture>/tp22599c9e_c28a_4bee_91ce_abf43ad3ab30/adaptive_optopatch_run_dev_fixture_fov_20260916_140520",
-    "batch_id": "adaptive_optopatch_run_dev_fixture_fov_20260916_140520",
+    "folder": "<dev fixture>/tp8c706b77_f44e_4f59_91ae_ce1a5dcc2be1/adaptive_optopatch_run_x120000ao_full_cam_OrcaFusion_20260916_151653",
+    "batch_id": "adaptive_optopatch_run_x120000ao_full_cam_OrcaFusion_20260916_151653",
     "batch_number": 1,
     "trial_count": 2,
     "completed_trial_count": 0,

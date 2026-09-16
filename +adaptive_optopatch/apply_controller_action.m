@@ -119,11 +119,12 @@ function names=action_names()
 %ACTION_NAMES Every action a frontend may invoke, and nothing else.
 %   Deliberately absent, and why:
 %
-%     load_snapshot / load_fov / save_fov / resume_run
+%     load_fov / save_fov / resume_run
 %         all take a filesystem path chosen by the operator. A browser
 %         cannot pick one, and it must not be allowed to send one. These
 %         stay in the MATLAB GUI until a MATLAB-owned chooser exists for
-%         them, the way protocolChoices() is one for protocols.
+%         them, the way snapshotChoices() and protocolChoices() are for
+%         camera snapshots and protocols.
 %
 %     set_cell_blue_voltage / set_cell_calibration
 %         the per-cell 488 nm calibration is provenance a frontend displays,
@@ -138,6 +139,7 @@ function names=action_names()
 %         drives a DMD. Hardware output is not something a state-editing
 %         surface should carry.
 names=[ ...
+    "load_snapshot_choice"
     "set_cell_eligibility"
     "add_soma"
     "update_soma"
@@ -163,6 +165,13 @@ function run_action(controller,action,payload)
 %   experiment: validation, identity, eligibility, QC, legality and
 %   execution all remain the controller's.
 switch action
+    case "load_snapshot_choice"
+        % The browser sends a choice_id from a listing MATLAB produced, and
+        % nothing else. Resolving it to a file, and reading the camera
+        % identity, crop origin, binning and DMD transforms out of that file,
+        % both happen inside the controller's own loadSnapshot.
+        controller.loadSnapshotChoice(required_text(payload,"choice_id"));
+
     case "set_cell_eligibility"
         controller.setCellEligibility(required_text(payload,"cell_id"), ...
             "RecordingEnabled",optional_flag(payload,"recording_enabled"), ...

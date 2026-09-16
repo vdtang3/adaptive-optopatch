@@ -10,7 +10,8 @@ function generate_ao_fixtures()
 %   Written here:
 %       fake_ao_state_empty.json        a fresh session
 %       fake_ao_state_loaded.json       a mid-session controller
-%       fake_ao_reference_image.json    that session's reference FOV
+%       fake_ao_snapshots.json          camera snapshots it could load from,
+%                                       with each one's FOV and reference image
 %       fake_ao_protocol_choices.json   protocols it could load
 %
 %   Run headlessly from this folder:
@@ -36,23 +37,87 @@ if ~isfolder(fixture_dir), mkdir(fixture_dir); end
 write_fixture(fullfile(fixture_dir,"fake_ao_state_empty.json"), ...
     empty_controller().getState());
 
-[controller,protocol_root]=loaded_controller();
+% Two real camera snapshots, listed and loaded by the real controller. One
+% full field and one cropped, binned and non-square, because a cropped frame
+% is the normal case on the Virtual Upright and is exactly where a frontend
+% that quietly assumed a square full-sensor image would go wrong.
+snapshot_root=write_development_snapshots();
+cleanup_snaps=onCleanup(@()remove_if_present(snapshot_root)); %#ok<NASGU>
+write_json(fullfile(fixture_dir,"fake_ao_snapshots.json"), ...
+    snapshot_fixture(snapshot_root),"Pretty",false);
+
+[controller,protocol_root]=loaded_controller(snapshot_root);
 write_fixture(fullfile(fixture_dir,"fake_ao_state_loaded.json"), ...
     controller.getState());
-
-% The reference image travels on its own endpoint, never on the state poll,
-% so it is its own fixture. Stored with its dimensions because the stub has
-% to reproduce JS_Server's framing decision - small arrays go as JSON, large
-% ones as raw bytes - and needs to know how many elements there are.
-image=controller.referenceDisplayImage();
-write_json(fullfile(fixture_dir,"fake_ao_reference_image.json"), ...
-    struct("rows",size(image,1),"columns",size(image,2), ...
-        "note","uint8, column-major, exactly what the endpoint returns", ...
-        "pixels",reshape(double(image),1,[])),"Pretty",false);
 
 controller.ProtocolRoot=protocol_root;
 write_json(fullfile(fixture_dir,"fake_ao_protocol_choices.json"), ...
     redact_choice_paths(controller.protocolChoices()));
+end
+
+function fixture=snapshot_fixture(snapshot_root)
+%SNAPSHOT_FIXTURE Everything the stub needs to imitate loading a snapshot.
+%   The listing, plus - per choice - the FOV summary the controller reports
+%   after loading it and the reference image the image endpoint then returns.
+%   All produced by the real controller, so the stub never has to work out
+%   what a load does to the state; it replays what one actually did.
+%
+%   The reference image travels on its own endpoint, never on the state poll.
+%   It is stored with its dimensions because the stub has to reproduce
+%   JS_Server's framing decision - small arrays go as JSON, large ones as raw
+%   bytes - and needs to know how many elements there are.
+controller=adaptive_optopatch.AdaptiveOptopatchController( ...
+    "LuminosApp",simulatedLuminosApp());
+controller.SnapshotRoot=snapshot_root;
+choices=controller.snapshotChoices();
+
+% A list keyed by an explicit choice_id field rather than a struct keyed by
+% the id itself: a snapshot stem starts with a digit and contains hyphens,
+% neither of which survives as a MATLAB field name.
+loads=repmat(struct("choice_id","","fov",struct(),"rows",0,"columns",0, ...
+    "pixels",[]),0,1);
+for k=1:numel(choices)
+    controller.loadSnapshotChoice(choices(k).choice_id);
+    fov=controller.getState().fov;
+    fov.snapshot_directory=redact_temporary(fov.snapshot_directory);
+    fov.snapshot_path=redact_temporary(fov.snapshot_path);
+    image=controller.referenceDisplayImage();
+    loads(end+1,1)=struct("choice_id",choices(k).choice_id,"fov",fov, ...
+        "rows",size(image,1),"columns",size(image,2), ...
+        "pixels",reshape(double(image),1,[])); %#ok<AGROW>
+end
+
+fixture=struct( ...
+    "note","uint8 pixels, column-major, exactly what the endpoint returns", ...
+    "choices",redact_choice_paths(choices), ...
+    "loads",loads);
+end
+
+function root=write_development_snapshots()
+%WRITE_DEVELOPMENT_SNAPSHOTS Two snapshots in the shape Camera_Snap writes.
+%   A plain struct, not a CL_RefImage: that class is Luminos's, not this
+%   repository's, and read_reference_snapshot accepts either.
+root=string(tempname);
+mkdir(root);
+[full_image,~]=synthetic_reference();
+write_snapshot(fullfile(root,"120000ao_full_cam-OrcaFusion.mat"), ...
+    full_image,[0 size(full_image,2) 0 size(full_image,1)],1);
+[crop_image,~]=synthetic_cropped_reference();
+% A real crop: offset on the sensor, binned, and not square.
+write_snapshot(fullfile(root,"130000ao_crop_cam-OrcaFusion.mat"), ...
+    crop_image,[512 size(crop_image,2) 300 size(crop_image,1)],2);
+end
+
+function write_snapshot(path,image,roi,bin)
+snap=struct; %#ok<NASGU>
+snap.img=uint16(image);
+snap.name="Orca Fusion";
+snap.bin=bin;
+snap.ref2d=imref2d(size(image),[roi(1) roi(1)+roi(2)],[roi(3) roi(3)+roi(4)]);
+snap.timestamp=datetime("now");
+snap.tform=struct("name","DMD_Blue","tform",affine2d());
+snap.type='Camera';
+save(path,"snap");
 end
 
 function controller=empty_controller()
@@ -60,11 +125,12 @@ function controller=empty_controller()
 controller=adaptive_optopatch.AdaptiveOptopatchController();
 end
 
-function [controller,protocol_root]=loaded_controller()
+function [controller,protocol_root]=loaded_controller(snapshot_root)
 %LOADED_CONTROLLER A realistic mid-session controller.
-%   Built the way the controller tests build one: simulated Luminos backend,
-%   a reference FOV, canonical somata drawn round the cells actually visible
-%   in it, per-cell decisions, a real screen protocol, and a frozen run.
+%   The reference FOV is loaded the way the interface now loads one - by
+%   choosing a snapshot from the listing - rather than injected with
+%   setReferenceData, so the fixture exercises the same path an operator
+%   does and the listing can mark that snapshot as the current one.
 root=string(tempname);
 mkdir(root);
 cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
@@ -74,7 +140,9 @@ controller=adaptive_optopatch.AdaptiveOptopatchController( ...
     "LuminosApp",simulatedLuminosApp("CameraRoi", ...
         [974 size(image,2) 984 size(image,1)]), ...
     "RunRoot",root);
-controller.setReferenceData(image,reference_info(root,image),polygons);
+controller.SnapshotRoot=snapshot_root;
+controller.loadSnapshotChoice("120000ao_full_cam-OrcaFusion");
+controller.setSomaPolygons(polygons);
 controller.setCellCalibration("cell_001",1.4,"development fixture");
 controller.setCellEligibility("cell_002","StimulationEnabled",false);
 controller.setProtocol(adaptive_optopatch.generate_screen_protocol( ...
@@ -115,15 +183,26 @@ end
 image=single(image);
 end
 
-function info=reference_info(root,image)
-camera=struct("ROI",[0 0 size(image,2) size(image,1)],"bin",1, ...
-    "x_world_limits",[974 974+size(image,2)], ...
-    "y_world_limits",[984 984+size(image,1)]);
-info=struct("snapshot_name","dev_fixture_fov", ...
-    "snapshot_directory",root, ...
-    "snapshot_path",fullfile(root,"snapshot.mat"), ...
-    "camera_name","Orca Fusion","camera_bin",1, ...
-    "metadata",struct("rig_name","Virtual_Upright","voltage_camera",camera));
+function [image,polygons]=synthetic_cropped_reference()
+%SYNTHETIC_CROPPED_REFERENCE A smaller, non-square field with two cells.
+%   Deliberately a different shape from the full field, so that switching
+%   between the two in a browser proves the canvas follows the reference
+%   rather than a remembered aspect ratio.
+rows=96; columns=140;
+[x,y]=meshgrid(1:columns,1:rows);
+stream=RandStream("mt19937ar","Seed",20260917);
+image=110+7*randn(stream,rows,columns);
+centres=[44 32; 96 66];
+radii=[9 8];
+polygons=cell(size(centres,1),1);
+for k=1:size(centres,1)
+    centre=centres(k,:); radius=radii(k);
+    image=image+850*exp(-((x-centre(1)).^2+(y-centre(2)).^2)/(2*(radius/2)^2));
+    angles=(0:7)'*pi/4;
+    polygons{k}=[centre(1)+(radius+2)*cos(angles), ...
+        centre(2)+(radius+2)*sin(angles)];
+end
+image=single(image);
 end
 
 function write_fixture(target,state)

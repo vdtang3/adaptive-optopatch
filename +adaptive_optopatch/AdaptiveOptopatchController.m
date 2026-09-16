@@ -44,6 +44,11 @@ classdef AdaptiveOptopatchController < handle
         %   to redraw itself from getState().
         StateChangedFcn = []
         RunRoot (1,1) string = ""
+        %SNAPSHOTROOT Folder snapshotChoices() offers camera snapshots from.
+        %   Empty means the attached Luminos session's own Snaps folder, which
+        %   is where Camera_Snap writes. A session that keeps snapshots
+        %   elsewhere sets this once; no frontend ever names a folder.
+        SnapshotRoot (1,1) string = ""
         %PROTOCOLROOT Folder protocolChoices() offers protocols from.
         %   Empty means adaptive_optopatch.default_protocol_root(), which is
         %   where the generators under pulse-protocols/ write. A session that
@@ -57,6 +62,8 @@ classdef AdaptiveOptopatchController < handle
         CellSummaryCache = []
         %PROTOCOLCHOICECACHE The listing loadProtocolChoice resolves against.
         ProtocolChoiceCache = []
+        %SNAPSHOTCHOICECACHE The listing loadSnapshotChoice resolves against.
+        SnapshotChoiceCache = []
     end
 
     methods
@@ -157,6 +164,61 @@ classdef AdaptiveOptopatchController < handle
                 '%d × %d pixels, binning %.3g.'],info.snapshot_path, ...
                 info.camera_name,info.image_size(2),info.image_size(1), ...
                 info.camera_bin));
+        end
+
+        function choices=snapshotChoices(controller)
+            %SNAPSHOTCHOICES Camera snapshots a frontend may ask to have loaded.
+            %   MATLAB discovers them; a frontend chooses a choice_id out of
+            %   this list. Read from disk on demand rather than carried in
+            %   getState(), which is polled and must stay cheap - and this one
+            %   opens an image per candidate to answer `loadable` honestly.
+            %
+            %   The folder of the currently loaded snapshot is always
+            %   included, so the reference in use stays visible and is marked
+            %   is_current even when the session's Snaps folder has rolled
+            %   over to a new day.
+            choices=adaptive_optopatch.list_snapshot_choices( ...
+                "Roots",controller.snapshotSearchRoots());
+            currentPath=info_string(controller.ReferenceInfo,"snapshot_path");
+            for k=1:numel(choices)
+                choices(k).is_current=strlength(currentPath)>0 && ...
+                    choices(k).path==currentPath;
+            end
+            controller.SnapshotChoiceCache=choices;
+        end
+
+        function loadSnapshotChoice(controller,choiceId)
+            %LOADSNAPSHOTCHOICE Load one snapshot named by snapshotChoices().
+            %   The id is resolved against a listing this controller produced,
+            %   never treated as a path. An id that is not in the current
+            %   listing is rejected rather than guessed at - which is what
+            %   happens when a file has been removed, or renamed, since the
+            %   frontend last asked.
+            %
+            %   The load itself is loadSnapshot: one canonical path into the
+            %   reference FOV, shared with the MATLAB GUI, so camera identity,
+            %   crop origin, binning and the DMD transforms recorded with the
+            %   snap are read exactly once and in one place.
+            arguments
+                controller
+                choiceId (1,1) string
+            end
+            choices=controller.SnapshotChoiceCache;
+            if isempty(choices) || ~known_and_present(choices,choiceId)
+                % Re-listed when the id is unknown OR when the file behind it
+                % has gone since the listing was made. Both are the same thing
+                % to an operator - the list is out of date - and a stale cache
+                % must not turn into a file-not-found naming a path they
+                % never chose.
+                choices=controller.snapshotChoices();
+            end
+            index=find([choices.choice_id]==choiceId,1);
+            if isempty(index)
+                error("adaptive_optopatch:UnknownSnapshotChoice", ...
+                    "No camera snapshot is offered as '%s'. Refresh the " + ...
+                    "snapshot list and choose again.",choiceId);
+            end
+            controller.loadSnapshot(choices(index).path);
         end
 
         function setReferenceData(controller,image,info,somaPolygons)
@@ -1151,6 +1213,19 @@ classdef AdaptiveOptopatchController < handle
             controller.PlanParameters=parameters;
         end
 
+        function roots=snapshotSearchRoots(controller)
+            %SNAPSHOTSEARCHROOTS Folders snapshotChoices() reads, in order.
+            roots=controller.SnapshotRoot;
+            if strlength(roots)==0
+                roots=adaptive_optopatch.luminos_snapshot_root( ...
+                    controller.LuminosApp);
+            end
+            currentPath=info_string(controller.ReferenceInfo,"snapshot_path");
+            if strlength(currentPath)>0
+                roots(end+1,1)=string(fileparts(currentPath));
+            end
+        end
+
         function roots=protocolSearchRoots(controller)
             %PROTOCOLSEARCHROOTS Folders protocolChoices() reads, in order.
             roots=controller.ProtocolRoot;
@@ -1308,6 +1383,7 @@ classdef AdaptiveOptopatchController < handle
                 "fov_id","","rig_name","","camera_name","","camera_bin",NaN, ...
                 "snapshot_path","","snapshot_directory","", ...
                 "image_size",geometry.image_size, ...
+                "roi_origin_xy",[NaN NaN], ...
                 "reference_revision",controller.ReferenceRevision, ...
                 "cell_count",numel(geometry.polygons), ...
                 "next_cell_index",geometry.next_cell_index, ...
@@ -1321,6 +1397,15 @@ classdef AdaptiveOptopatchController < handle
             if isfield(info,"camera_bin"), summary.camera_bin=double(info.camera_bin); end
             if isfield(info,"metadata") && isfield(info.metadata,"rig_name")
                 summary.rig_name=string(info.metadata.rig_name);
+            end
+            % Where this frame sits on the sensor. Reported so a view can say
+            % WHICH crop is loaded; it is not a transform anything applies -
+            % canonical vertices are intrinsic to this image and stay that way.
+            if isfield(info,"metadata") && ...
+                    isfield(info.metadata,"voltage_camera") && ...
+                    isfield(info.metadata.voltage_camera,"ROI")
+                roi=double(info.metadata.voltage_camera.ROI);
+                if numel(roi)>=3, summary.roi_origin_xy=[roi(1) roi(3)]; end
             end
         end
 
@@ -1448,6 +1533,12 @@ if ~isfinite(voltage) || voltage<=0 || voltage>5
     error("adaptive_optopatch:InvalidCellCalibration", ...
         "Blue V (1P) must be a finite number in (0,5] V.");
 end
+end
+
+function tf=known_and_present(choices,choiceId)
+%KNOWN_AND_PRESENT Whether a cached choice still names a file on disk.
+index=find([choices.choice_id]==choiceId,1);
+tf=~isempty(index) && isfile(choices(index).path);
 end
 
 function value=next_index_after(cellIds)

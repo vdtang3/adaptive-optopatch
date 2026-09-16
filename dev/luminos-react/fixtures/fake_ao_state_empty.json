@@ -22,6 +22,10 @@
       0,
       0
     ],
+    "roi_origin_xy": [
+      null,
+      null
+    ],
     "reference_revision": 0,
     "cell_count": 0,
     "next_cell_index": 1,

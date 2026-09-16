@@ -92,7 +92,19 @@ info=struct( ...
 end
 
 function ensure_snapshot_class_available(snapshotPath)
-variables=whos("-file",snapshotPath);
+try
+    variables=whos("-file",snapshotPath);
+catch cause
+    % Not a readable MAT file at all: a truncated write, or something that
+    % merely has the extension. This is the earliest point it can be
+    % detected, and it is an unusable INPUT rather than a fault in this
+    % code - so it is reported with the same identifier every other
+    % malformed snapshot gets, instead of letting MATLAB's raw file error
+    % escape and be classified as an internal failure.
+    exception=MException("adaptive_optopatch:InvalidSnapshot", ...
+        "Could not read %s as a MATLAB snapshot file.",snapshotPath);
+    throw(addCause(exception,cause));
+end
 index=find(strcmp({variables.name},"snap"),1);
 if isempty(index) || ~strcmp(variables(index).class,"CL_RefImage") || ...
         exist("CL_RefImage","class")~=0

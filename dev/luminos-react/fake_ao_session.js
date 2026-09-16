@@ -25,6 +25,7 @@
  * inferred, so that an action added there and not thought about here shows up
  * as an unknown_action in the browser instead of silently doing nothing. */
 export const ACTIONS = [
+  "load_snapshot_choice",
   "set_cell_eligibility",
   "add_soma",
   "update_soma",
@@ -87,10 +88,22 @@ export class FakeAoSession {
    *   session with no controller at all.
    * @param {object[]} protocolChoices a protocolChoices() fixture.
    */
-  constructor(state, protocolChoices = []) {
+  /**
+   * @param {object|null} state a getState() snapshot fixture, or null for a
+   *   session with no controller at all.
+   * @param {object[]} protocolChoices a protocolChoices() fixture.
+   * @param {object} snapshots a snapshotChoices() fixture plus, per choice,
+   *   the FOV and reference image the real controller produced when it was
+   *   loaded - so loading one here REPLAYS a real load rather than guessing
+   *   what one does.
+   */
+  constructor(state, protocolChoices = [], snapshots = {}) {
     this.state = state ? clone(state) : null;
     this.protocolChoices = clone(protocolChoices);
+    this.snapshotChoices = clone(snapshots.choices ?? []);
+    this.snapshotLoads = clone(snapshots.loads ?? []);
     this.markCurrentProtocol();
+    this.markCurrentSnapshot();
   }
 
   /** The snapshot the state endpoint answers with. */
@@ -101,6 +114,21 @@ export class FakeAoSession {
   /** The listing the protocol-choices endpoint answers with. */
   choices() {
     return clone(this.protocolChoices);
+  }
+
+  /** The listing the snapshot-choices endpoint answers with. */
+  snapshots() {
+    return clone(this.snapshotChoices);
+  }
+
+  /* The reference image for whatever FOV is currently loaded, or null.
+   *
+   * Keyed off the state's own fov_id rather than remembered separately, so
+   * the pixels and the announced image_size cannot drift apart - which is
+   * the one thing a frontend decoding this cannot recover from. */
+  referenceImageFor(fovId) {
+    const entry = this.snapshotLoads.find((load) => load.choice_id === fovId);
+    return entry ? entry.pixels : null;
   }
 
   /* One action, with the same outcomes the MATLAB dispatcher produces:
@@ -167,6 +195,8 @@ export class FakeAoSession {
         return this.updateSoma(payload);
       case "delete_soma":
         return this.deleteSoma(payload);
+      case "load_snapshot_choice":
+        return this.loadSnapshotChoice(payload);
       case "load_protocol_choice":
         return this.loadProtocolChoice(payload);
       case "set_plan_parameter":
@@ -231,6 +261,47 @@ export class FakeAoSession {
     this.state.soma_polygons.splice(index, 1);
     // next_cell_index is deliberately NOT decremented: a deleted identity is
     // retired, never recycled, which is what MATLAB does.
+    this.markEditableChanged();
+  }
+
+  /* Replay the load the real controller performed for this snapshot.
+   *
+   * The FOV comes from the fixture, not from anything computed here: camera
+   * identity, crop origin, binning and image size are read out of the
+   * snapshot file by MATLAB, and a stub that invented them would let a
+   * frontend bug that mishandles a cropped frame pass unnoticed.
+   *
+   * Adopting a reference CLEARS cell geometry in the controller - vertices
+   * are indices into a particular frame - so it clears it here too. */
+  loadSnapshotChoice({ choice_id }) {
+    const choice = this.snapshotChoices.find((c) => c.choice_id === choice_id);
+    if (!choice) {
+      throw this.refuse(
+        `No camera snapshot is offered as '${choice_id}'. Refresh the ` +
+          `snapshot list and choose again.`
+      );
+    }
+    if (!choice.loadable) {
+      throw this.refuse(choice.issue || `${choice_id} could not be loaded.`);
+    }
+    const load = this.snapshotLoads.find((l) => l.choice_id === choice_id);
+    if (!load) {
+      throw this.refuse(`No development image was captured for ${choice_id}.`);
+    }
+
+    const previousReference = this.state.fov.reference_revision ?? 0;
+    this.state.fov = {
+      ...clone(load.fov),
+      reference_revision: previousReference + 1,
+    };
+    this.state.cells = [];
+    this.state.soma_polygons = [];
+    this.state.status = [
+      `Loaded snapshot: ${load.fov.snapshot_path}`,
+      `Camera: ${load.fov.camera_name}, ${load.fov.image_size[1]} × ` +
+        `${load.fov.image_size[0]} pixels, binning ${load.fov.camera_bin}.`,
+    ];
+    this.markCurrentSnapshot();
     this.markEditableChanged();
   }
 
@@ -411,6 +482,13 @@ export class FakeAoSession {
   markEditableChanged() {
     this.state.editable_state_changed = true;
     if (!this.state.active_run.frozen) this.state.plan_state = "EDITABLE";
+  }
+
+  markCurrentSnapshot() {
+    const fovId = this.state?.fov?.fov_id ?? "";
+    for (const choice of this.snapshotChoices) {
+      choice.is_current = !!fovId && choice.choice_id === fovId;
+    }
   }
 
   markCurrentProtocol() {

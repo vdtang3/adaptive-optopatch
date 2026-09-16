@@ -16,6 +16,13 @@ arguments
     options.ShutterSettleTimeS (1,1) double {mustBeNonnegative} = 0.05
     options.TimeoutMarginS (1,1) double {mustBePositive} = 30
     options.StopRequestedFcn = []
+    % Pass 3A rolls accounting out in report-only: a terminal AO cannot
+    % classify is reported loudly but does not stop the rig, because the
+    % VU's ambient configuration has not been surveyed yet. Violations the
+    % code can prove unsafe block under either policy.
+    options.StimulationAccountingPolicy (1,1) string {mustBeMember( ...
+        options.StimulationAccountingPolicy, ...
+        ["report_only","fail_closed"])} = "report_only"
 end
 if ~options.ConfirmLiveOutput
     error("adaptive_optopatch:LiveOutputNotConfirmed", ...
@@ -54,6 +61,7 @@ trials=ensure_column(trials,"target_configuration",cell(n,1));
 trials=ensure_column(trials,"orange_configuration",cell(n,1));
 trials=ensure_column(trials,"settings_snapshot",cell(n,1));
 trials=ensure_column(trials,"waveform_summary",cell(n,1));
+trials=ensure_column(trials,"stimulation_accounting",cell(n,1));
 trials=ensure_column(trials,"error_message",repmat("",n,1));
 checkpoint="";
 if strlength(options.OutputDirectory)>0
@@ -76,17 +84,27 @@ run=struct("schema_version","0.6.0","mode","live_1p_dmd", ...
     "initial_settings_snapshot",adaptive_optopatch.snapshot_luminos_settings(app), ...
     "trials",trials);
 
+% Neutral state first, source power second. The OBIS setpoint used to be
+% raised before mod488 was known to be dark, so for the length of those two
+% statements the laser was at experiment power behind a modulator holding
+% whatever the previous run had left on it. Nothing downstream needs the
+% power set that early.
 try
+    run.initial_neutralization=adaptive_optopatch.neutralize_all_stimulation( ...
+        app,"Context","1p run start");
+    warn_neutralization(run.initial_neutralization);
     if isfinite(options.LaserPowerW)
         hardware.laser.SetPower=options.LaserPowerW;
     end
-    hardware.modulator.level=profile.modulator.dark_v;
-    hardware.shutter.State=profile.shutter.closed_state;
     if options.ManageLaserEmission && ~hardware.laser_was_on
         hardware.laser.Start();
         runnerStartedLaser=true;
     end
 catch exception
+    % Explicitly, because the onCleanup guard below is not registered yet:
+    % a failure here happens before app.acquisition_active is ever set, and
+    % that used to be the one path out of this function that neutralised
+    % nothing.
     restore_1p_hardware(app,hardware,original,profile, ...
         options.BlankDmdAfterTrial,isfinite(options.LaserPowerW),runnerStartedLaser);
     rethrow(exception)
@@ -139,6 +157,27 @@ for k=1:n
             adaptive_optopatch.build_luminos_1p_waveform_config( ...
             original.global_props,original.wfm_data,row.pulse_schedule{1},profile, ...
             "DmdSequencePlan",dmdSequencePlan);
+        % Measure the candidate configuration BEFORE it is installed, so a
+        % configuration that would drive an AO-owned stimulation line
+        % nobody commanded never reaches the DAQ at all.
+        accounting=adaptive_optopatch.account_stimulation_outputs( ...
+            globalProps,wfmData,"Modality","1p_dmd", ...
+            "Policy",options.StimulationAccountingPolicy, ...
+            "Context",sprintf("1p trial %d (%s)",k,string(row.output_tag)));
+        run.trials.stimulation_accounting{k}=accounting;
+        report_accounting(accounting);
+        if ~accounting.passed
+            error("adaptive_optopatch:StimulationAccountingFailed","%s", ...
+                strjoin(accounting.blocking,newline));
+        end
+
+        % Safe state is reasserted per trial, not once at the top of the
+        % run. A multi-trial run spends minutes between its first trial and
+        % its last, and an earlier trial's failure, a stop, or anything the
+        % operator did to the rig in between sits between them.
+        adaptive_optopatch.neutralize_all_stimulation(app, ...
+            "Context",sprintf("1p trial %d pre-arm",k),"BlankBlueDmd",false);
+
         hardware.daq.global_props=globalProps;
         hardware.daq.wfm_data=wfmData;
         hardware.daq.waveforms_built=false;
@@ -148,6 +187,10 @@ for k=1:n
         waveformSummary.camera_frame_plan=cameraFramePlan;
         run.trials.waveform_summary{k}=waveformSummary;
 
+        % Only now is the beam path opened, and only after everything above
+        % has succeeded. mod488 stays dark: the buffered waveform is what
+        % decides when light is emitted, and this shutter write must not
+        % become a second source of timing.
         hardware.modulator.level=profile.modulator.dark_v;
         hardware.shutter.State=profile.shutter.open_state;
         pause(options.ShutterSettleTimeS);
@@ -189,6 +232,18 @@ for k=1:n
             break
         end
     catch exception
+        % Before anything else, and before the unwind below gets its turn:
+        % the 2P runner has always darkened its modulator on this path and
+        % the 1P runner did not, so a mid-trial failure left 488 nm behind
+        % an open shutter until onCleanup ran.
+        try
+            hardware.modulator.level=profile.modulator.dark_v;
+        catch
+        end
+        try
+            hardware.shutter.State=profile.shutter.closed_state;
+        catch
+        end
         run.trials.acquisition_status(k)="failed";
         run.trials.error_message(k)=string(exception.message);
         run.failed_trial=k;
@@ -241,6 +296,30 @@ save_checkpoint();
         record.realized_pulses=join_pulse_provenance( ...
             waveformSummary.pulses,record.expected_frame_map);
         record.advisories=row_advisories(row);
+        record.stimulation_accounting=run.trials.stimulation_accounting{k};
+    end
+
+    function warn_neutralization(neutralization)
+        % Not an error: a rig without 2P hardware cannot neutralise a
+        % Pockels cell it does not have, and a 1P run there is still valid.
+        % On the VU, which has all of it, this is a real safety signal, so
+        % it is said out loud as well as archived.
+        if neutralization.all_succeeded, return; end
+        warning("adaptive_optopatch:StimulationNeutralizationIncomplete", ...
+            "Could not neutralize: %s. Check the run's " + ...
+            "initial_neutralization report.", ...
+            strjoin(neutralization.failures,", "));
+    end
+
+    function report_accounting(accounting)
+        % Unaccounted terminals are never silently passed through, whatever
+        % the policy says about blocking on them.
+        for w=reshape(accounting.warnings,1,[])
+            warning("adaptive_optopatch:UnaccountedStimulationOutput","%s",w);
+        end
+        for v=reshape(accounting.violations,1,[])
+            warning("adaptive_optopatch:StimulationOwnershipViolation","%s",v);
+        end
     end
 
     function map=make_frame_map(pulses)
@@ -262,6 +341,12 @@ save_checkpoint();
 
     function save_checkpoint()
         run.updated_at=string(datetime("now","TimeZone","local"));
+        % Rolled up here rather than after the loop so a run that threw
+        % still archives what its accounting measured. A failed run is
+        % exactly the one somebody will want to read this from.
+        run.stimulation_accounting= ...
+            adaptive_optopatch.summarize_stimulation_accounting( ...
+                run.trials.stimulation_accounting);
         if strlength(checkpoint)>0, save(checkpoint,"run","-v7.3"); end
     end
 
@@ -301,6 +386,15 @@ if ~ismember(name,string(trials.Properties.VariableNames)), trials.(name)=value;
 end
 
 function restore_1p_hardware(app,hardware,original,profile,blankDmd,restorePower,stopLaser)
+% Stimulation goes safe first and symmetrically. A 1P run used to end with
+% the Pockels cell and the galvos exactly as the previous 2P run had left
+% them, because 1P cleanup only knew about 1P outputs; the beams share a
+% preparation, so cleanup has to as well.
+try
+    adaptive_optopatch.neutralize_all_stimulation(app, ...
+        "Context","1p cleanup","BlankBlueDmd",blankDmd);
+catch
+end
 try
     hardware.shutter.State=profile.shutter.closed_state;
 catch

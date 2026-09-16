@@ -6,8 +6,11 @@ arguments
     activeWfmData (1,1) struct
     waveforms (1,1) struct
     options.Profile (1,1) struct = adaptive_optopatch.virtual_upright_2p_profile()
+    options.Manifest (1,1) struct = ...
+        adaptive_optopatch.virtual_upright_stimulation_manifest()
 end
 profile=options.Profile;
+aliasList=options.Manifest.alias_list;
 required=["rate","clock_source","trigger_source","daq_master"];
 if ~all(isfield(activeGlobalProps,required))
     error("adaptive_optopatch:IncompleteActiveWaveformSettings", ...
@@ -26,10 +29,12 @@ end
 globalProps=activeGlobalProps;
 globalProps.total_time=n/waveforms.sample_rate_hz;
 wfmData=ensure_fields(activeWfmData);
-wfmData=neutralize_one_photon_outputs(wfmData,profile.inactive_one_photon);
-wfmData.ao=remove_outputs(wfmData.ao, ...
-    [profile.scanner.x_port profile.scanner.y_port ...
-     profile.modulator.name profile.modulator.port]);
+wfmData=adaptive_optopatch.drop_ao_script_waveforms(wfmData);
+wfmData=neutralize_one_photon_outputs(wfmData,profile.inactive_one_photon,aliasList);
+wfmData.ao=adaptive_optopatch.remove_output_records(wfmData.ao, ...
+    ["Adaptive2P_X" "Adaptive2P_Y" ...
+     profile.scanner.x_port profile.scanner.y_port ...
+     profile.modulator.name profile.modulator.port],aliasList);
 wfmData.ao=append_record(wfmData.ao,make_record( ...
     "Adaptive2P_X",profile.scanner.x_port,waveforms.sample_rate_hz, ...
     waveforms.x_v,waveforms.x_v(end)));
@@ -47,6 +52,7 @@ summary=struct("schema_version","0.1.0", ...
     "x_port",profile.scanner.x_port,"y_port",profile.scanner.y_port, ...
     "pockels_port",profile.modulator.port, ...
     "preflight",waveforms.preflight,"per_pulse",waveforms.per_pulse, ...
+    "script_owner",adaptive_optopatch.script_owner_tag(), ...
     "requested_acquisition_duration_s",optional_field( ...
         waveforms,"requested_acquisition_duration_s",globalProps.total_time), ...
     "actual_acquisition_duration_s",optional_field( ...
@@ -63,16 +69,25 @@ summary=struct("schema_version","0.1.0", ...
         "safe_value_source",string(profile.inactive_one_photon.safe_value_source)));
 end
 
-function data=neutralize_one_photon_outputs(data,outputs)
+function data=neutralize_one_photon_outputs(data,outputs,aliasList)
 modulator=outputs.modulator; dmd=outputs.dmd;
-data.ao=remove_outputs(data.ao,[modulator.name modulator.port]);
+data.ao=adaptive_optopatch.remove_output_records(data.ao, ...
+    [modulator.name modulator.port],aliasList);
 data.ao=append_record(data.ao,constant_record( ...
     modulator.name,modulator.name,modulator.dark_v));
-data.do=remove_outputs(data.do,[dmd.trigger_name dmd.trigger_alias dmd.trigger_port]);
+data.do=adaptive_optopatch.remove_output_records(data.do, ...
+    [dmd.trigger_name dmd.trigger_alias dmd.trigger_port],aliasList);
 data.do=append_record(data.do,constant_record( ...
     dmd.trigger_name,dmd.trigger_port,dmd.trigger_safe_state));
+% A 2P run holds the 488 shutter closed for its whole duration, so here the
+% buffered record IS the sole runtime owner of the line and the runner's
+% single imperative close happens before anything is armed. That is the
+% opposite assignment to a 1P run, where the shutter has to open and the
+% imperative writes own it; both satisfy the same invariant, which is that
+% exactly one of the two drives the line while a task holds it.
 shutter=outputs.shutter;
-data.do=remove_outputs(data.do,[shutter.name shutter.port]);
+data.do=adaptive_optopatch.remove_output_records(data.do, ...
+    [shutter.name shutter.port],aliasList);
 data.do=append_record(data.do,constant_record( ...
     shutter.name,shutter.port,shutter.closed_state));
 end
@@ -80,7 +95,8 @@ end
 function record=constant_record(name,port,value)
 record=struct("name",char(name),"port",char(port), ...
     "wavefile","awfm_constant","params",{{double(value)}}, ...
-    "operation","Multiplication","concatTime",[]);
+    "operation","Multiplication","concatTime",[], ...
+    "script_owner",char(adaptive_optopatch.script_owner_tag()));
 end
 
 function value=optional_field(data,name,defaultValue)
@@ -91,26 +107,14 @@ function record=make_record(name,port,sampleRate,values,finalValue)
 record=struct("name",char(name),"port",char(port), ...
     "wavefile","adaptive_optopatch.luminos_sampled_waveform", ...
     "params",{{sampleRate,values(:),finalValue}}, ...
-    "operation","Multiplication","concatTime",[]);
+    "operation","Multiplication","concatTime",[], ...
+    "script_owner",char(adaptive_optopatch.script_owner_tag()));
 end
 
 function data=ensure_fields(data)
 for name=["ao","do","ai","di","ctri","ao_camera_triggered","do_camera_triggered"]
     if ~isfield(data,name), data.(name)=[]; end
 end
-end
-
-function values=remove_outputs(values,identifiers)
-if isempty(values), return; end
-keep=true(size(values));
-identifiers=strip(string(identifiers));
-for k=1:numel(values)
-    name=""; port="";
-    if isfield(values,"name"), name=strip(string(values(k).name)); end
-    if isfield(values,"port"), port=strip(string(values(k).port)); end
-    keep(k)=~any(name==identifiers | port==identifiers);
-end
-values=values(keep);
 end
 
 function values=append_record(values,record)

@@ -7,7 +7,10 @@ arguments
     protocol (1,1) struct
     profile (1,1) struct = adaptive_optopatch.virtual_upright_1p_profile()
     options.DmdSequencePlan = struct([])
+    options.Manifest (1,1) struct = ...
+        adaptive_optopatch.virtual_upright_stimulation_manifest()
 end
+aliasList=options.Manifest.alias_list;
 required=["rate","clock_source","trigger_source","daq_master"];
 if ~all(isfield(activeGlobalProps,required))
     error("adaptive_optopatch:IncompleteActiveWaveformSettings", ...
@@ -33,18 +36,43 @@ if ~isfield(globalProps,"completion_trigger")
     globalProps.completion_trigger="None";
 end
 wfmData=ensure_wfm_fields(activeWfmData);
-wfmData=neutralize_two_photon_outputs(wfmData,profile.inactive_two_photon);
-wfmData.ao=remove_output(wfmData.ao,profile.modulator.name,profile.modulator.port);
+wfmData=adaptive_optopatch.drop_ao_script_waveforms(wfmData);
+wfmData=neutralize_two_photon_outputs(wfmData,profile.inactive_two_photon,aliasList);
+% The 488 shutter has one runtime owner during a 1P acquisition, and it is
+% the runner's imperative open/close around the armed window - which is
+% where the shutter has always been driven from, and moving it into the
+% buffer would change when light reaches the preparation. So no buffered
+% record may own the line: an ambient one is removed rather than left to
+% contend with those writes. The manifest records the same decision as
+% owner="imperative".
+wfmData.do=adaptive_optopatch.remove_output_records(wfmData.do, ...
+    [profile.shutter.name profile.shutter.port],aliasList);
+wfmData.ao=adaptive_optopatch.remove_output_records(wfmData.ao, ...
+    [profile.modulator.name profile.modulator.port],aliasList);
 record=struct("name",char(profile.modulator.name), ...
     "port",char(profile.modulator.name), ...
     "wavefile","adaptive_optopatch.luminos_event_waveform", ...
     "params",{{pulses.onset_s,pulses.offset_s, ...
         pulses.modulator_voltage,double(profile.modulator.dark_v)}}, ...
-    "operation","Multiplication","concatTime",[]);
+    "operation","Multiplication","concatTime",[], ...
+    "script_owner",char(adaptive_optopatch.script_owner_tag()));
 wfmData.ao=append_compatible(wfmData.ao,record);
-if ~isempty(options.DmdSequencePlan)
-    wfmData.do=remove_output(wfmData.do,"AdaptiveOptopatch DMD trigger", ...
-        profile.dmd.trigger_port);
+% Every spelling of the Blue DMD advance line, including the rig alias
+% "DMD Trigger" that Waveforms actually stores. A stale record there
+% de-aliases onto exactly this terminal inside Luminos and combines with
+% whatever AO puts on it, so removing it by name alone left the hole this
+% pass exists to close. Unconditional, because a trial that advances no
+% patterns still owns the line: it previously left an ambient record in
+% place, and an AO-owned stimulation terminal that nothing commands has to
+% carry its declared neutral rather than somebody else's waveform.
+wfmData.do=adaptive_optopatch.remove_output_records(wfmData.do, ...
+    ["AdaptiveOptopatch DMD trigger" string(profile.dmd.trigger_alias) ...
+     string(profile.dmd.trigger_port)],aliasList);
+if isempty(options.DmdSequencePlan)
+    wfmData.do=append_compatible(wfmData.do,constant_record( ...
+        "AdaptiveOptopatch DMD trigger",profile.dmd.trigger_port, ...
+        dmd_trigger_neutral(options.Manifest)));
+else
     if isfield(options.DmdSequencePlan,"dmd_trigger_s")
         triggerOnset=double(options.DmdSequencePlan.dmd_trigger_s(:));
     else
@@ -71,7 +99,8 @@ if ~isempty(options.DmdSequencePlan)
         "port",char(profile.dmd.trigger_port), ...
         "wavefile","adaptive_optopatch.luminos_event_waveform", ...
         "params",{{triggerOnset,triggerOffset,ones(size(triggerOnset)),0}}, ...
-        "operation","Multiplication","concatTime",[]);
+        "operation","Multiplication","concatTime",[], ...
+        "script_owner",char(adaptive_optopatch.script_owner_tag()));
     wfmData.do=append_compatible(wfmData.do,triggerRecord);
 end
 
@@ -98,6 +127,9 @@ summary.clock_source=reshape(string(globalProps.clock_source),1,[]);
 summary.trigger_source=reshape(string(globalProps.trigger_source),1,[]);
 summary.expected_clock_bridge=reshape(string(profile.daq.clock_bridge),1,[]);
 summary.expected_start_triggers=reshape(string(profile.daq.default_trigger),1,[]);
+summary.blue_shutter_runtime_owner= ...
+    manifest_owner(options.Manifest,"blue_shutter").one_photon;
+summary.script_owner=adaptive_optopatch.script_owner_tag();
 summary.inactive_two_photon_outputs=struct( ...
     "galvo_x_port",string(profile.inactive_two_photon.scanner.x_port), ...
     "galvo_y_port",string(profile.inactive_two_photon.scanner.y_port), ...
@@ -107,15 +139,18 @@ summary.inactive_two_photon_outputs=struct( ...
     "safe_value_source",string(profile.inactive_two_photon.safe_value_source));
 end
 
-function data=neutralize_two_photon_outputs(data,outputs)
+function data=neutralize_two_photon_outputs(data,outputs,aliasList)
 scanner=outputs.scanner; modulator=outputs.modulator;
-data.ao=remove_identifiers(data.ao,[scanner.x_name scanner.x_port]);
+data.ao=adaptive_optopatch.remove_output_records(data.ao, ...
+    [scanner.x_name scanner.x_port],aliasList);
 data.ao=append_compatible(data.ao,constant_record( ...
     scanner.x_name,scanner.x_port,scanner.stationary_v(1)));
-data.ao=remove_identifiers(data.ao,[scanner.y_name scanner.y_port]);
+data.ao=adaptive_optopatch.remove_output_records(data.ao, ...
+    [scanner.y_name scanner.y_port],aliasList);
 data.ao=append_compatible(data.ao,constant_record( ...
     scanner.y_name,scanner.y_port,scanner.stationary_v(2)));
-data.ao=remove_identifiers(data.ao,[modulator.name modulator.port]);
+data.ao=adaptive_optopatch.remove_output_records(data.ao, ...
+    [modulator.name modulator.port],aliasList);
 data.ao=append_compatible(data.ao,constant_record( ...
     modulator.name,modulator.name,modulator.dark_v));
 end
@@ -123,7 +158,8 @@ end
 function record=constant_record(name,port,value)
 record=struct("name",char(name),"port",char(port), ...
     "wavefile","awfm_constant","params",{{double(value)}}, ...
-    "operation","Multiplication","concatTime",[]);
+    "operation","Multiplication","concatTime",[], ...
+    "script_owner",char(adaptive_optopatch.script_owner_tag()));
 end
 
 function report=validate_pulse_realization(pulses,rate)
@@ -179,35 +215,21 @@ report=struct("schema_version","1.0.0","sample_rate_hz",rate, ...
     "dark_interval_sample_count",gapSamples);
 end
 
+function value=dmd_trigger_neutral(manifest)
+% The low state is a rig safety declaration, read from the manifest rather
+% than assumed here. Nothing in a waveform builder decides what is safe.
+value=manifest.outputs( ...
+    string({manifest.outputs.role})=="blue_dmd_advance_trigger").neutral_value;
+end
+
+function value=manifest_owner(manifest,role)
+value=manifest.outputs(string({manifest.outputs.role})==string(role)).owner;
+end
+
 function data=ensure_wfm_fields(data)
 for name=["ao","do","ai","di","ctri","ao_camera_triggered","do_camera_triggered"]
     if ~isfield(data,name), data.(name)=[]; end
 end
-end
-
-function values=remove_output(values,name,port)
-if isempty(values), return; end
-keep=true(size(values));
-for k=1:numel(values)
-    recordName=""; recordPort="";
-    if isfield(values,"name"), recordName=string(values(k).name); end
-    if isfield(values,"port"), recordPort=string(values(k).port); end
-    keep(k)=~(recordName==string(name) || recordPort==string(name) || ...
-        recordPort==string(port));
-end
-values=values(keep);
-end
-
-function values=remove_identifiers(values,identifiers)
-if isempty(values), return; end
-keep=true(size(values)); identifiers=strip(string(identifiers));
-for k=1:numel(values)
-    recordName=""; recordPort="";
-    if isfield(values,"name"), recordName=strip(string(values(k).name)); end
-    if isfield(values,"port"), recordPort=strip(string(values(k).port)); end
-    keep(k)=~any(recordName==identifiers | recordPort==identifiers);
-end
-values=values(keep);
 end
 
 function values=append_compatible(values,record)

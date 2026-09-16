@@ -1263,3 +1263,190 @@ the count it reached.
 
 Deliberately not done: no mid-acquisition abort. Stop after current
 acquisition is the only stop, as it has always been.
+
+## 2026-09-16 — One rule for what "the same terminal" means
+
+AO built waveforms on top of whatever was already in Luminos's `wfm_data`,
+removed the records it was about to replace, and installed its own. The
+removal compared strings. Luminos does not: `DAQ.remove_al` resolves rig
+aliases case-insensitively, and `Same_Terminal` then strips whitespace,
+drops every slash and lowercases what is left. So a waveform the operator
+had drawn on `DMD Trigger` — which is the rig file's alias for
+`Dev1/port0/line4`, and the spelling the Waveforms tab actually stores —
+survived AO's filter untouched, and `Build_Waveforms` then de-aliased it
+onto the same terminal as AO's advance train and handed both to
+`Combine_Output_Waveforms`. The default operation is Multiplication, so a
+stale constant of 0 annihilates the train and every pulse in the trial
+illuminates cell 1; a stale pulse train adds advances nobody asked for.
+Either way the light lands on the wrong cell and the data looks fine.
+
+`canonical_terminal` is now the only place in the package that decides
+whether two names denote one physical output, and it is `Same_Terminal`'s
+rule rather than a second one. The alias list it resolves through is
+transcribed into the rig manifest rather than read from a DAQ object,
+because the waveform builders are pure functions over structs and have no
+device to ask — and because an explicit transcription is the thing a
+commissioning survey can check the live rig against, which
+`report_vu_stimulation_outputs` now does.
+
+Three removal helpers had grown up beside each other — one matching a name
+and a port, one a list of identifiers, one the same with whitespace
+stripped — and all three compared raw strings, so every one of them had
+the same hole. They are one function, `remove_output_records`, matching on
+both a record's name and its port because Luminos resolves by port and
+matching the name as well only ever removes more than Luminos would
+combine.
+
+Two other holes closed with it. The DMD advance line was only cleared when
+the trial had a sequence plan, so a single-target trial left whatever was
+on it in place; it is now cleared unconditionally and carries the rig's
+declared low state when AO commands no advances. And `shutter488` was
+never cleared at all while the 1P runner also opened and closed it through
+`hardware.shutter.State`, which is two runtime owners of one line. The
+invariant is that exactly one thing drives a line while a task holds it,
+and which one differs by modality: a 1P run must open the shutter, so the
+imperative writes own it and no buffered record may exist; a 2P run holds
+it closed for the whole acquisition, so the buffered constant owns it and
+the single imperative close happens before anything is armed. The manifest
+states that per modality and accounting checks it, rather than either
+being a rule of thumb in a builder.
+
+### Neutral values stay rig declarations
+
+`virtual_upright_stimulation_manifest` consolidates what had been split
+across `virtual_upright_1p_profile.inactive_two_photon` and
+`virtual_upright_2p_profile.inactive_one_photon`, and it *reads* those
+profiles rather than restating them — a copy would drift, and the existing
+principle is that a neutral value is a rig safety declaration and never an
+inference by waveform-builder code. Six outputs are AO's: mod488, the 488
+shutter, the Blue DMD advance trigger, the Pockels cell and both galvos.
+`mod594` and `shutter594` are declared `inherited_non_stimulation`, with
+the reason, because AO deliberately runs inside the operator's own imaging
+configuration and "AO does not own it" is not a classification. The two
+camera trigger lines are declared as infrastructure Luminos adds itself,
+after AO has installed `wfm_data`, through `Setup_Camera_Trigger_Waveforms`.
+
+Four rig outputs are declared `unresolved` rather than guessed. `PMT
+Shutter` is a `Voltage_Shutter` on `Dev2/ao2` — an analog output on the
+galvo card whose neutral AO has never declared. `Shutter sensory` on
+`Dev1/port0/line2` is named like a stimulation shutter. And
+`Dev1/port0/line5` is the one the audit asked about: the rig file calls it
+`General Shutter`, AO's own test fixtures have called it an Orange DMD
+trigger since they were written, and the rig file gives `DMD_Orange` no
+trigger terminal at all. One of those two readings is wrong, and AO cannot
+tell which from here. Inventing a classification would have made the tests
+green and the rig no safer.
+
+### Measuring rather than believing
+
+`account_stimulation_outputs` compiles the candidate configuration and
+classifies each physical terminal as commanded, neutral, inherited,
+expected Luminos infrastructure, or unaccounted — and for AO-owned
+terminals it decides between commanded and neutral by evaluating every
+sample against the declared neutral, not by looking at the record. A
+record that looks like a zero constant is not evidence; what would reach
+the wire is. A single stray sample on a Pockels line is a photon burst, so
+the comparison is over every sample rather than a min/max pair that could
+bracket the neutral and hide one.
+
+The split between what blocks and what merely reports is the split between
+what the code can prove and what it has simply never been told. A record
+driving an AO-owned stimulation terminal without AO's ownership tag, two
+records resolving to one AO-owned terminal, a buffered record on a line
+this modality drives imperatively, a camera-triggered record on a
+stimulation line: those are unsafe on the evidence available and fail
+under either policy. A terminal nothing in the manifest describes is not
+proof of anything, and Pass 3A's real-rig default is `report_only` for
+exactly that reason — the VU's ambient configuration has not been surveyed,
+and blocking a rig on AO's own ignorance would be the wrong kind of
+caution. `fail_closed` is implemented and tested and is not the default
+until `Dev1/port0/line5`, `PMT Shutter` and `Shutter sensory` have been
+classified from the rig.
+
+Unaccounted is not the same as ignored. It appears in the terminal table
+with its records named and its samples measured, in a warning, in the
+preflight advisories the operator reads, and in `run.stimulation_accounting`
+beside the acquisition it describes. What is archived is the measurement,
+not a copy of the declaration: after a run it answers which
+stimulation-capable terminals existed, which were commanded, which were
+neutral, what neutral value was expected, and whether that value was
+actually verified in the compiled samples.
+
+### Two compilers, deliberately
+
+`compile_output_samples` is in the package because accounting needs to
+measure at run time. `tests/compile_wfm_data_to_samples.m` is a separate
+transcription of the same Luminos code, kept independent so the tests
+proving AO's waveforms correct do not share an implementation with the
+runtime check that also has to be correct. A test asserts the two agree on
+every fixture it compiles; if either drifts from
+`DAQ.Build_Waveforms_DevicePartitioned`, that is where it shows.
+
+Both reproduce one thing that looks like a bug and is not. Luminos groups
+records by the de-aliased port string *exactly*, so `/Dev2/AO0` and
+`Dev2/ao0` do not combine — it resolves two channels and hands DAQmx the
+same physical terminal twice. Merging them in the oracle would have
+described an outcome the hardware does not produce, so both compilers
+report the collision through `canonical_terminal` instead, and accounting
+raises it as a violation.
+
+### Symmetry, ordering, and the paths that neutralised nothing
+
+Cleanup used to unwind only the modality it had been running, so a 1P run
+ended with the Pockels cell and the galvos exactly as the last 2P run had
+left them, and a 2P run left `mod488` untouched. The rig has one
+preparation under it and both beams reach it, so
+`neutralize_all_stimulation` drives every AO-owned system to its declared
+value whichever modality ran, attempting each step independently and
+reporting what failed — it runs during cleanup, often while an exception is
+already propagating, and one absent device must neither stop the rest being
+made safe nor replace the original error.
+
+Ordering was wrong in a way an end-state assertion cannot see: the 1P
+runner set the OBIS power before `mod488` was known to be dark, so for the
+length of two statements the laser sat at experiment power behind a
+modulator holding whatever the previous run had left on it. Neutral state
+now comes first, then source power, then the waveform, then the shutter,
+then arming. The simulated devices' `level`, `State` and `SetPower` became
+`SetObservable` so a test can assert the order rather than the outcome.
+
+Three paths needed their own fix. Safe state is reasserted per trial rather
+than once at the top of a run, because minutes and other trials pass in
+between. The 1P loop's catch darkens the modulator and closes the shutter
+immediately, as the 2P loop always had. And a pre-arm failure —
+one that happens before `app.acquisition_active` is ever set — reached the
+one exit from the runner that neutralised nothing, because the cleanup it
+called keys off that flag; it now neutralises explicitly.
+
+`run_galvo_calibration` and `run_galvo_dynamics_characterization` called
+`Waveform_Camera_Sync_Acquisition` directly, bypassing the
+`execute_waveform_camera_sync` seam that makes simulation possible. They go
+through it now and share the unified neutralization on cleanup. Their
+scientific waveform content is untouched and they remain separate from the
+production runner.
+
+### The one change in Luminos
+
+AO tags the records it adds with `script_owner = "adaptive_optopatch"`,
+reusing `Append_Script_Waveform`'s convention rather than inventing a
+parallel one, and `drop_ao_script_waveforms` takes them back out before
+each build — which matters after a crash that skipped the unwind, since
+`wfm_data` belongs to the DAQ and the DAQ outlives the experiment.
+
+`Drop_Script_Waveforms` only looked at `wfm_data.do`, because every script
+using the convention when it was written added digital pulse trains. AO
+installs analog stimulation commands, so a `cam_acquisition_js` run calling
+`Drop_Script_Waveforms(dq_session,'all')` would have left AO's Pockels and
+galvo records in place — and what is left behind on an analog output is a
+voltage rather than an idle line. It now covers `ao` as well, which is a
+no-op for every existing caller since nothing else tags an analog entry.
+
+### Deliberately not done
+
+No protocol schema 4, no `events.stimulation_source`, no mixed 1P+2P
+compiler or runner, no removal of the global modality selector, and the
+opposite-modality guard stays exactly where it is — the new accounting
+coexists with it rather than replacing it. Pass 2's configure → Update plan
+→ Run lifecycle is untouched: accounting reaches the experimenter through
+`preflightPlan`, which the existing validation already runs, rather than
+through a status of its own.

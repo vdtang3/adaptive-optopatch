@@ -85,11 +85,11 @@ app.acquisition_active=true;
 bins=arrayfun(@(c)c.bin,cameras);
 if strlength(options.OutputRoot)>0
     run_stage("starting the synchronized Luminos acquisition", ...
-        @()Waveform_Camera_Sync_Acquisition(app,bins, ...
+        @()adaptive_optopatch.execute_waveform_camera_sync(app,bins, ...
         "tag","galvo_calibration","fullpath",char(options.OutputRoot)));
 else
     run_stage("starting the synchronized Luminos acquisition", ...
-        @()Waveform_Camera_Sync_Acquisition(app,bins, ...
+        @()adaptive_optopatch.execute_waveform_camera_sync(app,bins, ...
         "tag","galvo_calibration"));
 end
 started=tic;
@@ -203,6 +203,14 @@ camera.frametrigger_source="DAQ";
 end
 
 function restore_state(app,daq,cameras,original,modulator,profile)
+% The same unified sweep the production runners use, so a commissioning
+% acquisition cannot leave a stimulation system live that a production run
+% would have made safe. Its scientific waveform content is untouched.
+try
+    adaptive_optopatch.neutralize_all_stimulation(app, ...
+        "Context","galvo calibration cleanup");
+catch
+end
 try, modulator.level=profile.modulator.dark_v; catch, end
 try
     if isprop(app,"acquisition_active") && logical(app.acquisition_active)

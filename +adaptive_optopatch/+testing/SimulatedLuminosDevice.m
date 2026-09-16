@@ -25,11 +25,8 @@ classdef SimulatedLuminosDevice < handle
         tform = []
         refimage = []
         Mode string = "ANALOG"
-        SetPower double = 0.01
         InterlockEnabled logical = true
         EmissionOn logical = false
-        level double = 0
-        State logical = false
         galvox_physport string = ""
         galvoy_physport string = ""
         fixed_rep_rate_flag logical = false
@@ -57,6 +54,27 @@ classdef SimulatedLuminosDevice < handle
         playlist double = zeros(0,1)
         playlist_mode string = ""
         trigger_channel string = ""
+        % DAQ.alias_list, so a simulated rig resolves a terminal written
+        % under a rig alias the way the real one does. It was empty, and
+        % remove_al below returned its input unchanged, which is why a
+        % stale waveform stored as "DMD Trigger" looked like a waveform on
+        % some unrelated line in every test that had ever been written.
+        alias_list cell = cell(0,2)
+        % Raising a simulated OBIS can be made to fail, so the pre-arm
+        % failure path - which happens before any acquisition is armed, and
+        % so before the flag most cleanup keys off is ever set - is
+        % reachable from a test.
+        FailOnStart logical = false
+    end
+
+    properties (SetObservable)
+        % Observable because the ORDER these are written in is itself a
+        % safety property: a test has to be able to see that mod488 was
+        % dark at the moment the laser's power was raised, which an end
+        % state cannot show.
+        SetPower double = 0.01
+        level double = 0
+        State logical = false
     end
 
     methods
@@ -83,6 +101,10 @@ classdef SimulatedLuminosDevice < handle
         end
 
         function Start(device)
+            if device.FailOnStart
+                error("adaptive_optopatch:SimulatedLaserStartFailure", ...
+                    "The simulated 488 OBIS was configured to fail on Start.");
+            end
             device.EmissionOn=true;
         end
 
@@ -168,8 +190,15 @@ classdef SimulatedLuminosDevice < handle
             device.buffered_tasks=struct([]);
         end
 
-        function value=remove_al(~,value)
-            value=string(value);
+        function value=remove_al(device,value)
+            value=adaptive_optopatch.resolve_terminal_alias(value, ...
+                device.alias_list);
+        end
+
+        function tf=Same_Terminal(device,terminalA,terminalB)
+            canonical=@(t)adaptive_optopatch.canonical_terminal(t, ...
+                device.alias_list);
+            tf=canonical(terminalA)==canonical(terminalB);
         end
 
         function Gen_Spiral_JS(device,spiral)

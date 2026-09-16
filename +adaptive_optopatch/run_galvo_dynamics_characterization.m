@@ -74,10 +74,10 @@ for k=1:height(conditions)
         tag=sprintf("galvo_dynamics_%03d_%s_A%0.3f_F%04g", ...
             k,row.axis,row.amplitude_v,row.frequency_hz);
         if strlength(options.OutputRoot)>0
-            Waveform_Camera_Sync_Acquisition(app,bins,"tag",tag, ...
+            adaptive_optopatch.execute_waveform_camera_sync(app,bins,"tag",tag, ...
                 "fullpath",char(options.OutputRoot));
         else
-            Waveform_Camera_Sync_Acquisition(app,bins,"tag",tag);
+            adaptive_optopatch.execute_waveform_camera_sync(app,bins,"tag",tag);
         end
         wait_for_completion(globalProps.total_time+options.TimeoutMarginS);
         folder=string(app.expfolder);
@@ -166,6 +166,11 @@ state=struct("global_props",hardware.daq.global_props, ...
 end
 
 function restore_state(app,hardware,state,profile)
+try
+    adaptive_optopatch.neutralize_all_stimulation(app, ...
+        "Context","galvo dynamics cleanup");
+catch
+end
 try, hardware.modulator.level=profile.modulator.dark_v; catch, end
 try
     if isprop(app,"acquisition_active") && logical(app.acquisition_active)

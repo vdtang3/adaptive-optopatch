@@ -986,6 +986,92 @@ explicit Pockels command and is protocol-only.
 - Spiral density is expressed using Luminos's native `Points_Per_Volt` value.
   Fixed-repetition-rate mode must be disabled because it overrides density.
 
+## Stimulation output ownership and accounting
+
+Every physical output adaptive_optopatch is allowed to command on the
+Virtual Upright is declared in one place,
+`adaptive_optopatch.virtual_upright_stimulation_manifest`, with its
+terminal, its rig aliases, its neutral value, where that neutral value was
+declared, and who drives the line while an acquisition is armed. Neutral
+values are read from the two rig safety profiles rather than restated, so
+there is one declaration rather than a copy of one.
+
+Terminal identity uses `adaptive_optopatch.canonical_terminal`, which is
+Luminos's `DAQ.Same_Terminal` rule: aliases resolved case-insensitively,
+then whitespace trimmed, slashes dropped and the rest lowercased. That is
+what makes `DMD Trigger`, `Dev1/port0/line4` and `/DEV1/PORT0/LINE4` one
+terminal. It is the only physical-terminal matching rule in the package.
+
+Records adaptive_optopatch adds to `wfm_data` carry
+`script_owner = "adaptive_optopatch"`, reusing Luminos's
+`Append_Script_Waveform` convention, and are taken back out before each
+build so a crashed run cannot leave a stimulation command on the DAQ.
+
+Before any configuration is installed,
+`adaptive_optopatch.account_stimulation_outputs` compiles it and classifies
+each physical terminal as commanded, neutral, inherited non-stimulation,
+expected Luminos infrastructure, or unaccounted. For AO-owned terminals the
+neutral check is measured over every sample of the acquisition's own time
+vector against the declared neutral, not inferred from the record. The
+measured report is archived as `run.stimulation_accounting` and in each
+acquisition's `adaptive_optopatch_record`.
+
+Two kinds of finding are kept apart:
+
+- **Violations** are what the code can prove unsafe — a record commanding
+  an AO-owned stimulation terminal without AO's ownership tag, two records
+  resolving to one AO-owned terminal, a buffered record on a line this
+  modality drives imperatively, a camera-triggered record on a stimulation
+  line. These fail validation under either policy.
+- **Unaccounted terminals** are outputs nothing in the manifest describes.
+  These are reported, warned about, surfaced in preflight advisories and
+  archived, but under the current `report_only` policy they do not block.
+
+`report_only` is the default on the real rig for Pass 3A. It is not a
+permanent position: it is there so a VU session can discover the rig's
+actual ambient configuration before the manifest is declared complete.
+`fail_closed` is implemented and tested and is selected with
+`StimulationAccountingPolicy="fail_closed"`.
+
+### Report-only commissioning check on the VU
+
+With Luminos running and a waveform protocol loaded, and with no
+acquisition armed:
+
+```matlab
+app = <the running Rig_Control_App>;
+
+% 1. The operator's own configuration, untouched. This is the one that
+%    says what is really on the rig's outputs.
+ambient = adaptive_optopatch.report_vu_stimulation_outputs(app);
+
+% 2. What a prepared plan would install. Run from the planning GUI after
+%    Update plan, or pass the modality explicitly.
+onePhoton = adaptive_optopatch.report_vu_stimulation_outputs(app, ...
+    "Modality", "1p_dmd");
+
+save(fullfile(tempdir,"vu_stimulation_survey.mat"),"ambient","onePhoton");
+```
+
+The call reads the DAQ, evaluates waveform functions in memory and prints.
+It arms nothing, writes no device, opens no shutter and starts no
+acquisition.
+
+Read the UNACCOUNTED section. These four are declared `unresolved` in the
+manifest and must be classified from the rig before `fail_closed` is
+sensible:
+
+| output | terminal | what the rig file says |
+| --- | --- | --- |
+| `General Shutter` | `Dev1/port0/line5` | Declared `NI_DAQ_Shutter` with alias `General Shutter`. AO's own test fixtures have called this line an Orange DMD trigger, and the rig declares no trigger terminal for `DMD_Orange` at all. One reading is wrong. |
+| `PMT Shutter` | `Dev2/ao2` | Declared `Voltage_Shutter`, off 0 V, on 0.7 V. Gates the PMT rather than the specimen, but it is an analog output on the galvo card with no AO-declared neutral. |
+| `Shutter sensory` | `Dev1/port0/line2` | Declared `NI_DAQ_Shutter`. Named like a sensory-stimulation shutter, so it may be stimulation-capable. |
+| Orange DMD advance | unknown | The rig file gives `DMD_Orange` no trigger terminal. If one exists physically, it is currently unaccounted. |
+
+The survey also compares the live `DAQ.alias_list` against the one the
+manifest transcribes and warns if they differ, since terminal identity
+would then resolve differently on the rig than AO assumes.
+
 ## Current scope
 
 This version provides one production acquisition GUI, exact screen and STF

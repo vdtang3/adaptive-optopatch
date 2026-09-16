@@ -28,6 +28,11 @@ arguments
     options.AllowCameraRateOverride (1,1) logical = false
     options.StopRequestedFcn = []
     options.ScannerCalibration struct = struct([])
+    % See run_1p_manifest: report-only for Pass 3A's rollout, violations
+    % the code can prove unsafe block regardless.
+    options.StimulationAccountingPolicy (1,1) string {mustBeMember( ...
+        options.StimulationAccountingPolicy, ...
+        ["report_only","fail_closed"])} = "report_only"
 end
 bundleValidation=adaptive_optopatch.validate_2p_planning_bundle(targets);
 if ~bundleValidation.passed
@@ -75,6 +80,21 @@ if ~motionValidation.passed
 end
 original=capture_state(hardware);
 cleanup=onCleanup(@()restore_state(app,hardware,original,profile));
+% Every AO-owned stimulation output, not only this modality's. The
+% statements below repeat three of those through the resolved handles this
+% runner already holds; both are kept because the manifest-driven sweep
+% reaches devices this runner never looked up, and these do not depend on
+% the sweep having found them.
+initialNeutralization=adaptive_optopatch.neutralize_all_stimulation(app, ...
+    "Context","2p run start");
+if ~initialNeutralization.all_succeeded
+    % Not an error, for the same reason as in the 1P runner, but never
+    % silent either: on the VU every one of these devices exists.
+    warning("adaptive_optopatch:StimulationNeutralizationIncomplete", ...
+        "Could not neutralize: %s. Check the run's " + ...
+        "initial_neutralization report.", ...
+        strjoin(initialNeutralization.failures,", "));
+end
 hardware.modulator.level=profile.modulator.dark_v;
 hardware.blue_shutter.State=profile.inactive_one_photon.shutter.closed_state;
 % A low trigger prevents pattern advances; a blank static write also makes
@@ -84,6 +104,7 @@ hardware.blue_dmd.Write_Static();
 trials=manifest.trials; n=height(trials);
 trials=ensure_column(trials,"settings_snapshot",cell(n,1));
 trials=ensure_column(trials,"waveform_summary",cell(n,1));
+trials=ensure_column(trials,"stimulation_accounting",cell(n,1));
 trials=ensure_column(trials,"orange_configuration",cell(n,1));
 trials=ensure_column(trials,"executed_pulse_schedule",cell(n,1));
 trials=ensure_column(trials,"error_message",repmat("",n,1));
@@ -117,6 +138,7 @@ run=struct("schema_version","0.2.0","mode","live_2p_spiral", ...
     "used_frozen_targeting_calibration",usingFrozenCalibration, ...
     "targeting_calibration_mismatch",calibrationMismatch, ...
     "initial_settings_snapshot",adaptive_optopatch.snapshot_luminos_settings(app), ...
+    "initial_neutralization",initialNeutralization, ...
     "started_at",string(datetime("now","TimeZone","local")),"trials",trials);
 completedThisCall=0;
 for k=1:n
@@ -171,6 +193,32 @@ for k=1:n
             original.global_props,original.wfm_data,waveforms);
         run.trials.settings_snapshot{k}= ...
             adaptive_optopatch.snapshot_luminos_settings(app);
+
+        % Measured before installation, for the same reason as in the 1P
+        % runner: a configuration that would drive an AO-owned stimulation
+        % terminal nobody commanded must not reach the DAQ.
+        accounting=adaptive_optopatch.account_stimulation_outputs( ...
+            globalProps,wfmData,"Modality","2p_spiral", ...
+            "Policy",options.StimulationAccountingPolicy, ...
+            "Context",sprintf("2p trial %d (%s)",k,string(row.output_tag)));
+        run.trials.stimulation_accounting{k}=accounting;
+        for w=reshape(accounting.warnings,1,[])
+            warning("adaptive_optopatch:UnaccountedStimulationOutput","%s",w);
+        end
+        for v=reshape(accounting.violations,1,[])
+            warning("adaptive_optopatch:StimulationOwnershipViolation","%s",v);
+        end
+        if ~accounting.passed
+            error("adaptive_optopatch:StimulationAccountingFailed","%s", ...
+                strjoin(accounting.blocking,newline));
+        end
+
+        % Reasserted per trial rather than once at the top of the run. The
+        % Blue DMD is not blanked again here: it was blanked at run start
+        % and nothing in a 2P trial writes a pattern to it.
+        adaptive_optopatch.neutralize_all_stimulation(app, ...
+            "Context",sprintf("2p trial %d pre-arm",k),"BlankBlueDmd",false);
+
         hardware.daq.global_props=globalProps;
         hardware.daq.wfm_data=wfmData;
         hardware.daq.waveforms_built=false;
@@ -259,12 +307,18 @@ run.finished_at=string(datetime("now","TimeZone","local")); save_checkpoint();
             "frozen_pulse_schedule",row.pulse_schedule{1}, ...
             "pulse_schedule",protocol, ...
             "realized_pulses",pulses, ...
+            "stimulation_accounting",run.trials.stimulation_accounting{k}, ...
             "expected_frame_map",table(pulses.pulse_id,pulses.onset_s, ...
             floor(pulses.onset_s*frameRate)+1, ...
             'VariableNames',{'pulse_id','onset_s','expected_frame'}));
     end
     function save_checkpoint()
         run.updated_at=string(datetime("now","TimeZone","local"));
+        % Rolled up here so a run that threw still archives what its
+        % accounting measured.
+        run.stimulation_accounting= ...
+            adaptive_optopatch.summarize_stimulation_accounting( ...
+                run.trials.stimulation_accounting);
         if strlength(checkpoint)>0, save(checkpoint,"run","-v7.3"); end
     end
 end
@@ -288,6 +342,14 @@ function trials=ensure_column(trials,name,value)
 if ~ismember(name,string(trials.Properties.VariableNames)), trials.(name)=value; end
 end
 function restore_state(app,hardware,original,profile)
+% Symmetric: a 2P run leaves mod488, the 488 shutter and the Blue DMD safe
+% as well as its own Pockels cell and galvos. Cleanup that only unwound the
+% modality it happened to be running is what made the two runners able to
+% leave each other's hardware live.
+try
+    adaptive_optopatch.neutralize_all_stimulation(app,"Context","2p cleanup");
+catch
+end
 try, hardware.modulator.level=profile.modulator.dark_v; catch, end
 try
     if isprop(app,"acquisition_active") && logical(app.acquisition_active)

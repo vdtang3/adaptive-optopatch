@@ -1313,6 +1313,7 @@ classdef AdaptiveOptopatchController < handle
         function report=preflightPlan(controller,plan)
             %PREFLIGHTPLAN Reject concrete execution incompatibilities.
             issues=strings(0,1);
+            accountingReports={};
             parameters=controller.PlanParameters;
             for k=1:height(plan.manifest.trials)
                 preflight=adaptive_optopatch.preflight_trial( ...
@@ -1340,10 +1341,16 @@ classdef AdaptiveOptopatchController < handle
                             sequencePlan=adaptive_optopatch.build_dmd_sequence_plan( ...
                                 resolved,plan.targets);
                         end
-                        [globalProps,~]=adaptive_optopatch.build_luminos_1p_waveform_config( ...
+                        [globalProps,wfmData]= ...
+                            adaptive_optopatch.build_luminos_1p_waveform_config( ...
                             hardware.daq.global_props,hardware.daq.wfm_data, ...
                             resolved,adaptive_optopatch.virtual_upright_1p_profile(), ...
                             "DmdSequencePlan",sequencePlan);
+                        accounting=adaptive_optopatch.account_stimulation_outputs( ...
+                            globalProps,wfmData,"Modality","1p_dmd", ...
+                            "Context",sprintf("preflight trial %d",rowIndex));
+                        accountingReports{end+1}=accounting; %#ok<AGROW>
+                        issues=[issues;accounting.blocking(:)]; %#ok<AGROW>
                         preflight_camera_frames(hardware.cameras, ...
                             globalProps.total_time,false);
                     end
@@ -1370,10 +1377,15 @@ classdef AdaptiveOptopatchController < handle
                             "AllowCalibrationExtrapolation", ...
                                 parameters.allow_calibration_extrapolation, ...
                             "TargetingTransform",plan_targeting_transform(plan));
-                        [globalProps,~,~]= ...
+                        [globalProps,wfmData,~]= ...
                             adaptive_optopatch.build_luminos_2p_waveform_config( ...
                             hardware.daq.global_props,hardware.daq.wfm_data, ...
                             preview.waveforms);
+                        accounting=adaptive_optopatch.account_stimulation_outputs( ...
+                            globalProps,wfmData,"Modality","2p_spiral", ...
+                            "Context",sprintf("preflight trial %d",rowIndex));
+                        accountingReports{end+1}=accounting; %#ok<AGROW>
+                        issues=[issues;accounting.blocking(:)]; %#ok<AGROW>
                         preflight_camera_frames(hardware.cameras, ...
                             globalProps.total_time, ...
                             parameters.allow_camera_rate_override);
@@ -1381,9 +1393,16 @@ classdef AdaptiveOptopatchController < handle
                 end
             end
             issues=unique(issues(strlength(issues)>0),"stable");
-            report=struct("schema_version","0.1.0","passed",isempty(issues), ...
+            report=struct("schema_version","0.2.0","passed",isempty(issues), ...
                 "validated_at",string(datetime("now","TimeZone","local")), ...
                 "mode",mode,"issues",issues);
+            % Accounting reaches the experimenter through the validation the
+            % lifecycle already runs, rather than through a second status of
+            % its own. Under report-only its unaccounted terminals arrive
+            % here as advisories; what the code can prove unsafe arrived
+            % above, in issues, and has already failed the plan.
+            report.stimulation_accounting=accountingReports;
+            report.stimulation_advisories=accounting_advisories(accountingReports);
             if ~report.passed
                 error("adaptive_optopatch:UnifiedPlanValidationFailed", ...
                     "%s",strjoin(issues,newline));
@@ -1398,11 +1417,15 @@ classdef AdaptiveOptopatchController < handle
             plan=controller.buildPlan();
             report=controller.preflightPlan(plan);
             if ~report.passed, return; end
-            if isempty(plan.advisories)
+            messages=strings(0,1);
+            if ~isempty(plan.advisories)
+                messages=[messages;reshape(string({plan.advisories.message}),[],1)];
+            end
+            messages=[messages;report.stimulation_advisories(:)];
+            if isempty(messages)
                 controller.setStatus(["Configuration check passed. " ...
                     "Runs will rebuild and freeze current settings."]);
             else
-                messages=reshape(string({plan.advisories.message}),[],1);
                 controller.setStatus([ ...
                     "Configuration check passed with nonblocking advisories:"; ...
                     messages]);
@@ -2165,6 +2188,18 @@ classdef AdaptiveOptopatchController < handle
             summary.batch_complete=batch_is_complete(trials);
         end
     end
+end
+
+function advisories=accounting_advisories(reports)
+%ACCOUNTING_ADVISORIES Unaccounted terminals, once, across every trial.
+%   Under report-only these do not block, but they must not disappear
+%   either: the point of this rollout is to find out what is really on the
+%   VU's outputs, and the operator is who reads it.
+advisories=strings(0,1);
+for k=1:numel(reports)
+    advisories=[advisories;reports{k}.warnings(:)]; %#ok<AGROW>
+end
+advisories=unique(advisories,"stable");
 end
 
 function value=prepared_repeat_count(plan,fallback)

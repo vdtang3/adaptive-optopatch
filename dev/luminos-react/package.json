@@ -1,0 +1,11 @@
+{
+  "name": "adaptive-optopatch-luminos-dev-harness",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Development-only MATLAB stub and Adaptive Optopatch state fixtures, for working on the Luminos React frontend without a rig. Not part of Luminos.",
+  "type": "module",
+  "scripts": {
+    "fake-matlab": "node fake_matlab_server.js",
+    "test": "node --test test/*.test.js"
+  }
+}

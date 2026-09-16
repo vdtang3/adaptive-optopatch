@@ -1,0 +1,159 @@
+{
+  "schema_version": "1.0.0",
+  "revision": 7,
+  "lifecycle": "frozen",
+  "plan_state": "FROZEN",
+  "editable_state_changed": false,
+  "stop_after_current_requested": false,
+  "status": [
+    "Frozen run plan created before acquisition:",
+    "<dev fixture>/tp22d86588_371f_41cd_a9fb_d2c201d85d95/adaptive_optopatch_run_dev_fixture_fov_20260916_113110"
+  ],
+  "scanner_warning": "",
+  "fov": {
+    "loaded": true,
+    "fov_id": "dev_fixture_fov",
+    "rig_name": "Virtual_Upright",
+    "camera_name": "",
+    "camera_bin": null,
+    "snapshot_path": "<dev fixture>/tp22d86588_371f_41cd_a9fb_d2c201d85d95/snapshot.mat",
+    "snapshot_directory": "<dev fixture>/tp22d86588_371f_41cd_a9fb_d2c201d85d95",
+    "image_size": [
+      80,
+      100
+    ],
+    "reference_revision": 1,
+    "cell_count": 2,
+    "next_cell_index": 3,
+    "image_coordinate_space": "snapshot_intrinsic_pixels"
+  },
+  "cells": [
+    {
+      "cell_id": "cell_001",
+      "recording_enabled": true,
+      "stimulation_enabled": true,
+      "selected_blue_voltage_v": 1.4,
+      "area_pixels": 225,
+      "centroid_xy": [
+        33,
+        33
+      ],
+      "edge_distance_pixels": 25,
+      "qc_status": "PASS",
+      "vertex_count": 4
+    },
+    {
+      "cell_id": "cell_002",
+      "recording_enabled": true,
+      "stimulation_enabled": false,
+      "selected_blue_voltage_v": null,
+      "area_pixels": 225,
+      "centroid_xy": [
+        68,
+        48
+      ],
+      "edge_distance_pixels": 25,
+      "qc_status": "PASS",
+      "vertex_count": 4
+    }
+  ],
+  "soma_polygons": [
+    [
+      [
+        25,
+        25
+      ],
+      [
+        40,
+        25
+      ],
+      [
+        40,
+        40
+      ],
+      [
+        25,
+        40
+      ]
+    ],
+    [
+      [
+        60,
+        40
+      ],
+      [
+        75,
+        40
+      ],
+      [
+        75,
+        55
+      ],
+      [
+        60,
+        55
+      ]
+    ]
+  ],
+  "protocol": {
+    "loaded": true,
+    "path": "",
+    "summary": {
+      "schema_version": "3.0.0",
+      "protocol_type": "connectivity_screen",
+      "protocol_id": "connectivity_screen_seed_1",
+      "target_policy": "each_stimulation_enabled_cell",
+      "event_order": "ordered",
+      "definition_acquisition_count": 1,
+      "event_count": 1,
+      "light_event_count": 1,
+      "condition_count": 1,
+      "duration_range_s": [
+        0.005,
+        0.005
+      ],
+      "random_seed": 1
+    }
+  },
+  "plan_parameters": {
+    "stimulation_mode": "1p_dmd",
+    "microns_per_pixel": 0.35,
+    "spiral_radius_um": 6,
+    "spiral_density_points_per_volt": 10,
+    "orange_expansion_pixels": 2,
+    "blue_mask_adjustment_pixels": -1,
+    "screen_repeats": 1,
+    "pulse_count": 200,
+    "pulse_duration_ms": 5,
+    "dark_interval_min_ms": 45,
+    "dark_interval_max_ms": 55,
+    "pre_delay_ms": 100,
+    "post_delay_ms": 100,
+    "maximum_velocity_v_per_s": 1000,
+    "maximum_acceleration_v_per_s2": 6.0E+6,
+    "allow_calibration_extrapolation": false,
+    "allow_camera_rate_override": false,
+    "repeat_batch_count": 1
+  },
+  "active_run": {
+    "frozen": true,
+    "folder": "<dev fixture>/tp22d86588_371f_41cd_a9fb_d2c201d85d95/adaptive_optopatch_run_dev_fixture_fov_20260916_113110",
+    "batch_id": "adaptive_optopatch_run_dev_fixture_fov_20260916_113110",
+    "batch_number": 1,
+    "trial_count": 1,
+    "completed_trial_count": 0,
+    "batch_complete": false
+  },
+  "legal_actions": {
+    "edit_cells": true,
+    "edit_plan_parameters": true,
+    "load_protocol": true,
+    "load_fov": true,
+    "freeze_run": true,
+    "run": true,
+    "stop_after_current": false,
+    "return_to_editing": true,
+    "start_new_batch": false,
+    "resume_run": true
+  }
+}

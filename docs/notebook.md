@@ -1,5 +1,43 @@
 # Engineering notebook
 
+## 2026-09-16 — The Luminos React dev harness belongs here, the tab's home is still open
+
+The fake-MATLAB development server, the AO state fixtures, the fixture
+generator and their tests now live in `dev/luminos-react/`. They were first
+written inside `luminos-private`, which was the wrong repository: Luminos is
+shared by the whole lab, and a TCP stub that serves Adaptive Optopatch fixtures
+is neither shared nor generic. It costs nothing to keep it here — the stub
+speaks the relay's existing wire protocol from the outside, so Luminos needs no
+knowledge of it, and moving it required only rebasing the fixture generator on
+this repository's root instead of walking up to a sibling checkout.
+
+The harness exists because the frontend cannot be developed against nothing:
+without MATLAB answering the relay the interface never receives its tab list and
+nothing renders, and the full Luminos Simulator does not run on Linux, where
+React, the relay and the AO controller all do. Only the MATLAB endpoint is
+faked; the React code, the relay and the protocol are the production ones.
+
+The AO React tab itself is a separate question and is deliberately unresolved.
+It currently sits uncommitted in `luminos-private`
+(`frontend/src/tabs/AdaptiveOptopatch/`, `matlabComms/adaptiveOptopatchComms.tsx`,
+one line in `useTabs.tsx`). An audit of the Luminos tab system found no
+extension seam at all: the rig JSON chooses which tabs appear by name, but the
+name-to-component map in `useTabs.tsx` is a closed compile-time list, and there
+is no registry, dynamic import, lazy boundary, workspace or package export
+anywhere in the frontend. The tab also depends on Luminos internals that are not
+published — `SectionHeader`, `GrayBox`, `VerticalStack`, `Utils`,
+`GlobalAppVariablesContext` and `matlabHelpers` — all reached by relative path.
+
+The recommendation from that audit is to keep the tab's source in
+`luminos-private` alongside every other tab, rather than build an extension
+mechanism to host one tab from outside. The seam that matters — the one that
+keeps AO logic out of JavaScript — is the state contract, not the file location:
+React reads `AdaptiveOptopatchController.getState()` and displays it, and every
+decision stays in MATLAB. An external-tab mechanism would buy file-location
+purity at the cost of a second React build, a published component API that
+Luminos does not have today, and a deployment story for VU. This is a
+recommendation, not yet a decision.
+
 ## 2026-09-03 — Persistent FOV and pulse-resolved EPSP acquisition
 
 The acquisition model now joins two explicit sources of truth: a persistent

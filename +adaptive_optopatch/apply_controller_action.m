@@ -142,6 +142,26 @@ function names=action_names()
 %         none. Editing it here cannot override a protocol that names a
 %         voltage, and cannot reach a 2P Pockels command at all.
 %
+%   Deliberately absent, and why - the run lifecycle:
+%
+%     freeze_run / start_new_run / return_to_editing / start_new_batch
+%         internal machinery for preparing, discarding and re-issuing an
+%         execution plan. An experimenter does not freeze anything; they
+%         update a plan and run it. update_plan IS freeze_run, gated and
+%         named for what it does, and re-issuing a completed plan happens
+%         inside run rather than as a separate press. The methods remain
+%         on the controller and the MATLAB planning window still offers
+%         them; no endpoint reaches them.
+%
+%     run_next / run_all
+%         run_next executes ONE acquisition, which is a debugging
+%         primitive rather than an experiment, and both of them freeze a
+%         plan implicitly when none exists - which is exactly the hole
+%         this pass closes. `run` executes the whole prepared plan and is
+%         refused unless a prepared plan matches the current inputs. An
+%         operator who wants one cell deselects Stim on the others and
+%         updates the plan, so what will run is visible before it runs.
+%
 %   Deliberately still absent, and why:
 %
 %     resume_run
@@ -172,12 +192,8 @@ names=[ ...
     "delete_soma"
     "load_protocol_choice"
     "set_plan_parameter"
-    "freeze_run"
-    "start_new_run"
-    "return_to_editing"
-    "start_new_batch"
-    "run_next"
-    "run_all"
+    "update_plan"
+    "run"
     "stop_after_current"];
 end
 
@@ -243,26 +259,21 @@ switch action
         controller.setPlanParameter(required_text(payload,"name"), ...
             required_field(payload,"value"));
 
-    case "freeze_run"
-        % No output root from the caller. Where a run is written is the
-        % session's decision (RunRoot, or the snapshot's own folder), not a
-        % browser's.
-        controller.freezeRun();
+    case "update_plan"
+        % Validate, resolve, preflight and archive an immutable execution
+        % plan for the current experiment. No output root from the caller:
+        % where a plan is written is the session's decision (RunRoot, or
+        % the snapshot's own folder), not a browser's. Refused by the
+        % controller when the experiment is not describable yet.
+        controller.updatePlan();
 
-    case "start_new_run"
-        controller.startNewRun();
-
-    case "return_to_editing"
-        controller.returnToEditing();
-
-    case "start_new_batch"
-        controller.startNewBatch();
-
-    case "run_next"
-        controller.runNext();
-
-    case "run_all"
-        controller.runAll();
+    case "run"
+        % Execute the whole prepared plan, repeated as many times as it
+        % was prepared for. The controller refuses a plan that is absent,
+        % out of date or already running, so this endpoint cannot do what
+        % a greyed-out button will not - which is the point of gating it
+        % there rather than in a frontend.
+        controller.runPreparedPlan();
 
     case "stop_after_current"
         controller.stopAfterCurrent();
@@ -307,7 +318,9 @@ end
 lifecycle=["adaptive_optopatch:AcquisitionActive"
     "adaptive_optopatch:FrozenRunRequired"
     "adaptive_optopatch:CompletedBatchRequired"
-    "adaptive_optopatch:PulseProtocolRequired"];
+    "adaptive_optopatch:PulseProtocolRequired"
+    "adaptive_optopatch:PlanNotReady"
+    "adaptive_optopatch:PlanUpdateRequired"];
 if any(lifecycle==identifier)
     status="not_legal"; return
 end

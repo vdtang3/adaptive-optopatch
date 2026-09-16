@@ -59,9 +59,8 @@ test("the allowlist matches the one the MATLAB dispatcher publishes", () => {
     "load_reference_choice", "load_snapshot_choice", "save_fov",
     "set_cell_eligibility", "set_cell_blue_voltage",
     "add_soma", "update_soma", "delete_soma",
-    "load_protocol_choice", "set_plan_parameter", "freeze_run",
-    "start_new_run", "return_to_editing", "start_new_batch",
-    "run_next", "run_all", "stop_after_current",
+    "load_protocol_choice", "set_plan_parameter",
+    "update_plan", "run", "stop_after_current",
   ]));
 });
 
@@ -70,7 +69,7 @@ test("every reply carries the state after the action, refused or not", () => {
   for (const response of [
     act(session, "set_cell_eligibility", { cell_id: "cell_001", recording_enabled: false }),
     act(session, "not_an_action"),
-    act(session, "start_new_batch"),
+    act(session, "run"),
     session.apply("delete_soma", { cell_id: "cell_001" }, 999),
   ]) {
     assert.ok("state" in response, `${response.action} carried no state`);
@@ -82,7 +81,7 @@ test("every reply carries the state after the action, refused or not", () => {
 
 test("no reply carries a field named error, which the bridge reads as a throw", () => {
   const session = newSession();
-  for (const action of ["not_an_action", "start_new_batch", "freeze_run"]) {
+  for (const action of ["not_an_action", "run", "update_plan"]) {
     assert.ok(!("error" in act(session, action)));
   }
 });
@@ -206,49 +205,170 @@ test("a protocol id that was never offered is refused", () => {
     "validation_error");
 });
 
-test("freezing and returning to editing move the lifecycle both ways", () => {
-  const session = newSession(EMPTY_FIXTURE);
-  // An empty session cannot freeze, and says so rather than pretending to.
-  assert.equal(act(session, "freeze_run").status, "not_legal");
-
-  const loaded = newSession();
-  const frozen = act(loaded, "freeze_run");
-  assert.equal(frozen.ok, true);
-  assert.equal(frozen.state.plan_state, "FROZEN");
-  assert.equal(frozen.state.lifecycle, "frozen");
-  assert.equal(frozen.state.legal_actions.return_to_editing, true);
-
-  const editing = act(loaded, "return_to_editing");
-  assert.equal(editing.state.plan_state, "EDITABLE");
-  assert.equal(editing.state.active_run.frozen, false);
-  assert.equal(editing.state.legal_actions.return_to_editing, false);
+test("the internal lifecycle names are not actions the browser may send", () => {
+  // Every one of these was an action until the workflow became
+  // configure -> Update plan -> Run. They remain controller methods and
+  // the MATLAB planning window still offers most of them; no endpoint
+  // reaches them, so a frontend cannot freeze a plan or run one
+  // acquisition even by asking for it by name.
+  const session = newSession();
+  for (const name of [
+    "freeze_run", "start_new_run", "return_to_editing",
+    "start_new_batch", "run_next", "run_all",
+  ]) {
+    assert.equal(act(session, name).status, "unknown_action", name);
+  }
 });
 
-test("a new batch is offered only once the current one has finished", () => {
-  const session = newSession();
-  act(session, "freeze_run");
-  const first = session.state.active_run.batch_number;
-  assert.equal(act(session, "start_new_batch").status, "not_legal");
+test("an unpreparable experiment is neither updatable nor runnable", () => {
+  const session = newSession(EMPTY_FIXTURE);
 
-  act(session, "run_all");
-  assert.equal(session.state.active_run.batch_complete, true);
-  assert.equal(session.state.legal_actions.start_new_batch, true);
-  assert.equal(act(session, "start_new_batch").ok, true);
-  assert.equal(session.state.active_run.batch_number, first + 1);
-  assert.equal(session.state.active_run.completed_trial_count, 0);
+  for (const action of ["update_plan", "run"]) {
+    const response = act(session, action);
+    assert.equal(response.status, "not_legal", action);
+    assert.equal(response.identifier, "adaptive_optopatch:PlanNotReady");
+    assert.equal(response.state.plan_status, "not_ready");
+  }
+  const readiness = session.current().plan_readiness;
+  assert.equal(readiness.can_run, false);
+  assert.equal(readiness.can_update_plan, false);
+  assert.ok(readiness.blocking_issues.length > 0);
+});
+
+test("a describable experiment needs an update before it can run", () => {
+  const session = newSession();
+  // Any execution input moves the prepared fixture plan out of date.
+  act(session, "set_plan_parameter", {
+    name: "orange_expansion_pixels",
+    value: 6,
+  });
+
+  assert.equal(session.current().plan_status, "update_required");
+  assert.equal(session.current().legal_actions.run, false);
+  assert.equal(session.current().legal_actions.update_plan, true);
+
+  const refused = act(session, "run");
+  assert.equal(refused.status, "not_legal");
+  assert.equal(refused.identifier, "adaptive_optopatch:PlanUpdateRequired");
+
+  const updated = act(session, "update_plan");
+  assert.equal(updated.ok, true, updated.message);
+  assert.equal(updated.state.plan_status, "ready");
+  assert.equal(updated.state.legal_actions.run, true);
+});
+
+test("execution-affecting edits stale the plan and name what moved", () => {
+  const edits = [
+    ["cell_decisions", "set_cell_eligibility",
+      { cell_id: "cell_001", stimulation_enabled: false }],
+    ["cell_decisions", "set_cell_blue_voltage",
+      { cell_id: "cell_001", voltage_v: 2.1 }],
+    ["spatial", "set_plan_parameter",
+      { name: "blue_mask_adjustment_pixels", value: -4 }],
+    ["run_controls", "set_plan_parameter",
+      { name: "repeat_batch_count", value: 3 }],
+  ];
+
+  for (const [group, action, payload] of edits) {
+    const session = newSession();
+    act(session, "update_plan");
+    assert.equal(session.current().plan_status, "ready", group);
+
+    act(session, action, payload);
+
+    assert.equal(session.current().plan_status, "update_required", group);
+    assert.deepEqual(session.current().plan_readiness.stale_inputs, [group]);
+    assert.equal(act(session, "run").status, "not_legal", group);
+  }
+});
+
+test("read-only operations leave a ready plan ready", () => {
+  // The distinction the whole design rests on: the revision advances for
+  // these, and the plan is still the right one.
+  const session = newSession();
+  act(session, "update_plan");
+  const revision = session.state.revision;
+
+  session.current();
+  session.references();
+  session.snapshots();
+  session.choices();
+  session.spatialPreview("1p_dmd");
+  session.spatialPreview("2p_spiral");
+  session.waveformPreview();
+  act(session, "save_fov");
+
+  assert.ok(session.state.revision > revision, "the revision did advance");
+  assert.equal(session.current().plan_status, "ready");
+  assert.deepEqual(session.current().plan_readiness.stale_inputs, []);
+});
+
+test("the summary counts acquisitions, repeats and cells separately", () => {
+  const session = newSession();
+  act(session, "set_plan_parameter", { name: "repeat_batch_count", value: 3 });
+  act(session, "update_plan");
+
+  const summary = session.current().plan_summary;
+  const stimulating = session.current().cells.filter(
+    (cell) => cell.stimulation_enabled
+  );
+  assert.equal(summary.prepared, true);
+  assert.equal(summary.stimulating_cell_count, stimulating.length);
+  assert.equal(summary.repeats, 3);
+  assert.equal(
+    summary.total_acquisitions,
+    summary.acquisitions_per_repeat * summary.repeats
+  );
+  // An event is not an acquisition: the counts are reported separately and
+  // the frontend must never derive one from the other.
+  assert.ok("light_event_count" in summary);
+});
+
+test("deselecting Stim changes the authoritative plan once it is updated", () => {
+  const session = newSession();
+  act(session, "update_plan");
+  const before = session.current().plan_summary.acquisitions_per_repeat;
+
+  act(session, "set_cell_eligibility", {
+    cell_id: session.current().cells.find((c) => c.stimulation_enabled).cell_id,
+    stimulation_enabled: false,
+  });
+  act(session, "update_plan");
+
+  const after = session.current().plan_summary;
+  assert.equal(after.acquisitions_per_repeat, before - 1);
+  assert.equal(after.stimulating_cell_count, before - 1);
+});
+
+test("Run executes the whole plan and leaves it reusable", () => {
+  const session = newSession();
+  act(session, "update_plan");
+  const total = session.current().plan_summary.total_acquisitions;
+
+  const run = act(session, "run");
+
+  assert.equal(run.ok, true, run.message);
+  assert.equal(run.state.run_progress.completed_acquisitions, total);
+  assert.equal(run.state.run_progress.total_acquisitions, total);
+  // Nothing changed, so the plan is still the right one and Run is offered.
+  assert.equal(run.state.plan_status, "ready");
+  assert.equal(run.state.legal_actions.run, true);
+  assert.equal(act(session, "run").ok, true, "Run may be pressed again");
 });
 
 test("legal_actions is recomputed, not carried over from the fixture", () => {
   const session = newSession();
-  act(session, "return_to_editing");
-  assert.equal(session.state.legal_actions.freeze_run, true);
+  assert.equal(session.current().legal_actions.update_plan, true);
 
-  // Removing every soma removes the thing freezing needs.
+  // Removing every soma removes the thing a plan needs.
   for (const cell of [...session.state.cells]) {
     act(session, "delete_soma", { cell_id: cell.cell_id });
   }
-  assert.equal(session.state.legal_actions.freeze_run, false);
-  assert.equal(act(session, "freeze_run").status, "not_legal");
+
+  assert.equal(session.current().plan_status, "not_ready");
+  assert.equal(session.current().legal_actions.update_plan, false);
+  assert.equal(session.current().legal_actions.run, false);
+  assert.equal(act(session, "update_plan").status, "not_legal");
 });
 
 // ---------------------------------------------------------------------------
@@ -495,7 +615,8 @@ test("a new reference discards the somata drawn on the old one", () => {
 
   assert.deepEqual(response.state.cells, []);
   assert.deepEqual(response.state.soma_polygons, []);
-  assert.equal(response.state.legal_actions.freeze_run, false);
+  assert.equal(response.state.legal_actions.update_plan, false,
+    "a reference with no somata cannot be prepared");
   assert.equal(response.state.legal_actions.edit_cells, true);
 });
 

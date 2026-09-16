@@ -46,6 +46,11 @@ classdef AdaptiveOptopatchController < handle
         ActiveRunFolder (1,1) string = ""
         LastRun struct = struct([])
         EditableStateChanged (1,1) logical = true
+        %RUNPROGRESS Where one press of Run has got to, across its repeats.
+        %   Maintained by the repeat loop so progress is the controller's
+        %   answer rather than something a view infers from a batch number
+        %   that also advances for other reasons. Empty between runs.
+        RunProgress struct = struct([])
     end
 
     properties
@@ -112,6 +117,13 @@ classdef AdaptiveOptopatchController < handle
             state.protocol=controller.protocolState();
             state.plan_parameters=controller.PlanParameters;
             state.active_run=controller.activeRunSummary();
+            % The experimenter-facing lifecycle: one word for what may be
+            % done next, why, what the prepared plan would do, and how far
+            % a run has got. All four are the controller's answers.
+            state.plan_status=controller.planStatus();
+            state.plan_readiness=controller.planReadiness();
+            state.plan_summary=controller.planSummary();
+            state.run_progress=controller.runProgress();
             state.legal_actions=controller.legalActions();
         end
 
@@ -130,25 +142,200 @@ classdef AdaptiveOptopatchController < handle
 
         function actions=legalActions(controller)
             %LEGALACTIONS Which operations the backend will currently accept.
+            %   `update_plan` and `run` are the experimenter-facing pair and
+            %   are answered by planStatus, which is the authority both the
+            %   controller's own guards and the action endpoint use. A
+            %   frontend renders these; it never works them out for itself,
+            %   and a request that ignores them is refused anyway.
+            %
+            %   `freeze_run`, `return_to_editing` and `start_new_batch`
+            %   remain because the MATLAB planning window still offers them
+            %   as separate controls. They are internal machinery now: no
+            %   action endpoint reaches them, and `update_plan` is the one
+            %   name for preparing a plan.
             editing=controller.LifecycleState~="RUNNING";
             hasFov=~isempty(controller.ReferenceImage);
             hasCells=~isempty(controller.FovGeometry.polygons);
-            hasFrozenRun=~isempty(controller.ActiveRunPlan) && ...
-                strlength(controller.ActiveRunFolder)>0;
+            status=controller.planStatus();
             actions=struct( ...
                 "edit_cells",editing && hasFov, ...
                 "edit_plan_parameters",editing, ...
                 "load_protocol",editing, ...
                 "load_fov",editing, ...
                 "save_fov",editing && hasFov, ...
+                "update_plan",status=="update_required" || status=="ready", ...
+                "run",status=="ready", ...
                 "freeze_run",editing && hasFov && hasCells && ...
                     ~isempty(controller.Protocol), ...
-                "run",editing, ...
                 "stop_after_current",controller.LifecycleState=="RUNNING" && ...
                     ~controller.StopRequested, ...
                 "return_to_editing",controller.returnToEditingEnabled(), ...
                 "start_new_batch",controller.startNewBatchEnabled(), ...
                 "resume_run",editing);
+        end
+
+        % ---------------------------------------------------------------
+        % The experimenter-facing plan lifecycle
+        % ---------------------------------------------------------------
+        function inputs=executionInputs(controller)
+            %EXECUTIONINPUTS Exactly the state a prepared plan is built from.
+            %   THE LIST IS EXPLICIT ON PURPOSE. Revision is bumped by
+            %   everything - a status line, a poll that re-reads a
+            %   checkpoint, saving a FOV - and equating it with plan
+            %   validity would make the plan look stale for reasons that
+            %   cannot change what executes. What can change what executes
+            %   is enumerated here, grouped so that a stale plan can say
+            %   WHICH group moved.
+            %
+            %   Audited against buildPlan():
+            %
+            %     reference       create_reference_model reads the image,
+            %                     the camera identity and the crop.
+            %     somata          canonical polygons and stable IDs are
+            %                     rasterised into the ROI masks.
+            %     cell_decisions  stimulation_enabled selects targets (a
+            %                     deselected cell drops its acquisition),
+            %                     recording_enabled selects the Orange
+            %                     mask, and selected_blue_voltage_v is the
+            %                     resolver's fov_cell tier.
+            %     protocol        the definition itself, not its name: two
+            %                     files can share a protocol_id.
+            %     spatial         the plan parameters build_target_bundle
+            %                     and create_reference_model consume.
+            %     run_controls    what captureRunControls archives and
+            %                     frozen_run_controls restores at
+            %                     execution, including how many repeats one
+            %                     press of Run performs.
+            %
+            %   Deliberately absent: status text, the loaded run folder,
+            %   the reference display stretch, the legacy timing defaults
+            %   (buildPlan strips them from the session and every onset
+            %   comes from the protocol), and the live scanner calibration
+            %   and OBIS power - those are hardware readings rather than
+            %   operator decisions, and the transform a frozen run will
+            %   execute is archived with it rather than re-read.
+            parameters=controller.PlanParameters;
+            rows=controller.cellRows();
+
+            inputs=struct("schema_version","1.0.0");
+            inputs.reference=struct( ...
+                "fov_id",info_string(controller.ReferenceInfo,"snapshot_name"), ...
+                "snapshot_path",info_string(controller.ReferenceInfo,"snapshot_path"), ...
+                "image_size",controller.referenceImageSize(), ...
+                "reference_revision",controller.ReferenceRevision);
+
+            somata=struct("cell_ids",reshape(controller.FovGeometry.cell_ids,[],1));
+            somata.polygons=reshape(controller.FovGeometry.polygons,[],1);
+            inputs.somata=somata;
+
+            % The three decisions, and nothing else from the cell record:
+            % calibration history, notes and acquisition provenance travel
+            % with a cell but cannot change what executes, and including
+            % them would let saving a FOV stale the plan.
+            inputs.cell_decisions=struct( ...
+                "cell_ids",reshape([rows.cell_id],[],1), ...
+                "recording_enabled",reshape([rows.recording_enabled],[],1), ...
+                "stimulation_enabled",reshape([rows.stimulation_enabled],[],1), ...
+                "selected_blue_voltage_v", ...
+                    reshape([rows.selected_blue_voltage_v],[],1));
+
+            inputs.protocol=struct("path",controller.ProtocolPath);
+            inputs.protocol.definition=controller.Protocol;
+
+            inputs.spatial=struct( ...
+                "stimulation_mode",parameters.stimulation_mode, ...
+                "microns_per_pixel",parameters.microns_per_pixel, ...
+                "spiral_radius_um",parameters.spiral_radius_um, ...
+                "spiral_density_points_per_volt", ...
+                    parameters.spiral_density_points_per_volt, ...
+                "orange_expansion_pixels",parameters.orange_expansion_pixels, ...
+                "blue_mask_adjustment_pixels", ...
+                    parameters.blue_mask_adjustment_pixels);
+
+            inputs.run_controls=controller.captureRunControls();
+            % Observed rather than chosen: it is archived for provenance and
+            % must not make a plan look out of date when the laser drifts.
+            inputs.run_controls=rmfield(inputs.run_controls, ...
+                "active_obis_power_w");
+        end
+
+        function issues=planBlockingIssues(controller)
+            %PLANBLOCKINGISSUES Why no plan could be prepared at all.
+            %   The structural prerequisites of buildPlan, in the order an
+            %   operator meets them. Anything subtler than these is left to
+            %   updatePlan's own validation, which reports the canonical
+            %   message rather than a second opinion about it.
+            issues=strings(0,1);
+            if isempty(controller.ReferenceImage)
+                issues(end+1,1)="Load a reference FOV.";
+            end
+            if isempty(controller.FovGeometry.polygons)
+                issues(end+1,1)="Draw at least one soma.";
+            elseif ~any([controller.cellRows().stimulation_enabled])
+                % NoAcceptedTargets otherwise, at resolution time.
+                issues(end+1,1)= ...
+                    "Enable Stim on at least one cell.";
+            end
+            if isempty(controller.Protocol)
+                issues(end+1,1)="Load a pulse protocol.";
+            end
+        end
+
+        function names=stalePlanInputs(controller)
+            %STALEPLANINPUTS Which groups of inputs the prepared plan predates.
+            %   Empty when there is no prepared plan to compare against:
+            %   "there is nothing prepared" and "what is prepared is out of
+            %   date" are different answers and planStatus tells them apart.
+            names=strings(0,1);
+            plan=controller.ActiveRunPlan;
+            if isempty(plan) || ~isfield(plan,"execution_inputs"), return; end
+            current=controller.executionInputs();
+            prepared=plan.execution_inputs;
+            for name=reshape(string(fieldnames(current)),1,[])
+                if name=="schema_version", continue; end
+                if ~isfield(prepared,name) || ...
+                        ~isequaln(prepared.(name),current.(name))
+                    names(end+1,1)=name; %#ok<AGROW>
+                end
+            end
+        end
+
+        function value=planStatus(controller)
+            %PLANSTATUS What the experimenter may do next, in one word.
+            %
+            %     not_ready        the experiment is not describable yet
+            %     update_required  describable, but nothing prepared matches it
+            %     ready            a prepared plan matches the current inputs
+            %     running          an acquisition is in progress
+            %
+            %   AUTHORITATIVE. Run and Update plan are gated on this, here,
+            %   so a direct endpoint call is refused by the same rule a
+            %   button is greyed out by. A frontend renders it; it does not
+            %   compute it.
+            if controller.LifecycleState=="RUNNING", value="running"; return; end
+            if ~isempty(controller.planBlockingIssues()), value="not_ready"; return; end
+            if isempty(controller.ActiveRunPlan) || ...
+                    strlength(controller.ActiveRunFolder)==0
+                value="update_required"; return
+            end
+            if ~isempty(controller.stalePlanInputs())
+                value="update_required"; return
+            end
+            value="ready";
+        end
+
+        function report=planReadiness(controller)
+            %PLANREADINESS planStatus, and why it is what it is.
+            status=controller.planStatus();
+            stale=controller.stalePlanInputs();
+            report=struct("schema_version","1.0.0","status",status, ...
+                "can_update_plan",status=="update_required" || status=="ready", ...
+                "can_run",status=="ready", ...
+                "blocking_issues",controller.planBlockingIssues(), ...
+                "stale_inputs",stale, ...
+                "prepared",~isempty(controller.ActiveRunPlan) && ...
+                    strlength(controller.ActiveRunFolder)>0);
+            report.message=plan_status_message(status,report);
         end
 
         function value=statusText(controller)
@@ -1255,13 +1442,177 @@ classdef AdaptiveOptopatchController < handle
             controller.preflightPlan(plan);
             if strlength(outputRoot)==0, outputRoot=controller.defaultRunRoot(); end
             [plan,paths]=controller.saveExecutionBatch(plan,outputRoot,1,struct([]));
+            % What this plan was built from, so a later edit can be seen to
+            % have invalidated it. In memory with the plan rather than in
+            % the bundle: it describes the controller's editable state at
+            % freeze time, not the archived artifact, and the artifact is
+            % already complete without it.
+            plan.execution_inputs=controller.executionInputs();
             controller.ActiveRunPlan=plan;
             controller.ActiveRunFolder=paths.output_directory;
             controller.LastRun=struct([]);
+            % A new plan has not been run. Progress is cleared here rather
+            % than when a run ends, so a finished run keeps reporting the
+            % count it reached instead of snapping back to zero the moment
+            % the last acquisition lands.
+            controller.RunProgress=struct([]);
             controller.EditableStateChanged=false;
             controller.LifecycleState="FROZEN";
             controller.setStatus("Frozen run plan created before acquisition:"+ ...
                 newline+controller.ActiveRunFolder);
+        end
+
+        function paths=updatePlan(controller)
+            %UPDATEPLAN Prepare the current experiment for execution.
+            %   THE experimenter-facing preparation step, and deliberately
+            %   nothing new: it is freezeRun, which already validates,
+            %   resolves the protocol against the FOV, builds the targets,
+            %   preflights the result, archives an immutable execution plan
+            %   and makes it active. What this adds is the record of WHICH
+            %   inputs that plan was built from, so that a later edit can
+            %   be seen to have invalidated it.
+            %
+            %   It is called Update plan rather than Upload plan because it
+            %   uploads nothing: no DMD pattern is programmed, no scanner
+            %   moves and no DAQ output is written. Whatever hardware
+            %   preparation an acquisition needs still happens inside the
+            %   runners, unchanged.
+            controller.assertNotRunning("Updating the plan");
+            issues=controller.planBlockingIssues();
+            if ~isempty(issues)
+                error("adaptive_optopatch:PlanNotReady","%s", ...
+                    strjoin(["The experiment is not ready to be prepared:";
+                        issues],newline));
+            end
+            paths=controller.freezeRun();
+            controller.setStatus(["Plan updated and ready to run.";
+                controller.planSummaryText();
+                controller.ActiveRunFolder]);
+        end
+
+        function assertRunnable(controller)
+            %ASSERTRUNNABLE Refuse anything but a prepared, current plan.
+            %   The gate, on its own, so that the rule lives in exactly one
+            %   place: runPreparedPlan calls it, legalActions reports the
+            %   same answer through planStatus, and the action endpoint
+            %   inherits both rather than re-deciding.
+            status=controller.planStatus();
+            if status=="ready", return; end
+            error(plan_refusal_identifier(status),"%s", ...
+                controller.planReadiness().message);
+        end
+
+        function run=runPreparedPlan(controller)
+            %RUNPREPAREDPLAN Execute the prepared experiment, start to finish.
+            %   ONE Run. It executes the whole prepared plan - every
+            %   acquisition of it - and then repeats it as many times as
+            %   the plan was prepared for. There is no experimenter-facing
+            %   single-acquisition run: an operator who wants one cell
+            %   deselects Stim on the others and updates the plan, which
+            %   makes what runs visible in the summary beforehand rather
+            %   than implicit in which button was pressed.
+            %
+            %   GATED HERE, not in a frontend. A plan that is absent,
+            %   stale, unpreparable or already running is refused by the
+            %   controller, so a direct endpoint call cannot do what a
+            %   greyed-out button will not.
+            controller.assertRunnable();
+            % A completed plan is still a valid plan: with nothing changed,
+            % Run means run it again. startNewBatch is the existing
+            % transition for that - a sibling run folder from the same
+            % frozen definition, with its own checkpoint - and is exactly
+            % what the repeat loop already uses between repeats.
+            if batch_is_complete(controller.currentBatchTrials())
+                controller.startNewBatch();
+            end
+            run=controller.executeRepeatedBatches();
+        end
+
+        function summary=planSummary(controller)
+            %PLANSUMMARY What the prepared plan will actually do.
+            %   Derived from the prepared manifest, not from the editable
+            %   state and not from anything a view could add up. The
+            %   distinction that matters: a manifest ROW is one acquisition
+            %   (build_manifest sets one_acquisition_per_row), and an
+            %   acquisition contains many events, so events are neither
+            %   acquisitions nor pulses per cell.
+            summary=struct("schema_version","1.0.0","prepared",false, ...
+                "stimulating_cell_count",0,"acquisitions_per_repeat",0, ...
+                "repeats",double(controller.PlanParameters.repeat_batch_count), ...
+                "total_acquisitions",0,"light_event_count",0, ...
+                "acquisition_duration_s",NaN,"protocol_id","", ...
+                "stimulating_cell_ids",strings(0,1));
+            plan=controller.ActiveRunPlan;
+            if isempty(plan) || ~isfield(plan,"manifest"), return; end
+            trials=plan.manifest.trials;
+            summary.prepared=true;
+            summary.protocol_id=string(plan.manifest.source_protocol_id);
+            summary.acquisitions_per_repeat=height(trials);
+            summary.repeats=prepared_repeat_count(plan, ...
+                controller.PlanParameters.repeat_batch_count);
+            summary.total_acquisitions= ...
+                summary.acquisitions_per_repeat*summary.repeats;
+            summary.acquisition_duration_s= ...
+                sum(double(trials.acquisition_duration_s));
+            % Which cells actually receive light, read off the resolved
+            % schedules rather than off the eligibility checkboxes: a cell
+            % can be enabled and still not be addressed by the protocol.
+            cells=strings(0,1); lightEvents=0;
+            for k=1:height(trials)
+                events=trials.pulse_schedule{k}.events;
+                illuminated=~events.is_null;
+                lightEvents=lightEvents+sum(illuminated);
+                cells=[cells;string(events.target_cell_id(illuminated))]; %#ok<AGROW>
+            end
+            summary.stimulating_cell_ids=unique(cells,"stable");
+            summary.stimulating_cell_count=numel(summary.stimulating_cell_ids);
+            summary.light_event_count=lightEvents;
+        end
+
+        function line=planSummaryText(controller)
+            %PLANSUMMARYTEXT One line of the summary, for the status area.
+            summary=controller.planSummary();
+            if ~summary.prepared, line="No plan is prepared."; return; end
+            line=sprintf(['%d stimulating cells, %d acquisitions per ' ...
+                'repeat, %d repeats, %d acquisitions in total.'], ...
+                summary.stimulating_cell_count, ...
+                summary.acquisitions_per_repeat,summary.repeats, ...
+                summary.total_acquisitions);
+        end
+
+        function progress=runProgress(controller)
+            %RUNPROGRESS How far one press of Run has got.
+            %   Counted in ACQUISITIONS across every repeat, because that
+            %   is the unit an operator watches. The repeat loop records
+            %   which repeat is in flight; the acquisitions completed
+            %   within it come from the batch's own checkpoint, which the
+            %   runner writes as it goes.
+            summary=controller.planSummary();
+            progress=struct("schema_version","1.0.0","running",false, ...
+                "stop_requested",controller.StopRequested, ...
+                "repeat_index",0, ...
+                "repeat_count",summary.repeats, ...
+                "acquisitions_per_repeat",summary.acquisitions_per_repeat, ...
+                "completed_acquisitions",0, ...
+                "total_acquisitions",summary.total_acquisitions);
+            if isempty(controller.RunProgress), return; end
+            progress.running=controller.LifecycleState=="RUNNING";
+            progress.repeat_index=double(controller.RunProgress.repeat_index);
+            progress.repeat_count=double(controller.RunProgress.repeat_count);
+            progress.acquisitions_per_repeat= ...
+                double(controller.RunProgress.acquisitions_per_repeat);
+            progress.total_acquisitions= ...
+                progress.acquisitions_per_repeat*progress.repeat_count;
+            completedBefore=(progress.repeat_index-1)* ...
+                progress.acquisitions_per_repeat;
+            trials=controller.currentBatchTrials();
+            inBatch=0;
+            if ~isempty(trials) && height(trials)>0
+                inBatch=sum(ismember(string(trials.acquisition_status), ...
+                    ["completed","analyzed"]));
+            end
+            progress.completed_acquisitions=min( ...
+                max(completedBefore,0)+inBatch,progress.total_acquisitions);
         end
 
         function paths=startNewRun(controller,outputRoot)
@@ -1309,6 +1660,12 @@ classdef AdaptiveOptopatchController < handle
             end
             [plan,paths]=controller.saveExecutionBatch( ...
                 plan,outputRoot,double(sourceBatch.batch_number)+1,sourceBatch);
+            % The same experiment definition, so the same inputs: a fresh
+            % batch of an unchanged plan is still a plan that matches what
+            % the operator configured, and Run must stay available.
+            if isfield(sourcePlan,"execution_inputs")
+                plan.execution_inputs=sourcePlan.execution_inputs;
+            end
             controller.ActiveRunPlan=plan;
             controller.ActiveRunFolder=paths.output_directory;
             controller.LastRun=struct([]);
@@ -1369,6 +1726,12 @@ classdef AdaptiveOptopatchController < handle
                 "fov_state",fovState,"manifest",manifest,"session",session, ...
                 "advisories",manifest_advisories(manifest));
             plan.execution_batch=batch_identity(plan,folder);
+            % A resumed run is the active plan by the operator's choice,
+            % the same claim the cleared EditableStateChanged flag has
+            % always made. Adopting the current inputs makes it READY
+            % rather than permanently out of date; any edit after this
+            % stales it like any other plan.
+            plan.execution_inputs=controller.executionInputs();
             controller.ActiveRunPlan=plan;
             controller.ActiveRunFolder=folder;
             controller.LastRun=struct([]);
@@ -1571,6 +1934,7 @@ classdef AdaptiveOptopatchController < handle
         function value=captureRunControls(controller)
             parameters=controller.PlanParameters;
             value=struct("active_obis_power_w",controller.currentObisPowerW(), ...
+                "repeat_batch_count",parameters.repeat_batch_count, ...
                 "maximum_velocity_v_per_s",parameters.maximum_velocity_v_per_s, ...
                 "maximum_acceleration_v_per_s2",parameters.maximum_acceleration_v_per_s2, ...
                 "allow_calibration_extrapolation",parameters.allow_calibration_extrapolation, ...
@@ -1607,17 +1971,28 @@ classdef AdaptiveOptopatchController < handle
                     strlength(controller.ActiveRunFolder)==0
                 controller.freezeRun();
             end
-            batchCount=controller.PlanParameters.repeat_batch_count;
+            % Read from the PREPARED plan, not from the editable field.
+            % Both hold the same number inside one prepare-then-run cycle -
+            % changing the field stales the plan, so it cannot be run until
+            % it is prepared again - and taking it from the plan is what
+            % makes the summary's repeat count and the progress total
+            % describe the thing that is actually executing.
+            batchCount=prepared_repeat_count(controller.ActiveRunPlan, ...
+                controller.PlanParameters.repeat_batch_count);
+            perRepeat=height(controller.ActiveRunPlan.manifest.trials);
             controller.enterRunningState();
             cleanup=onCleanup(@()controller.finishRunning()); %#ok<NASGU>
             for batch=1:batchCount
-                controller.setStatus(sprintf("Running batch %d of %d", ...
+                controller.RunProgress=struct("repeat_index",batch, ...
+                    "repeat_count",batchCount, ...
+                    "acquisitions_per_repeat",perRepeat);
+                controller.setStatus(sprintf("Running repeat %d of %d", ...
                     batch,batchCount));
                 run=controller.executePlan(0,"ManageRunState",false);
                 if controller.StopRequested || ~batch_is_complete(run.trials)
                     return
                 end
-                controller.setStatus(sprintf("Completed batch %d of %d", ...
+                controller.setStatus(sprintf("Completed repeat %d of %d", ...
                     batch,batchCount));
                 if batch<batchCount
                     controller.startNewBatch("","Automatic",true);
@@ -1790,6 +2165,78 @@ classdef AdaptiveOptopatchController < handle
             summary.batch_complete=batch_is_complete(trials);
         end
     end
+end
+
+function value=prepared_repeat_count(plan,fallback)
+%PREPARED_REPEAT_COUNT How many repeats one press of Run performs.
+%   Taken from the plan that will execute, so the number an operator is
+%   shown and the number the loop runs are the same number. A plan from
+%   before repeats were archived, or one reconstructed by resume, falls back
+%   to the editable value.
+value=double(fallback);
+if isempty(plan) || ~isfield(plan,"session") || ...
+        ~isfield(plan.session,"run_controls")
+    return
+end
+controls=plan.session.run_controls;
+if isfield(controls,"repeat_batch_count") && ...
+        isfinite(double(controls.repeat_batch_count))
+    value=double(controls.repeat_batch_count);
+end
+end
+
+function identifier=plan_refusal_identifier(status)
+%PLAN_REFUSAL_IDENTIFIER Which refusal a non-ready plan is.
+%   Distinct identifiers so the endpoint can classify them as lifecycle
+%   refusals rather than as faults, and so a caller can tell "there is
+%   nothing to run" from "what there is is out of date".
+switch status
+    case "running", identifier="adaptive_optopatch:AcquisitionActive";
+    case "not_ready", identifier="adaptive_optopatch:PlanNotReady";
+    otherwise, identifier="adaptive_optopatch:PlanUpdateRequired";
+end
+end
+
+function message=plan_status_message(status,report)
+%PLAN_STATUS_MESSAGE What to tell the operator about the plan, in their words.
+%   No internal vocabulary: no freeze, no batch, no lifecycle. The stale
+%   groups are named because "something changed" is not actionable and
+%   "the somata changed" is.
+switch status
+    case "not_ready"
+        message="Not ready. "+strjoin(report.blocking_issues," ");
+    case "running"
+        message="Running.";
+    case "ready"
+        message="Ready to run.";
+    otherwise
+        if ~report.prepared
+            message="Press Update plan to prepare this experiment."; return
+        end
+        message="The plan is out of date ("+ ...
+            strjoin(stale_input_labels(report.stale_inputs),", ")+ ...
+            "). Press Update plan.";
+end
+end
+
+function labels=stale_input_labels(names)
+%STALE_INPUT_LABELS Group names as an experimenter would say them.
+known=struct( ...
+    "reference","the reference FOV", ...
+    "somata","soma geometry", ...
+    "cell_decisions","cell Record/Stim/Blue V", ...
+    "protocol","the pulse protocol", ...
+    "spatial","spatial settings", ...
+    "run_controls","run settings");
+labels=strings(0,1);
+for name=reshape(string(names),1,[])
+    if isfield(known,char(name))
+        labels(end+1,1)=string(known.(char(name))); %#ok<AGROW>
+    else
+        labels(end+1,1)=name; %#ok<AGROW>
+    end
+end
+if isempty(labels), labels="the experiment"; end
 end
 
 function set_scanner_warning(controller,value)
@@ -2204,6 +2651,14 @@ controls.maximum_velocity_v_per_s=saved.maximum_velocity_v_per_s;
 controls.maximum_acceleration_v_per_s2=saved.maximum_acceleration_v_per_s2;
 controls.allow_calibration_extrapolation=saved.allow_calibration_extrapolation;
 controls.allow_camera_rate_override=saved.allow_camera_rate_override;
+% How many repeats one press of Run performs. Archived with the plan so the
+% summary and the progress count describe the plan rather than whatever the
+% editable field says now; a bundle written before this carried it reports
+% one repeat, which is what running it once has always meant.
+controls.repeat_batch_count=1;
+if isfield(saved,"repeat_batch_count")
+    controls.repeat_batch_count=double(saved.repeat_batch_count);
+end
 end
 
 function preflight_camera_frames(cameras,durationS,allowOverride)

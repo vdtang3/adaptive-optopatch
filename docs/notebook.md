@@ -1182,3 +1182,84 @@ root as a passive listener and `preventDefault()` on a passive listener does
 nothing. The canvas now attaches its own listener with `{ passive: false }`
 and removes it on unmount. Nothing is disabled document-wide: the listener is
 on the element, so scrolling anywhere else is untouched.
+
+## 2026-09-16 — The run lifecycle stops being an experimenter's problem
+
+The tab exposed the controller's internal lifecycle as its vocabulary: Freeze
+run, Freeze new run, Return to editing, Run next, Run all, Start new batch,
+and a row of raw `legal_actions` names underneath. An experimenter does not
+freeze anything. They configure a field of view, decide what to stimulate,
+and run it. The workflow is now three words — configure, **Update plan**,
+**Run** — and the machinery those six buttons named is still there, reached
+by the MATLAB planning window and by no endpoint.
+
+The gating was worse than the vocabulary. `legal_actions.run` was `editing`,
+which is to say "not currently running", and both `runNext` and `runAll`
+called `freezeRun()` when no plan existed. Pressing Run with nothing prepared
+therefore froze whatever the editable state happened to be at that instant
+and ran it, and pressing Run after an edit ran the OLD frozen plan without
+saying so. Both are the same bug seen from two sides: there was no answer to
+"is what I am about to run the thing I configured".
+
+`planStatus()` is that answer — `not_ready`, `update_required`, `ready`,
+`running` — and it is the controller's, not a frontend's. `assertRunnable`
+consults it before anything executes, `legalActions` reports it, and the
+endpoint inherits both. `run_next` and `run_all` were removed from the
+allowlist rather than merely hidden, because an endpoint that still offered
+them would still have the hole.
+
+The substance is `executionInputs()`. Revision cannot be the test of plan
+validity: it advances for a status line, for a poll that re-reads a run
+checkpoint, and for saving a FOV, none of which changes what would be
+acquired. So the inputs a plan is built from are enumerated explicitly, in
+named groups — reference, somata, cell_decisions, protocol, spatial,
+run_controls — and a prepared plan carries a copy. Staleness is `isequaln`
+against that copy, which needs no hash and can say WHICH group moved, so the
+message is "the plan is out of date (cell Record/Stim/Blue V)" rather than
+"something changed".
+
+Choosing what to leave out took the most care. A cell contributes its Record,
+Stim and Blue V and not its calibration history, notes or acquisition
+provenance — `saveFov` rebuilds the whole cell-state struct, and comparing it
+wholesale would have made saving a FOV invalidate the plan. The reference
+contributes the snapshot it descends from and not the file it was last loaded
+or saved from, for the same reason. The seven legacy timing defaults
+contribute nothing, because `buildPlan` strips them and every onset comes
+from the protocol. The live scanner calibration and the OBIS power contribute
+nothing either: they are hardware readings rather than operator decisions,
+and the transform a frozen run executes is archived with it.
+
+`repeat_batch_count` was the one input that was execution-affecting and not
+captured. It was read live from `PlanParameters` at `executeRepeatedBatches`,
+so changing Repeats silently changed how many acquisitions a prepared plan
+would perform. It now travels in `session.run_controls` like the scanner
+limits, the loop reads it from the plan, and changing it stales the plan like
+anything else. Within one prepare-then-run cycle the two values are
+necessarily identical, so no run behaves differently; what changes is that
+the summary and the progress total now describe the plan rather than a field.
+
+Batch semantics were audited before anything was renamed, because the task
+would have been a runner change if they had not already matched. They did: a
+manifest row is one resolved acquisition (`one_acquisition_per_row`), one
+batch is one complete pass over them, and `runAll` already looped
+`repeat_batch_count` complete passes. So **Repeats** is a relabelling of
+`repeat_batch_count` and nothing else. The one nuance worth recording is that
+repeats after the first are fresh realizations rather than replays: the
+between-repeat transition is `startNewBatch`, which re-resolves the archived
+definition, so a randomized protocol draws a new order each repeat and a
+deterministic one does not. That is the 2026-09-11 decision, unchanged.
+
+Two smaller things fell out. Run after a completed run used to do nothing —
+the batch was complete, so the runner found no trials left — while
+`startNewBatch` sat behind its own button. `runPreparedPlan` now performs
+that transition itself when the active batch is complete, so an unchanged
+plan is genuinely reusable and Run means run it again. And progress is now
+the controller's: `RunProgress` records which repeat is in flight and the
+checkpoint supplies the acquisitions completed within it, so
+`Acquisition 7 / 48` counts across repeats instead of being inferred from a
+batch number that also advances for other reasons. It is cleared when a plan
+is prepared rather than when a run ends, so a finished run keeps reporting
+the count it reached.
+
+Deliberately not done: no mid-acquisition abort. Stop after current
+acquisition is the only stop, as it has always been.

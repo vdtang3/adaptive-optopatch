@@ -91,6 +91,10 @@ Requests it recognises:
 mirrors the parts of the contract the frontend is written against:
 
 - the same allowlist of action names
+- the same experimenter-facing plan lifecycle: `not_ready`,
+  `update_required`, `ready`, `running`, from the same enumerated list of
+  execution inputs, with the same refusal identifiers
+  (`PlanNotReady`, `PlanUpdateRequired`) when a plan is not runnable
 - the same staleness rule, and the same exemption for `stop_after_current`
 - the same reply envelope, carrying the state after the action whether it was
   applied or refused
@@ -98,6 +102,19 @@ mirrors the parts of the contract the frontend is written against:
 - `fov.source_kind` and `fov.source_path`, so the chooser can mark the loaded
   entry and the tab can say whether cells were restored or drawn
 - the `(0, 5] V` range the controller enforces on a per-cell Blue calibration
+
+### The plan lifecycle is mirrored; the acquisition is not
+
+`update_plan` records an immutable snapshot of the execution inputs beside
+the prepared plan and `run` refuses anything that does not match it, both
+exactly as the controller does — that is what the tab's ready/stale
+behaviour is written against. What a prepared plan *contains*, and what
+running it does, are imitations: the acquisition count is one per
+stimulating cell (what a per-target policy happens to produce), and a run
+finishes instantly, because the interface's job here is to show progress and
+keep the plan-changing controls protected. The real resolution and the real
+runner are MATLAB's and are tested in
+`tests/TestAdaptiveOptopatchPlanWorkflow.m`.
 
 `load_snapshot_choice` is the one action that does not imitate anything: it
 REPLAYS what the real controller did. The FOV it installs and the image it

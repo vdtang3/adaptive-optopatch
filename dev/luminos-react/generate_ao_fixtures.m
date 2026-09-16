@@ -146,7 +146,9 @@ controller.setCellEligibility("cell_002","StimulationEnabled",false);
 controller.setProtocol(adaptive_optopatch.generate_screen_protocol( ...
     "PulseCount",1,"ModulatorVoltage",1));
 controller.setPlanParameter("mode","1p_dmd");
-controller.freezeRun();
+% The experimenter's step, not the internal one: a fixture should show the
+% session a frontend actually produces.
+controller.updatePlan();
 
 protocol_root=adaptive_optopatch.default_protocol_root();
 end

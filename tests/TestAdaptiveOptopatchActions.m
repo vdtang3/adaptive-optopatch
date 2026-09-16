@@ -45,6 +45,7 @@ classdef TestAdaptiveOptopatchActions < matlab.unittest.TestCase
             for name = ["clearSomata", "setCellBlueVoltage", "delete", ...
                     "setStatus", "loadSnapshot", "saveFov", "saveNextFov", ...
                     "loadFov", "loadReferenceChoice", "resumeRun", ...
+                    "updatePlan", "runPreparedPlan", "runNext", "runAll", ...
                     "sendOrangeRecordingMask", "buildPlan"]
                 response = testCase.act(controller, name);
                 testCase.verifyEqual(response.status, "unknown_action", ...
@@ -295,66 +296,104 @@ classdef TestAdaptiveOptopatchActions < matlab.unittest.TestCase
         end
 
         % ---------------------------------------------------------------
-        % D, E, O. Lifecycle
+        % D, E, O. The experimenter-facing lifecycle
+        %
+        % The vocabulary an endpoint offers is configure -> update_plan ->
+        % run. freeze, return to editing, batches and run-one-acquisition
+        % are internal machinery, reachable from the MATLAB planning window
+        % and from nowhere else.
         % ---------------------------------------------------------------
-        function freezingProducesAFrozenRun(testCase)
+        function updatingThePlanPreparesOneForExecution(testCase)
             controller = testCase.loadedController();
 
-            response = testCase.act(controller, "freeze_run");
+            response = testCase.act(controller, "update_plan");
 
-            testCase.verifyTrue(response.ok);
-            testCase.verifyTrue(any(controller.Calls == "freezeRun"));
-            testCase.verifyEqual(response.state.plan_state, "FROZEN");
-            testCase.verifyEqual(response.state.lifecycle, "frozen");
+            testCase.verifyTrue(response.ok, response.message);
+            testCase.verifyTrue(any(controller.Calls == "updatePlan"));
+            testCase.verifyEqual(response.state.plan_status, "ready");
             testCase.verifyTrue(response.state.active_run.frozen);
-            testCase.verifyTrue(response.state.legal_actions.return_to_editing);
+            testCase.verifyTrue(response.state.legal_actions.run);
+            testCase.verifyTrue(response.state.plan_summary.prepared);
         end
 
-        function returningToEditingReportsTheEditableState(testCase)
+        function theInternalLifecycleNamesAreNotEndpointActions(testCase)
+            % Each of these is a real controller method and the MATLAB
+            % planning window still offers most of them. None is reachable
+            % from here: update_plan is the one name for preparing a plan,
+            % and run is the one name for executing one.
             controller = testCase.loadedController();
-            testCase.act(controller, "freeze_run");
+            controller.Calls = strings(0, 1);
 
-            response = testCase.act(controller, "return_to_editing");
-
-            testCase.verifyTrue(response.ok);
-            testCase.verifyTrue(any(controller.Calls == "returnToEditing"));
-            testCase.verifyEqual(response.state.plan_state, "EDITABLE");
-            testCase.verifyEqual(response.state.lifecycle, "editing");
-            testCase.verifyFalse(response.state.active_run.frozen);
+            for name = ["freeze_run", "start_new_run", "return_to_editing", ...
+                    "start_new_batch", "run_next", "run_all"]
+                response = testCase.act(controller, name);
+                testCase.verifyEqual(response.status, "unknown_action", ...
+                    sprintf("%s must not be an endpoint action.", name));
+            end
+            testCase.verifyEmpty(controller.Calls, ...
+                "A refused name must not reach the controller at all.");
         end
 
-        function freezingWithoutAProtocolIsNotLegal(testCase)
+        function anUnpreparableExperimentIsNotRunnableOrUpdatable(testCase)
             controller = testCase.loadedControllerWithoutProtocol();
 
-            response = testCase.act(controller, "freeze_run");
+            update = testCase.act(controller, "update_plan");
+            run = testCase.act(controller, "run");
 
-            testCase.verifyFalse(response.ok);
-            testCase.verifyEqual(response.status, "not_legal");
-            testCase.verifyEqual(response.state.plan_state, "EDITABLE");
-            testCase.verifyFalse(response.state.legal_actions.freeze_run);
+            for response = [update run]
+                testCase.verifyFalse(response.ok);
+                testCase.verifyEqual(response.status, "not_legal");
+                testCase.verifyEqual(response.identifier, ...
+                    "adaptive_optopatch:PlanNotReady");
+                testCase.verifyEqual(response.state.plan_status, "not_ready");
+            end
+            testCase.verifyFalse(update.state.legal_actions.update_plan);
+            testCase.verifyFalse(update.state.legal_actions.run);
+            testCase.verifyNotEmpty( ...
+                update.state.plan_readiness.blocking_issues);
         end
 
-        function startingABatchWithoutAFrozenRunIsNotLegal(testCase)
+        function runningWithNoPreparedPlanIsRefused(testCase)
+            % The hole this pass closes: run_all used to freeze a plan
+            % implicitly, so pressing Run with nothing prepared ran
+            % whatever the editable state happened to be.
             controller = testCase.loadedController();
+            testCase.assertEqual(controller.getState().plan_status, ...
+                "update_required");
+            controller.Calls = strings(0, 1);
 
-            response = testCase.act(controller, "start_new_batch");
+            response = testCase.act(controller, "run");
 
             testCase.verifyFalse(response.ok);
             testCase.verifyEqual(response.status, "not_legal");
             testCase.verifyEqual(response.identifier, ...
-                "adaptive_optopatch:FrozenRunRequired");
-            testCase.verifyFalse(response.state.legal_actions.start_new_batch);
+                "adaptive_optopatch:PlanUpdateRequired");
+            testCase.verifyFalse(response.state.active_run.frozen, ...
+                "A refused run must not have prepared anything.");
+            testCase.verifyEmpty(controller.Calls);
         end
 
-        function startingABatchBeforeTheCurrentOneCompletesIsNotLegal(testCase)
+        function runningAStalePlanIsRefusedThroughTheEndpoint(testCase)
+            % Not only in a frontend: a direct call with a perfectly fresh
+            % revision must still be refused, because the revision says the
+            % caller is up to date and says nothing about the plan.
             controller = testCase.loadedController();
-            testCase.act(controller, "freeze_run");
+            testCase.act(controller, "update_plan");
+            controller.Calls = strings(0, 1);
+            testCase.act(controller, "set_cell_eligibility", ...
+                struct("cell_id", "cell_002", "stimulation_enabled", false));
 
-            response = testCase.act(controller, "start_new_batch");
+            response = testCase.act(controller, "run");
 
+            testCase.verifyFalse(response.ok);
             testCase.verifyEqual(response.status, "not_legal");
             testCase.verifyEqual(response.identifier, ...
-                "adaptive_optopatch:CompletedBatchRequired");
+                "adaptive_optopatch:PlanUpdateRequired");
+            testCase.verifyEqual(response.state.plan_status, "update_required");
+            testCase.verifyEqual( ...
+                string(response.state.plan_readiness.stale_inputs), ...
+                "cell_decisions");
+            testCase.verifyFalse(any(controller.Calls == "runPreparedPlan"));
         end
 
         function noActionButStoppingIsAcceptedWhileRunning(testCase)
@@ -399,14 +438,13 @@ classdef TestAdaptiveOptopatchActions < matlab.unittest.TestCase
         % ---------------------------------------------------------------
         function runControlsCallTheControllerAndNothingElse(testCase)
             controller = testCase.loadedController();
-            testCase.act(controller, "freeze_run");
+            testCase.act(controller, "update_plan");
             controller.Calls = strings(0, 1);
 
-            testCase.act(controller, "run_next");
-            testCase.act(controller, "run_all");
+            testCase.act(controller, "run");
 
-            testCase.verifyEqual(controller.Calls, ["runNext"; "runAll"], ...
-                "Run controls must delegate, in order, and do nothing else.");
+            testCase.verifyEqual(controller.Calls, "runPreparedPlan", ...
+                "Run must delegate, and do nothing else.");
         end
 
         function stoppingIsTheOneActionARunningSessionAccepts(testCase)
@@ -511,8 +549,7 @@ classdef TestAdaptiveOptopatchActions < matlab.unittest.TestCase
                 "set_plan_parameter", struct("name", "repeat_batch_count", ...
                     "value", 2); ...
                 "load_protocol_choice", struct("choice_id", "screen_a"); ...
-                "freeze_run", struct(); ...
-                "return_to_editing", struct(); ...
+                "update_plan", struct(); ...
                 "delete_soma", struct("cell_id", "cell_003")};
 
             for k = 1:size(requests, 1)
@@ -555,8 +592,8 @@ classdef TestAdaptiveOptopatchActions < matlab.unittest.TestCase
                 testCase.act(controller, "set_cell_eligibility", ...
                     struct("cell_id", "cell_001", "recording_enabled", false)); ...
                 testCase.act(controller, "polish_the_objective"); ...
-                testCase.act(controller, "start_new_batch"); ...
-                testCase.act(controller, "freeze_run")};
+                testCase.act(controller, "run"); ...
+                testCase.act(controller, "update_plan")};
 
             for k = 1:numel(responses)
                 decoded = testCase.verifyJsonSafe(responses{k});
@@ -576,7 +613,7 @@ classdef TestAdaptiveOptopatchActions < matlab.unittest.TestCase
             % a result and must not look like a throw.
             controller = testCase.loadedController();
 
-            for action = ["polish_the_objective", "start_new_batch", "freeze_run"]
+            for action = ["polish_the_objective", "run", "update_plan"]
                 response = testCase.act(controller, action);
                 testCase.verifyFalse(isfield(response, "error"), ...
                     sprintf("%s produced a reply with an error field.", action));
@@ -621,8 +658,7 @@ classdef TestAdaptiveOptopatchActions < matlab.unittest.TestCase
                 "set_cell_blue_voltage", ...
                 "add_soma", "update_soma", "delete_soma", ...
                 "load_protocol_choice", "set_plan_parameter", ...
-                "freeze_run", "start_new_run", "return_to_editing", ...
-                "start_new_batch", "run_next", "run_all", "stop_after_current"];
+                "update_plan", "run", "stop_after_current"];
         end
 
         function probeDuringRun(testCase, controller, probe)

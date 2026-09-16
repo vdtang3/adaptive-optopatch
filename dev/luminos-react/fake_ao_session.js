@@ -35,12 +35,8 @@ export const ACTIONS = [
   "delete_soma",
   "load_protocol_choice",
   "set_plan_parameter",
-  "freeze_run",
-  "start_new_run",
-  "return_to_editing",
-  "start_new_batch",
-  "run_next",
-  "run_all",
+  "update_plan",
+  "run",
   "stop_after_current",
 ];
 
@@ -115,8 +111,14 @@ export class FakeAoSession {
      * same rule next_fov_bundle_path applies. What a bundle CONTAINS is an
      * imitation; the schema is MATLAB's and is tested there. */
     this.savedFovs = [];
+    /* The prepared plan, and where a run of it got to. Null until Update
+     * plan is pressed - which is exactly what makes the interface show
+     * Update plan rather than Run. */
+    this.prepared = null;
+    this.progress = null;
     this.markCurrentProtocol();
     this.markCurrentSnapshot();
+    this.adoptFixturePlan();
   }
 
   /** The snapshot the state endpoint answers with. */
@@ -421,7 +423,7 @@ export class FakeAoSession {
       this.run(action, payload ?? {});
     } catch (error) {
       return this.envelope(action, false, error.status ?? "validation_error",
-        expectedRevision, error.message);
+        expectedRevision, error.message, error.identifier ?? "");
     }
 
     this.state.revision += 1;
@@ -455,17 +457,10 @@ export class FakeAoSession {
         return this.loadProtocolChoice(payload);
       case "set_plan_parameter":
         return this.setPlanParameter(payload);
-      case "freeze_run":
-      case "start_new_run":
-        return this.freeze();
-      case "return_to_editing":
-        return this.returnToEditing();
-      case "start_new_batch":
-        return this.startNewBatch();
-      case "run_next":
-        return this.advanceRun(1);
-      case "run_all":
-        return this.advanceRun(Infinity);
+      case "update_plan":
+        return this.updatePlan();
+      case "run":
+        return this.runPreparedPlan();
       case "stop_after_current":
         this.state.stop_after_current_requested = true;
         return undefined;
@@ -750,16 +745,213 @@ export class FakeAoSession {
     this.markEditableChanged();
   }
 
-  freeze() {
-    if (!this.state.fov.loaded || this.state.cells.length === 0) {
-      throw this.notLegal("Load a reference FOV and draw a soma first.");
+  /* Everything a prepared plan is built from, and nothing else.
+   *
+   * Mirrors executionInputs() in the controller, INCLUDING the choice of
+   * what to leave out: status text, the loaded run folder and the
+   * calibration history that travels with a cell are all absent, because
+   * none of them can change what would be acquired. The list is what the
+   * frontend's staleness behaviour is tested against; the controller's own
+   * version is the authority and is tested in MATLAB. */
+  executionInputs() {
+    const state = this.state;
+    return clone({
+      reference: {
+        fov_id: state.fov.fov_id,
+        // The snapshot this FOV descends from, NOT the file it was last
+        // loaded or saved from: saving a FOV changes the latter and cannot
+        // change what would be acquired.
+        snapshot_path: state.fov.snapshot_path,
+        image_size: state.fov.image_size,
+        reference_revision: state.fov.reference_revision,
+      },
+      somata: {
+        cell_ids: state.cells.map((c) => c.cell_id),
+        polygons: state.soma_polygons,
+      },
+      cell_decisions: state.cells.map((c) => [
+        c.cell_id,
+        c.recording_enabled,
+        c.stimulation_enabled,
+        c.selected_blue_voltage_v,
+      ]),
+      protocol: {
+        loaded: state.protocol.loaded,
+        path: state.protocol.path,
+        protocol_id: state.protocol.summary?.protocol_id ?? "",
+      },
+      spatial: {
+        stimulation_mode: state.plan_parameters.stimulation_mode,
+        microns_per_pixel: state.plan_parameters.microns_per_pixel,
+        spiral_radius_um: state.plan_parameters.spiral_radius_um,
+        spiral_density_points_per_volt:
+          state.plan_parameters.spiral_density_points_per_volt,
+        orange_expansion_pixels: state.plan_parameters.orange_expansion_pixels,
+        blue_mask_adjustment_pixels:
+          state.plan_parameters.blue_mask_adjustment_pixels,
+      },
+      run_controls: {
+        repeat_batch_count: state.plan_parameters.repeat_batch_count,
+        maximum_velocity_v_per_s: state.plan_parameters.maximum_velocity_v_per_s,
+        maximum_acceleration_v_per_s2:
+          state.plan_parameters.maximum_acceleration_v_per_s2,
+        allow_calibration_extrapolation:
+          state.plan_parameters.allow_calibration_extrapolation,
+        allow_camera_rate_override:
+          state.plan_parameters.allow_camera_rate_override,
+      },
+    });
+  }
+
+  /** Why no plan could be prepared at all, in the controller's words. */
+  blockingIssues() {
+    const issues = [];
+    if (!this.state.fov.loaded) issues.push("Load a reference FOV.");
+    if (this.state.cells.length === 0) {
+      issues.push("Draw at least one soma.");
+    } else if (!this.state.cells.some((c) => c.stimulation_enabled)) {
+      issues.push("Enable Stim on at least one cell.");
     }
-    if (!this.state.protocol.loaded) {
+    if (!this.state.protocol.loaded) issues.push("Load a pulse protocol.");
+    return issues;
+  }
+
+  /** Which groups of inputs the prepared plan predates. */
+  staleInputs() {
+    if (!this.prepared) return [];
+    const current = this.executionInputs();
+    return Object.keys(current).filter(
+      (name) =>
+        JSON.stringify(this.prepared.inputs[name]) !==
+        JSON.stringify(current[name])
+    );
+  }
+
+  /* not_ready | update_required | ready | running.
+   *
+   * The one answer both the buttons and the refusals come from, exactly as
+   * planStatus() is in the controller. */
+  planStatus() {
+    if (this.state.plan_state === "RUNNING") return "running";
+    if (this.blockingIssues().length > 0) return "not_ready";
+    if (!this.prepared || !this.state.active_run.frozen) {
+      return "update_required";
+    }
+    return this.staleInputs().length > 0 ? "update_required" : "ready";
+  }
+
+  planReadiness() {
+    const status = this.planStatus();
+    const blocking = this.blockingIssues();
+    const stale = this.staleInputs();
+    const prepared = Boolean(this.prepared);
+    let message;
+    if (status === "not_ready") message = `Not ready. ${blocking.join(" ")}`;
+    else if (status === "running") message = "Running.";
+    else if (status === "ready") message = "Ready to run.";
+    else if (!prepared) {
+      message = "Press Update plan to prepare this experiment.";
+    } else {
+      message = `The plan is out of date (${stale.join(", ")}). Press Update plan.`;
+    }
+    return {
+      schema_version: "1.0.0",
+      status,
+      can_update_plan: status === "update_required" || status === "ready",
+      can_run: status === "ready",
+      blocking_issues: blocking,
+      stale_inputs: stale,
+      prepared,
+      message,
+    };
+  }
+
+  /* What the prepared plan would do.
+   *
+   * The acquisition count is an IMITATION - one per stimulating cell, which
+   * is what a per-target policy happens to produce - and the real one comes
+   * from the resolved manifest. What is faithful is the SHAPE, and that
+   * acquisitions, events and cells are three different numbers. */
+  planSummary() {
+    const empty = {
+      schema_version: "1.0.0",
+      prepared: false,
+      stimulating_cell_count: 0,
+      stimulating_cell_ids: [],
+      acquisitions_per_repeat: 0,
+      repeats: this.state?.plan_parameters?.repeat_batch_count ?? 1,
+      total_acquisitions: 0,
+      light_event_count: 0,
+      acquisition_duration_s: null,
+      protocol_id: "",
+    };
+    if (!this.prepared) return empty;
+    const cells = this.prepared.stimulating_cell_ids;
+    const repeats = this.prepared.repeats;
+    return {
+      ...empty,
+      prepared: true,
+      stimulating_cell_count: cells.length,
+      stimulating_cell_ids: [...cells],
+      acquisitions_per_repeat: cells.length,
+      repeats,
+      total_acquisitions: cells.length * repeats,
+      light_event_count: this.prepared.light_event_count,
+      acquisition_duration_s: this.prepared.acquisition_duration_s,
+      protocol_id: this.prepared.protocol_id,
+    };
+  }
+
+  runProgress() {
+    const summary = this.planSummary();
+    const progress = {
+      schema_version: "1.0.0",
+      running: this.state?.plan_state === "RUNNING",
+      stop_requested: Boolean(this.state?.stop_after_current_requested),
+      repeat_index: 0,
+      repeat_count: summary.repeats,
+      acquisitions_per_repeat: summary.acquisitions_per_repeat,
+      completed_acquisitions: 0,
+      total_acquisitions: summary.total_acquisitions,
+    };
+    if (!this.progress) return progress;
+    return { ...progress, ...this.progress, running: progress.running };
+  }
+
+  /* Prepare a plan: validate, resolve, and record what it was built from.
+   *
+   * The controller's updatePlan is freezeRun plus that record. This is the
+   * same shape - an immutable snapshot of the inputs, kept beside the
+   * prepared plan - so that the frontend's ready/stale behaviour is
+   * exercised for the same reasons it will be on a rig. */
+  updatePlan() {
+    const issues = this.blockingIssues();
+    if (issues.length > 0) {
       throw this.notLegal(
-        "Load a validated pulse_protocol.mat before previewing or running."
+        `The experiment is not ready to be prepared:\n${issues.join("\n")}`,
+        "adaptive_optopatch:PlanNotReady"
       );
     }
+    const stimulating = this.state.cells
+      .filter((c) => c.stimulation_enabled)
+      .map((c) => c.cell_id);
+    const repeats = Math.max(
+      1,
+      Math.round(Number(this.state.plan_parameters.repeat_batch_count) || 1)
+    );
+    const eventsPerAcquisition =
+      Number(this.state.protocol.summary?.event_count ?? 1) || 1;
     const batch = (this.state.active_run.batch_number ?? 0) + 1;
+
+    this.prepared = {
+      inputs: this.executionInputs(),
+      stimulating_cell_ids: stimulating,
+      repeats,
+      light_event_count: stimulating.length * eventsPerAcquisition,
+      acquisition_duration_s: 0.005 * eventsPerAcquisition * stimulating.length,
+      protocol_id: String(this.state.protocol.summary?.protocol_id ?? ""),
+    };
+    this.progress = null;
     this.state.plan_state = "FROZEN";
     this.state.editable_state_changed = false;
     this.state.active_run = {
@@ -767,66 +959,66 @@ export class FakeAoSession {
       folder: `<dev fixture>/adaptive_optopatch_run_batch_${batch}`,
       batch_id: `dev_batch_${batch}`,
       batch_number: batch,
-      trial_count: this.state.cells.filter((c) => c.stimulation_enabled).length,
+      trial_count: stimulating.length,
       completed_trial_count: 0,
       batch_complete: false,
     };
     this.state.status = [
-      "Frozen run plan created before acquisition:",
+      "Plan updated and ready to run.",
+      `${stimulating.length} stimulating cells, ${stimulating.length} ` +
+        `acquisitions per repeat, ${repeats} repeats, ` +
+        `${stimulating.length * repeats} acquisitions in total.`,
       this.state.active_run.folder,
     ];
   }
 
-  returnToEditing() {
-    if (!this.state.active_run.frozen) {
-      throw this.notLegal("There is no frozen run to return from.");
-    }
-    this.state.plan_state = "EDITABLE";
-    this.state.editable_state_changed = false;
-    this.state.active_run = {
-      frozen: false,
-      folder: "",
-      batch_id: "",
-      batch_number: null,
-      trial_count: 0,
-      completed_trial_count: 0,
-      batch_complete: false,
-    };
-    this.state.status = [
-      "Returned to editing. Frozen run artifacts remain on disk.",
-    ];
-  }
-
-  startNewBatch() {
-    if (!this.state.active_run.frozen) {
-      throw this.notLegal("Freeze or resume a run before starting a new batch.");
-    }
-    if (!this.state.active_run.batch_complete) {
+  /* Run the whole prepared plan, every acquisition of it, `repeats` times.
+   *
+   * The GATE is the real one - a plan that is absent, stale, unpreparable
+   * or already running is refused here, not only hidden in the interface.
+   * The acquisition is not: it finishes instantly, because the interface's
+   * job is to show progress and protect the plan-changing controls, and a
+   * stub that blocked for the length of a real run would only make that
+   * harder to look at. */
+  runPreparedPlan() {
+    const status = this.planStatus();
+    if (status !== "ready") {
       throw this.notLegal(
-        "Start new batch is available only after the current batch completes."
+        this.planReadiness().message,
+        status === "not_ready"
+          ? "adaptive_optopatch:PlanNotReady"
+          : status === "running"
+          ? "adaptive_optopatch:AcquisitionActive"
+          : "adaptive_optopatch:PlanUpdateRequired"
       );
     }
-    this.freeze();
-  }
-
-  /* A run that finishes instantly. The interface's job here is to show trial
-   * progress and to disable the right buttons; a stub that blocked for the
-   * length of a real acquisition would only make that harder to look at. The
-   * real endpoint blocks for as long as the runner runs. */
-  advanceRun(trials) {
-    if (!this.state.active_run.frozen) this.freeze();
-    const run = this.state.active_run;
-    if (run.batch_complete) {
-      throw this.notLegal("This batch is complete. Start a new batch.");
+    const summary = this.planSummary();
+    // A completed plan is still a valid plan: with nothing changed, Run
+    // means run it again, into a sibling folder.
+    if (this.state.active_run.batch_complete) {
+      const batch = (this.state.active_run.batch_number ?? 0) + 1;
+      this.state.active_run = {
+        ...this.state.active_run,
+        folder: `<dev fixture>/adaptive_optopatch_run_batch_${batch}`,
+        batch_id: `dev_batch_${batch}`,
+        batch_number: batch,
+        completed_trial_count: 0,
+        batch_complete: false,
+      };
     }
-    run.completed_trial_count = Math.min(
-      run.trial_count,
-      run.completed_trial_count + (trials === Infinity ? run.trial_count : trials)
-    );
-    run.batch_complete = run.completed_trial_count >= run.trial_count;
+    this.state.active_run.completed_trial_count =
+      this.state.active_run.trial_count;
+    this.state.active_run.batch_complete = true;
     this.state.stop_after_current_requested = false;
+    this.progress = {
+      repeat_index: summary.repeats,
+      repeat_count: summary.repeats,
+      acquisitions_per_repeat: summary.acquisitions_per_repeat,
+      completed_acquisitions: summary.total_acquisitions,
+      total_acquisitions: summary.total_acquisitions,
+    };
     this.state.status = [
-      `Ran ${run.completed_trial_count} of ${run.trial_count} trials ` +
+      `Ran ${summary.total_acquisitions} acquisitions ` +
         `(development stub - no hardware).`,
     ];
   }
@@ -855,16 +1047,24 @@ export class FakeAoSession {
           : "running"
         : "editing";
 
+    const status = this.planStatus();
+    state.plan_status = status;
+    state.plan_readiness = this.planReadiness();
+    state.plan_summary = this.planSummary();
+    state.run_progress = this.runProgress();
+
     state.legal_actions = {
       edit_cells: editing && hasFov,
       edit_plan_parameters: editing,
       load_protocol: editing,
       load_fov: editing,
       save_fov: editing && hasFov,
-      freeze_run: editing && hasFov && hasCells && !!state.protocol.loaded,
-      run: editing,
+      // The authoritative pair, from planStatus and nothing else.
+      update_plan: status === "update_required" || status === "ready",
+      run: status === "ready",
       stop_after_current:
         state.plan_state === "RUNNING" && !state.stop_after_current_requested,
+      freeze_run: editing && hasFov && hasCells && !!state.protocol.loaded,
       return_to_editing: frozen && editing,
       start_new_batch: frozen && editing && !!state.active_run.batch_complete,
       resume_run: editing,
@@ -874,6 +1074,30 @@ export class FakeAoSession {
   markEditableChanged() {
     this.state.editable_state_changed = true;
     if (!this.state.active_run.frozen) this.state.plan_state = "EDITABLE";
+  }
+
+  /* A fixture loaded mid-session may describe a frozen run that this
+   * process never prepared. Adopting its inputs makes it READY, the same
+   * claim its own cleared editable_state_changed flag already makes, so
+   * the interface opens on Run rather than on a plan it cannot explain. */
+  adoptFixturePlan() {
+    if (!this.state || this.prepared || !this.state.active_run?.frozen) return;
+    const cells = this.state.cells
+      .filter((c) => c.stimulation_enabled)
+      .map((c) => c.cell_id);
+    this.prepared = {
+      inputs: this.executionInputs(),
+      stimulating_cell_ids: cells,
+      repeats: Math.max(
+        1,
+        Math.round(Number(this.state.plan_parameters.repeat_batch_count) || 1)
+      ),
+      light_event_count:
+        cells.length *
+        (Number(this.state.protocol.summary?.event_count ?? 1) || 1),
+      acquisition_duration_s: null,
+      protocol_id: String(this.state.protocol.summary?.protocol_id ?? ""),
+    };
   }
 
   markCurrentSnapshot() {
@@ -941,20 +1165,21 @@ export class FakeAoSession {
     return error;
   }
 
-  notLegal(message) {
+  notLegal(message, identifier = "") {
     const error = new Error(message);
     error.status = "not_legal";
+    error.identifier = identifier;
     return error;
   }
 
-  envelope(action, ok, status, expectedRevision, message) {
+  envelope(action, ok, status, expectedRevision, message, identifier = "") {
     return {
       schema_version: "1.0.0",
       ok,
       action,
       status,
       message,
-      identifier: "",
+      identifier,
       expected_revision:
         typeof expectedRevision === "number" ? expectedRevision : null,
       revision: this.state ? this.state.revision : null,

@@ -300,8 +300,7 @@ save_fov
 set_cell_eligibility  set_cell_blue_voltage
 add_soma  update_soma  delete_soma
 set_plan_parameter
-freeze_run  start_new_run  return_to_editing  start_new_batch
-run_next  run_all  stop_after_current
+update_plan  run  stop_after_current
 ```
 
 Each maps by an explicit `switch` to exactly one controller call. There is no
@@ -376,6 +375,95 @@ command-voltage precedence — `event > acquisition > protocol > fov_cell` — s
 protocol that names `command_voltage_v` is unaffected by it, and for `2p_spiral`
 the tiers are narrowed to `event > acquisition > protocol` so a 488 nm
 calibration can never become a Pockels command.
+
+#### configure → Update plan → Run
+
+The interface offers one workflow and three words. `state.plan_status` is the
+controller's answer to what may be done next, and both the buttons and the
+refusals come from it:
+
+| `plan_status` | Meaning | Offered |
+| --- | --- | --- |
+| `not_ready` | Something required is missing — no FOV, no somata, no cell with Stim enabled, no protocol. `plan_readiness.blocking_issues` lists them. | neither |
+| `update_required` | The experiment is describable, but nothing prepared matches it: either no plan has been prepared, or an execution input has moved since. | **Update plan** |
+| `ready` | A prepared, immutable execution plan matches the current inputs. | **Run**, and Update plan as a re-prepare |
+| `running` | An acquisition is in progress. | **Stop after current acquisition** |
+
+**Update plan** is `freezeRun` — validate, resolve the protocol against this
+FOV, build the targets, preflight, archive an immutable plan and make it
+active — plus a record of the inputs it was built from. It is called *update*
+rather than *upload* because it uploads nothing: no DMD pattern is programmed,
+no scanner moves, no DAQ output is written. Hardware preparation still happens
+inside the runners, unchanged.
+
+**Run** executes the whole prepared plan — every acquisition of it — and
+repeats it as many times as the plan was prepared for. There is no
+experimenter-facing run-one-acquisition: to stimulate one cell, deselect Stim
+on the others and update the plan, which makes what will run visible in the
+summary beforehand. After a completed run with nothing changed the plan stays
+`ready` and Run may be pressed again; it re-issues the same frozen definition
+into a sibling run folder, which is what `startNewBatch` has always done
+between repeats.
+
+**Repeats** is the experimenter-facing name for `repeat_batch_count`: how many
+times one press of Run performs the whole prepared experiment. The backend
+semantics are unchanged — a batch has always been one complete pass over the
+manifest, and `runAll` has always looped that many of them.
+
+#### Plan staleness
+
+A plan is out of date when an input that can change what executes has moved,
+and only then. `controller.executionInputs()` enumerates them in named groups,
+and `plan_readiness.stale_inputs` says which group moved:
+
+| Group | What is in it |
+| --- | --- |
+| `reference` | fov_id, the snapshot it descends from, image size, reference revision |
+| `somata` | canonical polygons and stable cell IDs |
+| `cell_decisions` | per-cell Record, Stim and Blue V |
+| `protocol` | the loaded definition itself, not its name |
+| `spatial` | mode, microns/pixel, spiral radius and density, Orange expansion, Blue mask adjustment |
+| `run_controls` | scanner velocity and acceleration limits, the two override permissions, and Repeats |
+
+**The revision is not the test.** It advances for a status line, for a poll
+that re-reads a run checkpoint and for saving a FOV, none of which can change
+what would be acquired. Deliberately excluded from the fingerprint: status
+text, the active run folder, the legacy timing defaults (`buildPlan` strips
+them and every onset comes from the protocol), a cell's calibration history and
+notes, and the live scanner calibration and OBIS power — those are hardware
+readings rather than operator decisions, and the transform a frozen run will
+execute is archived with it rather than re-read.
+
+Read-only operations — the state poll, both previews, either listing, the
+reference image, and Save FOV — leave a ready plan ready.
+
+#### Authoritative counts
+
+`state.plan_summary` is computed from the prepared manifest, never in the
+browser:
+
+```text
+stimulating_cell_count    cells that actually receive light, read off the
+                          resolved schedules rather than off the checkboxes
+acquisitions_per_repeat   manifest rows; build_manifest sets
+                          one_acquisition_per_row
+repeats                   from the prepared plan, not the editable field
+total_acquisitions        acquisitions_per_repeat x repeats
+light_event_count         illuminated events across the plan
+```
+
+An acquisition is not an event and neither is a cell: a two-cell screen with
+five pulses each is 2 acquisitions and 10 events. `state.run_progress` counts
+in acquisitions across every repeat, which is what `Acquisition 7 / 48` shows.
+
+#### Gating
+
+`runPreparedPlan` asks `assertRunnable` before it does anything, so a plan that
+is absent, stale, unpreparable or already running is refused by the controller
+itself. `run_next` and `run_all` are no longer endpoint actions — both used to
+freeze a plan implicitly when none existed, which is precisely the hole this
+closes. They remain controller methods for the MATLAB planning window, as do
+`freeze_run`, `return_to_editing` and `start_new_batch`.
 
 #### The two previews
 

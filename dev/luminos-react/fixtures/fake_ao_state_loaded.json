@@ -1,13 +1,14 @@
 {
   "schema_version": "1.0.0",
-  "revision": 8,
+  "revision": 9,
   "lifecycle": "frozen",
   "plan_state": "FROZEN",
   "editable_state_changed": false,
   "stop_after_current_requested": false,
   "status": [
-    "Frozen run plan created before acquisition:",
-    "<dev fixture>/tp519b59cc_e68f_4af3_b7c3_f08d93b94abe/adaptive_optopatch_run_x120000ao_full_cam_OrcaFusion_20260916_173132"
+    "Plan updated and ready to run.",
+    "2 stimulating cells, 2 acquisitions per repeat, 1 repeats, 2 acquisitions in total.",
+    "<dev fixture>/tpa6b4bc60_8bb4_4c46_b722_1fc53df0347d/adaptive_optopatch_run_x120000ao_full_cam_OrcaFusion_20260916_181314"
   ],
   "scanner_warning": "",
   "fov": {
@@ -16,10 +17,10 @@
     "rig_name": "Virtual_Upright",
     "camera_name": "Orca Fusion",
     "camera_bin": 1,
-    "snapshot_path": "<dev fixture>/tpff5a7fa9_b8de_4c8d_8abe_288bdfcb819c/120000ao_full_cam-OrcaFusion.mat",
-    "snapshot_directory": "<dev fixture>/tpff5a7fa9_b8de_4c8d_8abe_288bdfcb819c",
+    "snapshot_path": "<dev fixture>/tpa29de7be_511f_46c2_9b40_2a69dffa1d61/120000ao_full_cam-OrcaFusion.mat",
+    "snapshot_directory": "<dev fixture>/tpa29de7be_511f_46c2_9b40_2a69dffa1d61",
     "source_kind": "snapshot",
-    "source_path": "<dev fixture>/tpff5a7fa9_b8de_4c8d_8abe_288bdfcb819c/120000ao_full_cam-OrcaFusion.mat",
+    "source_path": "<dev fixture>/tpa29de7be_511f_46c2_9b40_2a69dffa1d61/120000ao_full_cam-OrcaFusion.mat",
     "image_size": [
       128,
       160
@@ -223,12 +224,48 @@
   },
   "active_run": {
     "frozen": true,
-    "folder": "<dev fixture>/tp519b59cc_e68f_4af3_b7c3_f08d93b94abe/adaptive_optopatch_run_x120000ao_full_cam_OrcaFusion_20260916_173132",
-    "batch_id": "adaptive_optopatch_run_x120000ao_full_cam_OrcaFusion_20260916_173132",
+    "folder": "<dev fixture>/tpa6b4bc60_8bb4_4c46_b722_1fc53df0347d/adaptive_optopatch_run_x120000ao_full_cam_OrcaFusion_20260916_181314",
+    "batch_id": "adaptive_optopatch_run_x120000ao_full_cam_OrcaFusion_20260916_181314",
     "batch_number": 1,
     "trial_count": 2,
     "completed_trial_count": 0,
     "batch_complete": false
+  },
+  "plan_status": "ready",
+  "plan_readiness": {
+    "schema_version": "1.0.0",
+    "status": "ready",
+    "can_update_plan": true,
+    "can_run": true,
+    "blocking_issues": [],
+    "stale_inputs": [],
+    "prepared": true,
+    "message": "Ready to run."
+  },
+  "plan_summary": {
+    "schema_version": "1.0.0",
+    "prepared": true,
+    "stimulating_cell_count": 2,
+    "acquisitions_per_repeat": 2,
+    "repeats": 1,
+    "total_acquisitions": 2,
+    "light_event_count": 2,
+    "acquisition_duration_s": 0.41000000000000003,
+    "protocol_id": "connectivity_screen_seed_1",
+    "stimulating_cell_ids": [
+      "cell_001",
+      "cell_003"
+    ]
+  },
+  "run_progress": {
+    "schema_version": "1.0.0",
+    "running": false,
+    "stop_requested": false,
+    "repeat_index": 0,
+    "repeat_count": 1,
+    "acquisitions_per_repeat": 2,
+    "completed_acquisitions": 0,
+    "total_acquisitions": 2
   },
   "legal_actions": {
     "edit_cells": true,
@@ -236,8 +273,9 @@
     "load_protocol": true,
     "load_fov": true,
     "save_fov": true,
-    "freeze_run": true,
+    "update_plan": true,
     "run": true,
+    "freeze_run": true,
     "stop_after_current": false,
     "return_to_editing": true,
     "start_new_batch": false,

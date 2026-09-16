@@ -69,14 +69,52 @@
     "completed_trial_count": 0,
     "batch_complete": false
   },
+  "plan_status": "not_ready",
+  "plan_readiness": {
+    "schema_version": "1.0.0",
+    "status": "not_ready",
+    "can_update_plan": false,
+    "can_run": false,
+    "blocking_issues": [
+      "Load a reference FOV.",
+      "Draw at least one soma.",
+      "Load a pulse protocol."
+    ],
+    "stale_inputs": [],
+    "prepared": false,
+    "message": "Not ready. Load a reference FOV. Draw at least one soma. Load a pulse protocol."
+  },
+  "plan_summary": {
+    "schema_version": "1.0.0",
+    "prepared": false,
+    "stimulating_cell_count": 0,
+    "acquisitions_per_repeat": 0,
+    "repeats": 1,
+    "total_acquisitions": 0,
+    "light_event_count": 0,
+    "acquisition_duration_s": null,
+    "protocol_id": "",
+    "stimulating_cell_ids": []
+  },
+  "run_progress": {
+    "schema_version": "1.0.0",
+    "running": false,
+    "stop_requested": false,
+    "repeat_index": 0,
+    "repeat_count": 1,
+    "acquisitions_per_repeat": 0,
+    "completed_acquisitions": 0,
+    "total_acquisitions": 0
+  },
   "legal_actions": {
     "edit_cells": false,
     "edit_plan_parameters": true,
     "load_protocol": true,
     "load_fov": true,
     "save_fov": false,
+    "update_plan": false,
+    "run": false,
     "freeze_run": false,
-    "run": true,
     "stop_after_current": false,
     "return_to_editing": false,
     "start_new_batch": false,

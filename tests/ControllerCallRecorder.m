@@ -6,9 +6,11 @@ classdef ControllerCallRecorder < adaptive_optopatch.AdaptiveOptopatchController
     %   the same whether the controller set it or the dispatcher did - so
     %   these tests assert on the call itself.
     %
-    %   runNext and runAll are recorded and NOT executed. Executing them would
-    %   freeze a plan and drive a runner, which is not what an endpoint test is
-    %   about and is the one thing these tests must never do by accident.
+    %   runNext, runAll and runPreparedPlan are recorded and NOT executed.
+    %   Executing them would drive a runner, which is not what an endpoint test
+    %   is about and is the one thing these tests must never do by accident.
+    %   runPreparedPlan still applies its real gate first, because whether a
+    %   plan may run at all is precisely what is under test.
     %   Every other override records and then calls the real implementation,
     %   so the state a test reads afterwards is genuinely the controller's.
     %
@@ -34,6 +36,27 @@ classdef ControllerCallRecorder < adaptive_optopatch.AdaptiveOptopatchController
 
         function run=runAll(recorder)
             recorder.record("runAll");
+            run=struct("stubbed",true);
+        end
+
+        function paths=updatePlan(recorder)
+            % Recorded and then really performed: preparing a plan resolves
+            % the protocol and writes a bundle, which is CPU and disk and
+            % touches no hardware. A test that read the state afterwards
+            % would learn nothing from a stub.
+            recorder.record("updatePlan");
+            paths=updatePlan@adaptive_optopatch.AdaptiveOptopatchController( ...
+                recorder);
+        end
+
+        function run=runPreparedPlan(recorder)
+            % The REAL gate, and then no acquisition. An endpoint test has
+            % to find out that an absent or stale plan is refused - that is
+            % most of what these tests are about - and must never drive a
+            % runner. Recording AFTER the gate is what lets a test assert
+            % that a refused run reached nothing.
+            recorder.assertRunnable();
+            recorder.record("runPreparedPlan");
             run=struct("stubbed",true);
         end
 

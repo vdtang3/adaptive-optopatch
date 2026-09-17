@@ -1,5 +1,5 @@
 function report=validate_protocol(value)
-%VALIDATE_PROTOCOL Validate a schema-3 definition or resolved acquisition.
+%VALIDATE_PROTOCOL Validate a schema-4 definition or resolved acquisition.
 arguments
     value (1,1) struct
 end
@@ -16,14 +16,14 @@ try
         end
     else
         issues=validate_events(protocol.events,true);
-        issues=[issues;validate_resolved_parameters(protocol.parameters)];
+        issues=[issues;validate_resolved_parameters(protocol.parameters,protocol.events)];
     end
 catch exception
     issues=string(exception.message);
 end
 
 issues=unique(issues(strlength(issues)>0),"stable");
-report=struct("schema_version","3.0.0","passed",isempty(issues), ...
+report=struct("schema_version","4.0.0","passed",isempty(issues), ...
     "issues",issues,"protocol",protocol);
 end
 
@@ -50,11 +50,28 @@ end
 if any(strlength(strip(events.condition_id))==0)
     issues(end+1)="Condition IDs must be nonempty.";
 end
+source=events.stimulation_source;
+if any(~ismember(source,["1p_dmd","2p_spiral","none"]))
+    issues(end+1)="Every event requires stimulation_source equal to 1p_dmd, 2p_spiral, or none.";
+end
+if any(events.is_null ~= (source=="none"))
+    issues(end+1)="Null events must use stimulation_source none, and non-null events may not use none.";
+end
+if any(events.is_null & isfinite(events.command_voltage_v) & events.command_voltage_v~=0)
+    issues(end+1)="Null events may not command stimulation voltage.";
+end
 if resolved || all(isfinite(onset))
     if any(~isfinite(onset) | onset<0), issues(end+1)="Pulse onsets must be finite and nonnegative."; end
     [sorted,index]=sort(onset); finish=sorted+duration(index);
-    if numel(sorted)>1 && any(sorted(2:end)<finish(1:end-1)-1e-12)
-        issues(end+1)="Protocol pulses overlap in time.";
+    overlap=find(sorted(2:end)<finish(1:end-1)-1e-12,1);
+    if ~isempty(overlap)
+        sources=events.stimulation_source(index);
+        if sources(overlap)~=sources(overlap+1) && ...
+                all(ismember(sources(overlap:overlap+1),["1p_dmd","2p_spiral"]))
+            issues(end+1)="A 1p_dmd interval overlaps a 2p_spiral interval; simultaneous sources are not supported.";
+        else
+            issues(end+1)="Protocol pulses overlap in time.";
+        end
     end
 end
 if any(isfinite(duration) & duration<=0)
@@ -81,14 +98,14 @@ if resolved
     if any(events.target_index(events.is_null)~=0)
         issues(end+1)="Resolved null events must use target index zero.";
     end
-    adjustment=events.blue_mask_adjustment_pixels;
+    adjustment=events.blue_mask_adjustment_pixels(source=="1p_dmd");
     if any(~isfinite(adjustment) | fix(adjustment)~=adjustment)
         issues(end+1)="Resolved Blue DMD-mask adjustments must be finite integers.";
     end
 end
 end
 
-function issues=validate_resolved_parameters(parameters)
+function issues=validate_resolved_parameters(parameters,events)
 issues=strings(0,1);
 if ~isfield(parameters,"orange_expansion_pixels") || ...
         ~isfinite(parameters.orange_expansion_pixels) || ...
@@ -96,7 +113,9 @@ if ~isfield(parameters,"orange_expansion_pixels") || ...
         fix(parameters.orange_expansion_pixels)~=parameters.orange_expansion_pixels
     issues(end+1)="Resolved Orange DMD-mask expansion must be a nonnegative integer.";
 end
+hasTwoPhoton=any(events.stimulation_source=="2p_spiral");
 for name=["spiral_radius_um","spiral_density_points_per_volt"]
+    if ~hasTwoPhoton, continue; end
     if ~isfield(parameters,name) || ~isfinite(parameters.(name)) || ...
             parameters.(name)<=0
         issues(end+1)="Resolved "+replace(name,"_"," ")+ ...

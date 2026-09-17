@@ -186,7 +186,7 @@
     "loaded": true,
     "path": "",
     "summary": {
-      "schema_version": "3.0.0",
+      "schema_version": "4.0.0",
       "protocol_type": "connectivity_screen",
       "protocol_id": "connectivity_screen_seed_1",
       "target_policy": "each_stimulation_enabled_cell",

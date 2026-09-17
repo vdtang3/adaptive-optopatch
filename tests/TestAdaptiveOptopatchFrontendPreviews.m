@@ -151,7 +151,7 @@ classdef TestAdaptiveOptopatchFrontendPreviews < matlab.unittest.TestCase
             % with a Blue number.
             controller=testCase.loadedController();
             controller.setProtocol(adaptive_optopatch.generate_screen_protocol( ...
-                "PulseCount",2));
+                "PulseCount",2,"StimulationSource","2p_spiral"));
             controller.setPlanParameter("mode","2p_spiral");
             testCase.act(controller,"set_cell_blue_voltage", ...
                 struct("cell_id","cell_001","voltage_v",3.25));

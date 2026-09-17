@@ -29,16 +29,15 @@ end
 if isNull, voltage=0; end
 if ~isfinite(voltage), return; end
 if voltage==0
-    protocol.events.is_null(:)=true;
-    protocol.events.target_cell_id(:)="";
-    protocol.events.target_index(:)=0;
-    protocol.events.dmd_pattern_index(:)=0;
-    protocol.events.command_voltage_v(:)=0;
-    protocol.events.command_voltage_source(:)="release_"+staging.release_level;
+    % A blocked commissioning run remains a 2P trajectory event. Turning it
+    % into a schema-4 null event would also turn its source into "none" and
+    % discard the scanner trajectory. The runner applies this explicit dark
+    % Pockels override only after trajectory construction.
+    protocol.staging_command_voltage_v=0;
 else
-    selected=~protocol.events.is_null;
+    selected=protocol.events.stimulation_source=="2p_spiral" & ...
+        ~protocol.events.is_null;
     protocol.events.command_voltage_v(selected)=voltage;
-    protocol.events.command_voltage_v(~selected)=0;
     protocol.events.command_voltage_source(selected)= ...
         "release_"+staging.release_level;
 end

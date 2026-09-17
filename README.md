@@ -134,7 +134,7 @@ adaptive_optopatch.save_protocol("stf_50_100hz.mat", protocol);
 
 Editable generators for connectivity, regular-rate, STF, paired-pulse, Blue
 voltage ramps, Blue-mask titration, round robin, and custom schedules are in
-`pulse-protocols/`. Protocol schema 3 separates ROI-independent experiment
+`pulse-protocols/`. Protocol schema 4 separates ROI-independent experiment
 definitions from fully resolved acquisitions. Target policy, acquisition
 boundaries, and event order are explicit. Resolution follows event, then
 acquisition/protocol, then per-cell FOV, then GUI precedence; unresolved
@@ -1341,7 +1341,7 @@ which command voltage, is execution state:
   commissioning acquisition never marks an experimental trial complete in the
   run's own `run_2p_checkpoint.mat`.
 
-The runner never designs an experiment. It executes the frozen schema-3
+The runner never designs an experiment. It executes the frozen schema-4
 acquisition already archived in the bundle, so the release-level selector
 chooses only how much of it runs:
 

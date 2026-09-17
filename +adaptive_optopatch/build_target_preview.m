@@ -47,9 +47,18 @@ preview.source="resolved_plan";
 seenBlue=strings(0,1); seenOrange=strings(0,1); seenSpiral=strings(0,1);
 for index=1:numel(options.ResolvedProtocols)
     protocol=adaptive_optopatch.normalize_protocol(options.ResolvedProtocols{index});
-    resolved=adaptive_optopatch.apply_acquisition_parameters(targets,protocol);
     events=protocol.events;
-    used=unique(double(events.target_index(~events.is_null)),"stable");
+    relevant=events.stimulation_source==mode;
+    if any(relevant)
+        resolved=adaptive_optopatch.apply_acquisition_parameters(targets,protocol);
+    else
+        % Spatial preview remains useful even when the loaded protocol does
+        % not schedule this source. In that case show current FOV geometry;
+        % schema 4 deliberately leaves irrelevant 2P parameters unresolved.
+        resolved=targets;
+        relevant=~events.is_null;
+    end
+    used=unique(double(events.target_index(relevant)),"stable");
     for targetIndex=reshape(used,1,[])
         cellId=string(resolved.targets(targetIndex).cell_id);
         key=cellId+"_"+string(protocol.parameters.orange_expansion_pixels);
@@ -61,7 +70,7 @@ for index=1:numel(options.ResolvedProtocols)
         end
     end
     if mode=="1p_dmd"
-        for k=reshape(find(~events.is_null),1,[])
+        for k=reshape(find(events.stimulation_source=="1p_dmd"),1,[])
             targetIndex=double(events.target_index(k));
             adjustment=double(events.blue_mask_adjustment_pixels(k));
             cellId=string(events.target_cell_id(k));
@@ -74,7 +83,8 @@ for index=1:numel(options.ResolvedProtocols)
             preview.blue(end+1)=blue_entry(mask,cellId,adjustment); %#ok<AGROW>
         end
     else
-        durations=events.duration_s(~events.is_null);
+        durations=events.duration_s(events.stimulation_source=="2p_spiral");
+        if isempty(durations), durations=events.duration_s(~events.is_null); end
         pulseDurationMs=1000*min(durations,[],"omitmissing");
         for targetIndex=reshape(used,1,[])
             target=resolved.targets(targetIndex);

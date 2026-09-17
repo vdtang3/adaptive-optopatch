@@ -7,7 +7,8 @@ round-robin protocol is deliberately FOV-specific and contains its literal
 target order and onset times. Adaptive Optopatch maps that schedule to hardware
 without changing its timing, balance, recovery rule, or randomization.
 
-Generated artifacts use protocol schema `3.0.0`. Older protocol files are
+Generated artifacts use protocol schema `4.0.0`. Every event explicitly owns
+`stimulation_source` (`1p_dmd`, `2p_spiral`, or `none`). Older protocol files are
 intentionally rejected and must be regenerated from their source scripts.
 
 ## Included generators
@@ -22,7 +23,8 @@ intentionally rejected and must be regenerated from their source scripts.
 | `create_paired_pulse_protocol.m` | Mixed paired-pulse intervals | `each_stimulation_enabled_cell` | randomized |
 | `create_round_robin_protocol.m` | One continuous, interleaved multi-cell acquisition | `multi_target_continuous` | randomized |
 | `create_dmd_flut_wrap_test.m` | Three-slot/eight-trigger FLUT wrap hardware diagnostic | `multi_target_continuous` | ordered |
-| `create_custom_event_protocol.m` | Minimal hand-written schema-3 example | `each_stimulation_enabled_cell` | ordered |
+| `create_custom_event_protocol.m` | Minimal hand-written schema-4 example | `each_stimulation_enabled_cell` | ordered |
+| `create_mixed_1p_2p_test_protocol.m` | Conservative interleaved 1P/2P commissioning acquisition | `each_stimulation_enabled_cell` | ordered |
 
 Scripts write to `pulse-protocols/generated/` by default and leave the
 definition in the workspace as `protocol`. Generated MAT files are experiment
@@ -151,7 +153,7 @@ freeze, run, and resume do not draw new random values.
 A new generator returns one scalar struct with these fields:
 
 ```matlab
-protocol.schema_version = "3.0.0";
+protocol.schema_version = "4.0.0";
 protocol.artifact_type = "experiment_definition";
 protocol.protocol_id = "my_protocol";
 protocol.protocol_type = "my_experiment_type";
@@ -168,6 +170,7 @@ table. Event tables require:
 ```text
 pulse_id
 condition_id
+stimulation_source
 onset_s
 duration_s
 is_null

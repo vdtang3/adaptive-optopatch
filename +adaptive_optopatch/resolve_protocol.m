@@ -1,11 +1,11 @@
 function resolved=resolve_protocol(definition,fovState,targets,guiDefaults,options)
-%RESOLVE_PROTOCOL Resolve schema-3 intent into concrete acquisition schedules.
+%RESOLVE_PROTOCOL Resolve schema-4 per-event intent into acquisitions.
 arguments
     definition (1,1) struct
     fovState (1,1) struct
     targets (1,1) struct
     guiDefaults (1,1) struct
-    options.Mode (1,1) string {mustBeMember(options.Mode,["1p_dmd","2p_spiral"])} = "1p_dmd"
+    options.Mode (1,1) string {mustBeMember(options.Mode,["1p_dmd","2p_spiral"])} = "1p_dmd" % deprecated
     options.FreshRandomization (1,1) logical = false
 end
 report=adaptive_optopatch.validate_protocol(definition);
@@ -15,13 +15,13 @@ end
 definition=report.protocol;
 if string(definition.artifact_type)~="experiment_definition"
     error("adaptive_optopatch:ProtocolDefinitionRequired", ...
-        "Plan resolution requires a schema-3 experiment_definition.");
+        "Plan resolution requires a schema-4 experiment_definition.");
 end
 
 [cellIndices,targetIndices]=selected_targets(fovState,targets);
 if isempty(cellIndices)
     error("adaptive_optopatch:NoAcceptedTargets", ...
-        "No stimulation-enabled targets are executable for %s.",options.Mode);
+        "No stimulation-enabled targets are executable for this protocol.");
 end
 resolved=cell(0,1); outputIndex=0;
 for acquisitionIndex=1:numel(definition.acquisitions)
@@ -32,18 +32,17 @@ for acquisitionIndex=1:numel(definition.acquisitions)
             resolved{outputIndex,1}=resolve_acquisition(definition,acquisition, ...
                 fovState,guiDefaults,cellIndices(selectedIndex), ...
                 targetIndices(selectedIndex),acquisitionIndex,outputIndex, ...
-                options.Mode,options.FreshRandomization);
+                options.FreshRandomization);
         end
     else
         outputIndex=outputIndex+1;
         resolved{outputIndex,1}=resolve_multi_target(definition,acquisition, ...
             fovState,guiDefaults,cellIndices,targetIndices, ...
-            acquisitionIndex,outputIndex,options.Mode,options.FreshRandomization);
+            acquisitionIndex,outputIndex,options.FreshRandomization);
     end
 end
-if options.Mode=="1p_dmd"
-    validate_blue_mask_executability(resolved,targets);
-end
+validate_blue_mask_executability(resolved,targets);
+validate_mixed_constraints(resolved);
 end
 
 function validate_blue_mask_executability(resolved,targets)
@@ -56,7 +55,7 @@ function validate_blue_mask_executability(resolved,targets)
 seen=strings(0,1);
 for i=1:numel(resolved)
     events=resolved{i}.events;
-    for k=reshape(find(~events.is_null),1,[])
+    for k=reshape(find(events.stimulation_source=="1p_dmd"),1,[])
         targetIndex=double(events.target_index(k));
         adjustment=double(events.blue_mask_adjustment_pixels(k));
         key=string(targetIndex)+"_"+string(adjustment);
@@ -71,7 +70,7 @@ end
 end
 
 function protocol=resolve_acquisition(definition,acquisition,fovState,gui, ...
-        cellIndex,targetIndex,acquisitionIndex,outputIndex,mode,freshRandomization)
+        cellIndex,targetIndex,acquisitionIndex,outputIndex,freshRandomization)
 events=acquisition.events;
 n=height(events);
 if definition.event_order=="randomized" && ~acquisition.event_order_realized
@@ -83,11 +82,11 @@ end
 events.target_cell_id=repmat(string(fovState.cells(cellIndex).cell_id),n,1);
 events.target_index=repmat(targetIndex,n,1);
 protocol=resolve_values(definition,acquisition,events,fovState,gui, ...
-    repmat(cellIndex,n,1),acquisitionIndex,outputIndex,mode);
+    repmat(cellIndex,n,1),acquisitionIndex,outputIndex);
 end
 
 function protocol=resolve_multi_target(definition,acquisition,fovState,gui, ...
-        cellIndices,targetIndices,acquisitionIndex,outputIndex,mode,freshRandomization)
+        cellIndices,targetIndices,acquisitionIndex,outputIndex,freshRandomization)
 template=acquisition.events;
 if ismember("target_cell_id",string(template.Properties.VariableNames))
     if ~acquisition.event_order_realized
@@ -121,7 +120,7 @@ if ismember("target_cell_id",string(template.Properties.VariableNames))
     events=template;
     events.target_index=targetMap;
     protocol=resolve_values(definition,acquisition,events,fovState,gui, ...
-        cellMap,acquisitionIndex,outputIndex,mode);
+        cellMap,acquisitionIndex,outputIndex);
     return
 end
 nTemplate=height(template); repetitions=acquisition.target_repetitions;
@@ -151,7 +150,7 @@ events.target_cell_id=string({fovState.cells(cellMap).cell_id})';
 events.target_index=targetMap;
 events.pulse_id=(1:height(events))';
 protocol=resolve_values(definition,acquisition,events,fovState,gui, ...
-    cellMap,acquisitionIndex,outputIndex,mode);
+    cellMap,acquisitionIndex,outputIndex);
 end
 
 function order=randomized_order(count,seed,freshRandomization)
@@ -164,7 +163,7 @@ end
 end
 
 function protocol=resolve_values(definition,acquisition,events,fovState,gui, ...
-        cellMap,acquisitionIndex,outputIndex,mode)
+        cellMap,acquisitionIndex,outputIndex)
 n=height(events); metadata=adaptive_optopatch.protocol_parameter_metadata();
 eventSources=struct;
 for name=["command_voltage_v","pulse_duration_s","blue_mask_adjustment_pixels"]
@@ -177,7 +176,7 @@ for name=["command_voltage_v","pulse_duration_s","blue_mask_adjustment_pixels"]
             values(k)=0; sources(k)="null"; continue
         end
         [values(k),sources(k)]=resolve_one(raw(k),name,definition, ...
-            acquisition,fovState.cells(cellMap(k)),gui,mode);
+            acquisition,fovState.cells(cellMap(k)),gui,events.stimulation_source(k));
     end
     if name=="command_voltage_v" && ...
             ismember("command_voltage_scale",string(events.Properties.VariableNames))
@@ -205,11 +204,15 @@ if all(cellMap==cellMap(1))
     acquisitionCell=fovState.cells(cellMap(1));
 end
 [orange,orangeSource]=resolve_one(NaN,"orange_expansion_pixels",definition, ...
-    acquisition,acquisitionCell,gui,mode);
-[radius,radiusSource]=resolve_one(NaN,"spiral_radius_um",definition, ...
-    acquisition,acquisitionCell,gui,mode);
-[density,densitySource]=resolve_one(NaN,"spiral_density_points_per_volt", ...
-    definition,acquisition,acquisitionCell,gui,mode);
+    acquisition,acquisitionCell,gui,"none");
+if any(events.stimulation_source=="2p_spiral")
+    [radius,radiusSource]=resolve_one(NaN,"spiral_radius_um",definition, ...
+        acquisition,acquisitionCell,gui,"2p_spiral");
+    [density,densitySource]=resolve_one(NaN,"spiral_density_points_per_volt", ...
+        definition,acquisition,acquisitionCell,gui,"2p_spiral");
+else
+    radius=NaN; density=NaN; radiusSource="not_required"; densitySource="not_required";
+end
 parameters=struct("orange_expansion_pixels",orange, ...
     "spiral_radius_um",radius,"spiral_density_points_per_volt",density);
 parameterSources=struct("orange_expansion_pixels",orangeSource, ...
@@ -217,7 +220,7 @@ parameterSources=struct("orange_expansion_pixels",orangeSource, ...
 validate_resolved_values(events,parameters);
 
 events.dmd_pattern_index=zeros(n,1);
-nonnull=find(~events.is_null);
+nonnull=find(events.stimulation_source=="1p_dmd");
 if ~isempty(nonnull)
     pairs=[events.target_index(nonnull) events.blue_mask_adjustment_pixels(nonnull)];
     [~,~,pattern]=unique(pairs,"rows","stable");
@@ -231,7 +234,7 @@ if isfield(acquisition,"acquisition_duration_s") && ...
         isfinite(double(acquisition.acquisition_duration_s))
     duration=double(acquisition.acquisition_duration_s);
 end
-protocol=struct("schema_version","3.0.0", ...
+protocol=struct("schema_version","4.0.0", ...
     "artifact_type","resolved_acquisition", ...
     "protocol_id",definition.protocol_id+compose("_acq_%04d",outputIndex), ...
     "protocol_type",definition.protocol_type, ...
@@ -264,7 +267,7 @@ if any(~isfinite(voltage) | voltage<=0 | voltage>5)
     error("adaptive_optopatch:InvalidCommandVoltage", ...
         "Resolved command voltage must lie in (0,5] V for every non-null event.");
 end
-adjustment=events.blue_mask_adjustment_pixels;
+adjustment=events.blue_mask_adjustment_pixels(events.stimulation_source=="1p_dmd");
 if any(~isfinite(adjustment) | fix(adjustment)~=adjustment)
     error("adaptive_optopatch:InvalidBlueMaskAdjustment", ...
         "Resolved Blue DMD-mask adjustment must be a finite integer pixel count.");
@@ -275,19 +278,47 @@ if ~isfinite(parameters.orange_expansion_pixels) || ...
     error("adaptive_optopatch:InvalidOrangeExpansion", ...
         "Resolved Orange DMD-mask expansion must be a nonnegative integer pixel count.");
 end
-if ~isfinite(parameters.spiral_radius_um) || parameters.spiral_radius_um<=0
+hasTwoPhoton=any(events.stimulation_source=="2p_spiral");
+if hasTwoPhoton && (~isfinite(parameters.spiral_radius_um) || parameters.spiral_radius_um<=0)
     error("adaptive_optopatch:InvalidSpiralRadius", ...
         "Resolved 2P spiral radius must be positive and finite.");
 end
-if ~isfinite(parameters.spiral_density_points_per_volt) || ...
-        parameters.spiral_density_points_per_volt<=0
+if hasTwoPhoton && (~isfinite(parameters.spiral_density_points_per_volt) || ...
+        parameters.spiral_density_points_per_volt<=0)
     error("adaptive_optopatch:InvalidSpiralDensity", ...
         "Resolved 2P spiral density must be positive and finite.");
 end
 end
 
-function [value,source]=resolve_one(eventValue,name,definition,acquisition,cellRecord,gui,mode)
-allowed=allowed_sources(definition,name,mode);
+function validate_mixed_constraints(resolved)
+for acquisitionIndex=1:numel(resolved)
+    events=resolved{acquisitionIndex}.events;
+    twoPhoton=events.stimulation_source=="2p_spiral";
+    targets=unique(events.target_cell_id(twoPhoton),"stable");
+    targets=targets(strlength(targets)>0);
+    if numel(targets)>1
+        error("adaptive_optopatch:MultipleTwoPhotonTargetsUnsupported", ...
+            ["Pass 3B temporarily supports at most one distinct 2P " ...
+             "target_cell_id per acquisition; acquisition %s contains: %s."], ...
+            resolved{acquisitionIndex}.acquisition_id,strjoin(targets,", "));
+    end
+    onePhoton=find(events.stimulation_source=="1p_dmd");
+    twoPhoton=find(twoPhoton);
+    for i=reshape(onePhoton,1,[])
+        overlap=twoPhoton(events.onset_s(twoPhoton)<events.offset_s(i)-1e-12 & ...
+            events.offset_s(twoPhoton)>events.onset_s(i)+1e-12);
+        if ~isempty(overlap)
+            error("adaptive_optopatch:OverlappingStimulationSources", ...
+                ["1P pulse %s overlaps 2P pulse %s. Pass 3B supports " ...
+                 "interleaved sources but not simultaneous 1P + 2P stimulation."], ...
+                string(events.pulse_id(i)),string(events.pulse_id(overlap(1))));
+        end
+    end
+end
+end
+
+function [value,source]=resolve_one(eventValue,name,definition,acquisition,cellRecord,gui,stimulationSource)
+allowed=allowed_sources(definition,name,stimulationSource);
 if isfinite_scalar(eventValue) && ismember("event",allowed)
     value=double(eventValue); source="event"; return
 end
@@ -312,7 +343,7 @@ if ismember("gui",allowed)
         value=double(gui.(guiName)); source="gui"; return
     end
 end
-if mode=="2p_spiral" && name=="command_voltage_v"
+if stimulationSource=="2p_spiral" && name=="command_voltage_v"
     error("adaptive_optopatch:MissingTwoPhotonPockelsVoltage", ...
         ['This 2P protocol does not define its Pockels stimulation voltage. ' ...
          'A 2p_spiral acquisition takes its command only from the protocol ' ...
@@ -331,7 +362,7 @@ error("adaptive_optopatch:UnresolvedProtocolParameter", ...
     "Required parameter %s remains unresolved after event, acquisition, FOV-cell, and GUI resolution.",name);
 end
 
-function allowed=allowed_sources(definition,name,mode)
+function allowed=allowed_sources(definition,name,stimulationSource)
 allowed=["event","acquisition","protocol","fov_cell","gui"];
 if isfield(definition,"parameter_sources") && ...
         isfield(definition.parameter_sources,name)
@@ -342,7 +373,7 @@ if name=="command_voltage_v"
     % default. A 1P cell calibration remains an explicit FOV-owned source.
     allowed=setdiff(allowed,"gui","stable");
 end
-if mode=="2p_spiral" && name=="command_voltage_v"
+if stimulationSource=="2p_spiral" && name=="command_voltage_v"
     % The Pockels command is owned by the 2P protocol artifact. The
     % fov_cell tier for this parameter is selected_blue_voltage_v, a 488 nm
     % calibration that must never become a Chameleon command, and a GUI

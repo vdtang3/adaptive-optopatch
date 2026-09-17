@@ -706,7 +706,7 @@ export class FakeAoSession {
       loaded: true,
       path: choice.path,
       summary: {
-        schema_version: "3.0.0",
+        schema_version: "4.0.0",
         protocol_id: choice.protocol_id,
         protocol_type: choice.protocol_type,
         target_policy: choice.target_policy,

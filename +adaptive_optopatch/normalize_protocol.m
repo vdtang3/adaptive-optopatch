@@ -1,16 +1,21 @@
 function protocol=normalize_protocol(protocol)
-%NORMALIZE_PROTOCOL Normalize a schema-3 definition or resolved acquisition.
+%NORMALIZE_PROTOCOL Normalize a schema-4 definition or resolved acquisition.
 arguments
     protocol (1,1) struct
 end
-if ~isfield(protocol,"schema_version") || string(protocol.schema_version)~="3.0.0"
+if ~isfield(protocol,"schema_version") || string(protocol.schema_version)~="4.0.0"
+    if isfield(protocol,"schema_version") && string(protocol.schema_version)=="3.0.0"
+        error("adaptive_optopatch:ObsoleteProtocolSchema", ...
+            "Protocol schema 3 is obsolete. Regenerate this protocol "+ ...
+            "with a current pulse-protocol generator.");
+    end
     error("adaptive_optopatch:ObsoleteProtocolSchema", ...
         "This artifact uses an obsolete Adaptive Optopatch protocol schema. "+ ...
         "Regenerate it with the current package.");
 end
 if ~isfield(protocol,"artifact_type")
     error("adaptive_optopatch:InvalidProtocol", ...
-        "Schema 3 protocols require artifact_type.");
+        "Schema 4 protocols require artifact_type.");
 end
 type=string(protocol.artifact_type);
 if type=="experiment_definition"
@@ -44,7 +49,7 @@ protocol.random_seed=double(protocol.random_seed);
 if ~isscalar(protocol.random_seed) || ~isfinite(protocol.random_seed) || ...
         protocol.random_seed<0 || fix(protocol.random_seed)~=protocol.random_seed
     error("adaptive_optopatch:InvalidRandomSeed", ...
-        "Schema 3 definitions require a nonnegative integer random_seed.");
+        "Schema 4 definitions require a nonnegative integer random_seed.");
 end
 if isempty(protocol.acquisitions) || ~isstruct(protocol.acquisitions)
     error("adaptive_optopatch:ExplicitAcquisitionsRequired", ...
@@ -116,12 +121,13 @@ end
 end
 
 function events=normalize_events(events,resolved)
-required=["pulse_id","condition_id","onset_s","duration_s","is_null", ...
+required=["pulse_id","condition_id","stimulation_source","onset_s","duration_s","is_null", ...
     "command_voltage_v","blue_mask_adjustment_pixels"];
 require_table_columns(events,required);
 n=height(events);
 events.pulse_id=double(events.pulse_id);
 events.condition_id=string(events.condition_id);
+events.stimulation_source=lower(strip(string(events.stimulation_source)));
 events.onset_s=double(events.onset_s);
 events.duration_s=double(events.duration_s);
 events.is_null=logical(events.is_null);
@@ -140,7 +146,7 @@ if resolved
     events.blue_mask_adjustment_source=string(events.blue_mask_adjustment_source);
 end
 events.offset_s=events.onset_s+events.duration_s;
-canonical=["pulse_id","condition_id","onset_s","duration_s","is_null", ...
+canonical=["pulse_id","condition_id","stimulation_source","onset_s","duration_s","is_null", ...
     "command_voltage_v","blue_mask_adjustment_pixels","offset_s"];
 if resolved
     canonical=[canonical(1:2) "target_cell_id" "target_index" ...

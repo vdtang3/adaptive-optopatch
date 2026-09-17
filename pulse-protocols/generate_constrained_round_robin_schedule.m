@@ -74,6 +74,7 @@ end
 event_index=(1:nEvents)';
 pulse_id=event_index;
 condition_id=repmat("round_robin",nEvents,1);
+stimulation_source=repmat("1p_dmd",nEvents,1);
 target_cell_id=targetCellIds(targetIndex);
 duration_s=repmat(pulseDurationS,nEvents,1);
 pulse_duration_s=duration_s;
@@ -82,7 +83,7 @@ onset_s=onsetS;
 is_null=false(nEvents,1);
 command_voltage_v=commandVoltageV(targetIndex);
 blue_mask_adjustment_pixels=NaN(nEvents,1);
-events=table(event_index,pulse_id,condition_id,target_cell_id,onset_s, ...
+events=table(event_index,pulse_id,condition_id,stimulation_source,target_cell_id,onset_s, ...
     pulse_duration_s,duration_s,offset_s,is_null,command_voltage_v, ...
     blue_mask_adjustment_pixels);
 

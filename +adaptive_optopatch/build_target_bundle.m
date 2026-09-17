@@ -47,7 +47,7 @@ for i = 1:nCells
         orangeMask=imdilate(orangeMask,strel("disk",options.OrangeExpansionPixels,0));
     end
     % The bundle-level Blue mask is a convenience default for static
-    % display only; it does not gate schema-3 event executability (that is
+    % display only; it does not gate schema-4 event executability (that is
     % evaluated per resolved event against the canonical ROI). An erosion
     % that empties the ROI at this default adjustment is therefore not a
     % bundle construction failure.

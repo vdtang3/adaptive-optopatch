@@ -16,6 +16,14 @@ arguments
     options.ShutterSettleTimeS (1,1) double {mustBeNonnegative} = 0.05
     options.TimeoutMarginS (1,1) double {mustBePositive} = 30
     options.StopRequestedFcn = []
+    options.AllowMixedSources (1,1) logical = false
+    options.ScannerCalibration struct = struct([])
+    options.MaximumVelocityVPerS (1,1) double {mustBePositive} = 1000
+    options.MaximumAccelerationVPerS2 (1,1) double {mustBePositive} = 6e6
+    options.AllowCameraRateOverride (1,1) logical = false
+    options.TwoPhotonReleaseLevel (1,1) string {mustBeMember( ...
+        options.TwoPhotonReleaseLevel,["blocked_test","attenuated_test","standard"])} = "standard"
+    options.TwoPhotonVoltageOverride (1,1) double = NaN
     % Pass 3A rolls accounting out in report-only: a terminal AO cannot
     % classify is reported loudly but does not stop the rig, because the
     % VU's ambient configuration has not been surveyed yet. Violations the
@@ -32,7 +40,9 @@ end
 if ~isfield(manifest,"trials") || isempty(manifest.trials)
     error("adaptive_optopatch:EmptyManifest","The manifest has no trials.");
 end
-if any(string(manifest.trials.stimulation_mode)~="1p_dmd")
+allowed="1p_dmd";
+if options.AllowMixedSources, allowed=["1p_dmd","2p_spiral","mixed","none"]; end
+if any(~ismember(string(manifest.trials.stimulation_mode),allowed))
     error("adaptive_optopatch:WrongRunnerMode", ...
         "run_1p_manifest accepts only 1p_dmd trials.");
 end
@@ -44,6 +54,23 @@ if isfinite(options.LaserPowerW) && ...
 end
 
 hardware=adaptive_optopatch.resolve_luminos_1p_hardware(app,profile);
+hasAny2p=any(cellfun(@(p)any(p.events.stimulation_source=="2p_spiral"), ...
+    manifest.trials.pulse_schedule));
+targetingTform=[];
+if hasAny2p
+    usingFrozenCalibration=~isempty(options.ScannerCalibration) && ...
+        isfield(options.ScannerCalibration,"tform");
+    twoPhotonHardware=adaptive_optopatch.resolve_luminos_2p_hardware(app, ...
+        "ApplyCalibration",~usingFrozenCalibration);
+    if usingFrozenCalibration, targetingTform=options.ScannerCalibration.tform;
+    else, targetingTform=twoPhotonHardware.calibration.calibration.tform; end
+    motion=adaptive_optopatch.validate_provisional_2p_motion_limits( ...
+        options.MaximumVelocityVPerS,options.MaximumAccelerationVPerS2);
+    if ~motion.passed
+        error("adaptive_optopatch:UnvalidatedGalvoMotionLimits","%s", ...
+            strjoin(motion.issues,newline));
+    end
+end
 cameraGeometry=adaptive_optopatch.validate_camera_geometry( ...
     hardware.voltage_camera,targets);
 adaptive_optopatch.validate_dmd_reference_geometry( ...
@@ -62,6 +89,7 @@ trials=ensure_column(trials,"orange_configuration",cell(n,1));
 trials=ensure_column(trials,"settings_snapshot",cell(n,1));
 trials=ensure_column(trials,"waveform_summary",cell(n,1));
 trials=ensure_column(trials,"stimulation_accounting",cell(n,1));
+trials=ensure_column(trials,"executed_pulse_schedule",cell(n,1));
 trials=ensure_column(trials,"error_message",repmat("",n,1));
 checkpoint="";
 if strlength(options.OutputDirectory)>0
@@ -119,6 +147,23 @@ for k=1:n
     try
         row=run.trials(k,:);
         protocol=adaptive_optopatch.normalize_protocol(row.pulse_schedule{1});
+        twoPhotonCommandOverride=NaN;
+        if any(protocol.events.stimulation_source=="2p_spiral")
+            if options.TwoPhotonReleaseLevel=="blocked_test"
+                twoPhotonCommandOverride=0;
+                protocol.staging_command_voltage_v=0;
+            elseif options.TwoPhotonReleaseLevel=="attenuated_test"
+                twoPhotonCommandOverride=options.TwoPhotonVoltageOverride;
+                if ~isfinite(twoPhotonCommandOverride) || twoPhotonCommandOverride<=0
+                    error("adaptive_optopatch:MissingTestCommandVoltage", ...
+                        "attenuated_test requires a positive explicit 2P voltage override.");
+                end
+                selected=protocol.events.stimulation_source=="2p_spiral";
+                protocol.events.command_voltage_v(selected)=twoPhotonCommandOverride;
+                protocol.events.command_voltage_source(selected)="release_attenuated_test";
+            end
+        end
+        run.trials.executed_pulse_schedule{k}=protocol;
         trialTargets=adaptive_optopatch.apply_acquisition_parameters(targets,protocol);
         preflight=adaptive_optopatch.preflight_trial(trialTargets,row, ...
             "RequireConfirmedLiveProtocol",false,"LiveProtocolConfirmed",true, ...
@@ -132,15 +177,18 @@ for k=1:n
         run.trials.settings_snapshot{k}= ...
             adaptive_optopatch.snapshot_luminos_settings(app);
 
-        pulseTargets=unique(protocol.events.target_cell_id(~protocol.events.is_null),"stable");
+        onePhotonRows=protocol.events.stimulation_source=="1p_dmd";
+        twoPhotonRows=protocol.events.stimulation_source=="2p_spiral";
+        pulseTargets=unique(protocol.events.target_cell_id(onePhotonRows),"stable");
         dmdSequencePlan=struct([]);
-        maskVaries=any(protocol.events.blue_mask_adjustment_pixels~= ...
+        config=struct("mode","no_1p_events");
+        maskVaries=any(protocol.events.blue_mask_adjustment_pixels(onePhotonRows)~= ...
             trialTargets.parameters.blue_mask_adjustment_pixels);
-        if numel(pulseTargets)>1 || maskVaries
+        if any(onePhotonRows) && (any(twoPhotonRows) || numel(pulseTargets)>1 || maskVaries)
             dmdSequencePlan=adaptive_optopatch.build_dmd_sequence_plan(protocol,trialTargets);
             config=adaptive_optopatch.prepare_luminos_dmd_sequence( ...
                 hardware.dmd,dmdSequencePlan,"DryRun",false);
-        else
+        elseif any(onePhotonRows)
             config=adaptive_optopatch.prepare_luminos_target(app,trialTargets,row, ...
                 "DryRun",false,"DmdName",profile.dmd.name, ...
                 "WriteDmdImmediately",true);
@@ -153,15 +201,29 @@ for k=1:n
 
         % mod488 commands come from the frozen resolved schedule; a 1P run
         % has no execution-time voltage override.
+        twoPhotonWaveforms=struct([]);
+        if any(twoPhotonRows)
+            targetIndices=unique(protocol.events.target_index(twoPhotonRows));
+            target=trialTargets.targets(targetIndices(1));
+            twoPhotonWaveforms=adaptive_optopatch.build_2p_trial_waveforms( ...
+                protocol,target,targetingTform, ...
+                "SampleRateHz",double(original.global_props.rate), ...
+                "MaximumVelocityVPerS",options.MaximumVelocityVPerS, ...
+                "MaximumAccelerationVPerS2",options.MaximumAccelerationVPerS2);
+            if isfinite(twoPhotonCommandOverride)
+                twoPhotonWaveforms.pockels_v(:)=twoPhotonCommandOverride;
+            end
+        end
         [globalProps,wfmData,waveformSummary]= ...
-            adaptive_optopatch.build_luminos_1p_waveform_config( ...
-            original.global_props,original.wfm_data,row.pulse_schedule{1},profile, ...
-            "DmdSequencePlan",dmdSequencePlan);
+            adaptive_optopatch.build_luminos_mixed_waveform_config( ...
+            original.global_props,original.wfm_data,protocol, ...
+            "DmdSequencePlan",dmdSequencePlan, ...
+            "TwoPhotonWaveforms",twoPhotonWaveforms);
         % Measure the candidate configuration BEFORE it is installed, so a
         % configuration that would drive an AO-owned stimulation line
         % nobody commanded never reaches the DAQ at all.
         accounting=adaptive_optopatch.account_stimulation_outputs( ...
-            globalProps,wfmData,"Modality","1p_dmd", ...
+            globalProps,wfmData,"Modality",trial_modality(onePhotonRows,twoPhotonRows), ...
             "Policy",options.StimulationAccountingPolicy, ...
             "Context",sprintf("1p trial %d (%s)",k,string(row.output_tag)));
         run.trials.stimulation_accounting{k}=accounting;
@@ -183,8 +245,10 @@ for k=1:n
         hardware.daq.waveforms_built=false;
         [hardware.cameras,cameraFramePlan]= ...
             adaptive_optopatch.set_camera_frames_for_duration( ...
-            hardware.cameras,globalProps.total_time);
+            hardware.cameras,globalProps.total_time, ...
+            "AllowRateLimitOverride",options.AllowCameraRateOverride);
         waveformSummary.camera_frame_plan=cameraFramePlan;
+        waveformSummary.two_photon_release_level=options.TwoPhotonReleaseLevel;
         run.trials.waveform_summary{k}=waveformSummary;
 
         % Only now is the beam path opened, and only after everything above
@@ -192,8 +256,10 @@ for k=1:n
         % decides when light is emitted, and this shutter write must not
         % become a second source of timing.
         hardware.modulator.level=profile.modulator.dark_v;
-        hardware.shutter.State=profile.shutter.open_state;
-        pause(options.ShutterSettleTimeS);
+        if any(onePhotonRows)
+            hardware.shutter.State=profile.shutter.open_state;
+            pause(options.ShutterSettleTimeS);
+        end
         app.acquisition_active=true;
         run.trials.acquisition_status(k)="acquiring";
         save_checkpoint();
@@ -383,6 +449,16 @@ end
 
 function trials=ensure_column(trials,name,value)
 if ~ismember(name,string(trials.Properties.VariableNames)), trials.(name)=value; end
+end
+
+function value=trial_modality(onePhotonRows,twoPhotonRows)
+if any(onePhotonRows) && any(twoPhotonRows)
+    value="mixed";
+elseif any(twoPhotonRows)
+    value="2p_spiral";
+else
+    value="1p_dmd";
+end
 end
 
 function restore_1p_hardware(app,hardware,original,profile,blankDmd,restorePower,stopLaser)

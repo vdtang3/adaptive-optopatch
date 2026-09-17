@@ -675,7 +675,8 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             fov=adaptive_optopatch.create_fov_state(ref,{}, ...
                 "SpiralDensityPointsPerVolt",12);
             definition=adaptive_optopatch.generate_screen_protocol( ...
-                "PulseCount",200,"ModulatorVoltage",1,"RandomSeed",4);
+                "PulseCount",200,"ModulatorVoltage",1,"RandomSeed",4, ...
+                "StimulationSource","2p_spiral");
             base=definition.acquisitions;
             definition.acquisitions=repmat(base,1,3);
             for k=1:3
@@ -1172,7 +1173,8 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             rois={[40 30;60 30;60 50;40 50], ...
                 [40 55;60 55;60 75;40 75]};
             app.setReferenceData(ones(80,100),unified_test_info(root),rois);
-            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1,"ModulatorVoltage",1.5);
+            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1,"ModulatorVoltage",1.5, ...
+                "StimulationSource","2p_spiral");
             app.setPulseProtocol(protocol);
             testCase.verifyEqual(unique( ...
                 string(app.buildCurrentPlan().manifest.trials.stimulation_mode)),"2p_spiral");
@@ -1203,7 +1205,8 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
             app.setReferenceData(ones(80,100),unified_test_info(root), ...
                 {[40 30;60 30;60 50;40 50]});
-            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1,"ModulatorVoltage",1.5);
+            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1,"ModulatorVoltage",1.5, ...
+                "StimulationSource","2p_spiral");
             app.setPulseProtocol(protocol);
             twoPhoton=app.buildCurrentPlan();
             testCase.verifyEqual(unique( ...
@@ -1211,7 +1214,8 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             app.setPlanParameter("mode","1p_dmd");
             onePhoton=app.buildCurrentPlan();
             testCase.verifyEqual(unique( ...
-                string(onePhoton.manifest.trials.stimulation_mode)),"1p_dmd");
+                string(onePhoton.manifest.trials.stimulation_mode)),"2p_spiral", ...
+                "The deprecated global mode must not rewrite event sources.");
             testCase.verifyEqual(app.PlanState,"EDITABLE");
             report=app.validateCurrentPlan();
             testCase.verifyTrue(report.passed);
@@ -1228,7 +1232,7 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             required=["pulse_id","condition_id","onset_s","duration_s", ...
                 "is_null","command_voltage_v","blue_mask_adjustment_pixels"];
             screen=adaptive_optopatch.generate_screen_protocol("PulseCount",3);
-            testCase.verifyEqual(screen.schema_version,"3.0.0");
+            testCase.verifyEqual(screen.schema_version,"4.0.0");
             testCase.verifyEqual(screen.artifact_type,"experiment_definition");
             testCase.verifyTrue(all(ismember(required, ...
                 string(screen.acquisitions.events.Properties.VariableNames))));
@@ -1290,8 +1294,9 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
                 "spiral_density_points_per_volt",20, ...
                 "parking_point_xy",[130 90]);
             tform=affinetform2d([100 0 50;0 100 40;0 0 1]);
+            twoPhotonProtocol=resolve_for_test(definition,"2p_spiral");
             waveforms=adaptive_optopatch.build_2p_trial_waveforms( ...
-                protocol,target,tform, ...
+                twoPhotonProtocol,target,tform, ...
                 "MaximumVelocityVPerS",500, ...
                 "MaximumAccelerationVPerS2",1e6, ...
                 "MinimumIlluminatedRadiusFraction",0.5);
@@ -1366,7 +1371,8 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             image=ones(80,100); image(10:15,10:15)=0;
             app.setReferenceData(image,unified_test_info(root), ...
                 {[40 30;60 30;60 50;40 50]});
-            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1,"ModulatorVoltage",1.5);
+            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1,"ModulatorVoltage",1.5, ...
+                "StimulationSource","2p_spiral");
             app.setPulseProtocol(protocol);
             plan=app.previewCurrentPlan();
             testCase.verifyEqual(unique( ...
@@ -1386,6 +1392,31 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyEqual( ...
                 acquisition.adaptive_optopatch_record.reference_model_path, ...
                 expectedReference);
+        end
+
+        function unifiedMixedAcquisitionExecutesExactlyOnce(testCase)
+            root=tempname; mkdir(root);
+            cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
+            [app,sim]=open_simulated_test_gui("CameraRoi",unified_camera_roi(), ...
+                "Visible","off","RunRoot",root);
+            appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
+            image=ones(80,100); image(10:15,10:15)=0;
+            app.setReferenceData(image,unified_test_info(root), ...
+                {[40 30;60 30;60 50;40 50]});
+            protocol=adaptive_optopatch.generate_screen_protocol( ...
+                "PulseCount",2,"PulseDurationMs",10, ...
+                "DarkIntervalMs",[400 400],"PreDelayMs",200, ...
+                "PostDelayMs",200,"ModulatorVoltage",0.2);
+            protocol.acquisitions.events.stimulation_source=["1p_dmd";"2p_spiral"];
+            protocol=adaptive_optopatch.normalize_protocol(protocol);
+            app.setPulseProtocol(protocol);
+            plan=app.buildCurrentPlan();
+            testCase.verifyTrue(plan.manifest.trials.has_mixed_sources(1));
+            run=app.runAll();
+            testCase.verifyEqual(run.trials.acquisition_status,"completed");
+            testCase.verifyEqual(numel(sim.AcquisitionHistory),1, ...
+                "One mixed manifest row must issue one DAQ acquisition.");
+            testCase.verifyTrue(run.trials.waveform_summary{1}.has_mixed_sources);
         end
 
         function unifiedResumeUsesFrozenManifest(testCase)
@@ -1501,7 +1532,8 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             image=ones(80,100); image(10:15,10:15)=0;
             app.setReferenceData(image,unified_test_info(root), ...
                 {[40 30;60 30;60 50;40 50]});
-            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1,"ModulatorVoltage",1.5);
+            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1,"ModulatorVoltage",1.5, ...
+                "StimulationSource","2p_spiral");
             app.setPulseProtocol(protocol);
             app.freezeCurrentPlan();
             plan=app.ActiveRunPlan;
@@ -1544,7 +1576,8 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             rois={[25 25;40 25;40 40;25 40], ...
                 [60 40;75 40;75 55;60 55]};
             app.setReferenceData(image,unified_test_info(root),rois);
-            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1,"ModulatorVoltage",1.5);
+            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1,"ModulatorVoltage",1.5, ...
+                "StimulationSource","2p_spiral");
             app.setPulseProtocol(protocol);
             first=app.runNext();
             testCase.verifyEqual(sum(first.trials.acquisition_status=="completed"),1);
@@ -1584,7 +1617,8 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             image=ones(80,100); image(10:15,10:15)=0;
             app.setReferenceData(image,unified_test_info(root), ...
                 {[40 30;60 30;60 50;40 50]});
-            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1,"ModulatorVoltage",1.5);
+            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1,"ModulatorVoltage",1.5, ...
+                "StimulationSource","2p_spiral");
             app.setPulseProtocol(protocol);
 
             profile=adaptive_optopatch.virtual_upright_2p_profile();
@@ -2126,6 +2160,12 @@ trials=table(trialId,stimulationMode,targetCellId,isNull,targetIndex, ...
 end
 
 function protocol=resolve_for_test(definition,mode)
+for acquisitionIndex=1:numel(definition.acquisitions)
+    events=definition.acquisitions(acquisitionIndex).events;
+    events.stimulation_source(~events.is_null)=mode;
+    events.stimulation_source(events.is_null)="none";
+    definition.acquisitions(acquisitionIndex).events=events;
+end
 [fovState,~]=test_fov_state();
 for k=2:numel(fovState.cells)
     fovState.cells(k).stimulation_enabled=false;

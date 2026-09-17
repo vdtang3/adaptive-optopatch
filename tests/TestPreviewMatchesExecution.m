@@ -64,7 +64,8 @@ classdef TestPreviewMatchesExecution < matlab.unittest.TestCase
         function spiralPreviewUsesResolvedRadiusDensityAndDuration(testCase)
             [fovState,targets]=single_cell_fixture(0);
             definition=adaptive_optopatch.generate_screen_protocol( ...
-                "PulseCount",1,"PulseDurationMs",8,"ModulatorVoltage",1);
+                "PulseCount",1,"PulseDurationMs",8,"ModulatorVoltage",1, ...
+                "StimulationSource","2p_spiral");
             definition.parameters.spiral_radius_um=5;
             definition.parameters.spiral_density_points_per_volt=17;
             resolved=adaptive_optopatch.resolve_protocol(definition,fovState, ...

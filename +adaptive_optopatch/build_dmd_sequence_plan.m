@@ -5,6 +5,11 @@ arguments
     targets (1,1) struct
 end
 protocol=adaptive_optopatch.normalize_protocol(protocol); events=protocol.events;
+events=events(events.stimulation_source=="1p_dmd",:);
+if isempty(events)
+    error("adaptive_optopatch:NoOnePhotonEvents", ...
+        "The acquisition contains no 1p_dmd events to map onto DMD patterns.");
+end
 required=["target_cell_id","target_index","dmd_pattern_index", ...
     "blue_mask_adjustment_pixels"];
 if ~all(ismember(required,string(events.Properties.VariableNames)))

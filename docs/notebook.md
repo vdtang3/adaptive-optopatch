@@ -1450,3 +1450,25 @@ coexists with it rather than replacing it. Pass 2's configure → Update plan
 → Run lifecycle is untouched: accounting reaches the experimenter through
 `preflightPlan`, which the existing validation already runs, rather than
 through a status of its own.
+## 2026-09-16 — Mixed 1P and 2P events share one acquisition timeline
+
+Protocol schema 4 makes `stimulation_source` mandatory on every event. Source
+identity is experimental intent and is never inferred from the old FOV-level
+mode, masks, voltage, or live hardware. Resolution preserves one flat event
+table, applies 1P and 2P voltage precedence per row, assigns DMD pattern slots
+only to 1P rows, and rejects cross-source overlap and more than one distinct 2P
+target per acquisition.
+
+`build_luminos_mixed_waveform_config` partitions that one flattened schedule
+and owns all six stimulation outputs for the complete acquisition. Ambient
+records on those physical terminals are removed before mod488/DMD and
+Pockels/galvo commands or declared neutral values are installed. The 488
+shutter remains imperatively owned whenever an acquisition contains 1P. Global
+VU accounting remains `report_only`; proven AO-owned-terminal violations still
+block. The controller now enters execution through `run_mixed_manifest`, while
+the old builders remain available for parity and commissioning tests.
+
+The saved-FOV schema remains version 2; `stimulation_mode` is retained only as
+deprecated compatibility baggage. It no longer resolves events, chooses a
+runner, or participates in plan staleness, and the React selector was removed.
+Simultaneous 1P+2P and multiple 2P targets remain deliberately unsupported.

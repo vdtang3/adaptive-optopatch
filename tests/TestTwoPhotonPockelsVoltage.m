@@ -6,7 +6,7 @@ classdef TestTwoPhotonPockelsVoltage < matlab.unittest.TestCase
         function explicitEventVoltageBeatsBlueCalibrationAndGui(testCase)
             [fovState,targets]=calibrated_fixture(0.8);
             definition=adaptive_optopatch.generate_screen_protocol( ...
-                "PulseCount",2,"ModulatorVoltage",2.7);
+                "PulseCount",2,"ModulatorVoltage",2.7,"StimulationSource","2p_spiral");
             resolved=adaptive_optopatch.resolve_protocol(definition,fovState, ...
                 targets,gui_defaults(3.3),"Mode","2p_spiral");
             events=resolved{1}.events;
@@ -19,7 +19,8 @@ classdef TestTwoPhotonPockelsVoltage < matlab.unittest.TestCase
         function explicitAcquisitionAndProtocolScopesAreAccepted(testCase)
             [fovState,targets]=calibrated_fixture(0.8);
 
-            acquisitionScope=adaptive_optopatch.generate_screen_protocol("PulseCount",1);
+            acquisitionScope=adaptive_optopatch.generate_screen_protocol("PulseCount",1, ...
+                "StimulationSource","2p_spiral");
             acquisitionScope.acquisitions.parameters.command_voltage_v=2.7;
             resolved=adaptive_optopatch.resolve_protocol(acquisitionScope, ...
                 fovState,targets,gui_defaults(3.3),"Mode","2p_spiral");
@@ -27,7 +28,8 @@ classdef TestTwoPhotonPockelsVoltage < matlab.unittest.TestCase
             testCase.verifyEqual(resolved{1}.events.command_voltage_source, ...
                 "acquisition");
 
-            protocolScope=adaptive_optopatch.generate_screen_protocol("PulseCount",1);
+            protocolScope=adaptive_optopatch.generate_screen_protocol("PulseCount",1, ...
+                "StimulationSource","2p_spiral");
             protocolScope.parameters.command_voltage_v=2.7;
             resolved=adaptive_optopatch.resolve_protocol(protocolScope, ...
                 fovState,targets,gui_defaults(3.3),"Mode","2p_spiral");
@@ -39,7 +41,7 @@ classdef TestTwoPhotonPockelsVoltage < matlab.unittest.TestCase
         function changingTheGuiVoltageCannotSupplyATwoPhotonCommand(testCase)
             [fovState,targets]=calibrated_fixture(0.8);
             definition=adaptive_optopatch.generate_screen_protocol( ...
-                "PulseCount",1,"ModulatorVoltage",2.7);
+                "PulseCount",1,"ModulatorVoltage",2.7,"StimulationSource","2p_spiral");
             for guiVoltage=[0.5 3.3 5]
                 resolved=adaptive_optopatch.resolve_protocol(definition, ...
                     fovState,targets,gui_defaults(guiVoltage),"Mode","2p_spiral");
@@ -49,7 +51,8 @@ classdef TestTwoPhotonPockelsVoltage < matlab.unittest.TestCase
 
         function missingTwoPhotonVoltageFailsExplicitly(testCase)
             [fovState,targets]=calibrated_fixture(0.8);
-            definition=adaptive_optopatch.generate_screen_protocol("PulseCount",1);
+            definition=adaptive_optopatch.generate_screen_protocol("PulseCount",1, ...
+                "StimulationSource","2p_spiral");
             testCase.verifyError(@()adaptive_optopatch.resolve_protocol( ...
                 definition,fovState,targets,gui_defaults(3.3),"Mode","2p_spiral"), ...
                 "adaptive_optopatch:MissingTwoPhotonPockelsVoltage");
@@ -63,24 +66,17 @@ classdef TestTwoPhotonPockelsVoltage < matlab.unittest.TestCase
                     "selected_blue_voltage_v"));
             end
 
-            % The same definition is reported as mode-incompatible before a
-            % plan is built, so the operator sees it at protocol load.
-            report=adaptive_optopatch.validate_protocol_for_mode( ...
-                definition,"2p_spiral");
-            testCase.verifyFalse(report.passed);
-            testCase.verifyTrue(any(contains(report.issues,"Pockels")));
-
-            % Building a manifest, the path the GUI freezes through, fails
-            % for the same reason rather than resolving to something.
+            % Building a manifest fails from the event's source authority.
             testCase.verifyError(@()adaptive_optopatch.build_manifest( ...
                 fovState.reference,targets,definition,"Mode","2p_spiral", ...
                 "FovState",fovState,"GuiDefaults",gui_defaults(3.3)), ...
-                "adaptive_optopatch:ProtocolModeIncompatible");
+                "adaptive_optopatch:MissingTwoPhotonPockelsVoltage");
         end
 
         function aProtocolCannotWidenTheTwoPhotonSourcesBackOpen(testCase)
             [fovState,targets]=calibrated_fixture(0.8);
-            definition=adaptive_optopatch.generate_screen_protocol("PulseCount",1);
+            definition=adaptive_optopatch.generate_screen_protocol("PulseCount",1, ...
+                "StimulationSource","2p_spiral");
             definition.parameter_sources=struct("command_voltage_v", ...
                 ["event","acquisition","protocol","fov_cell","gui"]);
             testCase.verifyError(@()adaptive_optopatch.resolve_protocol( ...
@@ -90,8 +86,10 @@ classdef TestTwoPhotonPockelsVoltage < matlab.unittest.TestCase
 
         function nullOnlyTwoPhotonAcquisitionsNeedNoCommand(testCase)
             [fovState,targets]=calibrated_fixture(0.8);
-            definition=adaptive_optopatch.generate_screen_protocol("PulseCount",2);
+            definition=adaptive_optopatch.generate_screen_protocol("PulseCount",2, ...
+                "StimulationSource","2p_spiral");
             definition.acquisitions.events.is_null(:)=true;
+            definition.acquisitions.events.stimulation_source(:)="none";
             definition=adaptive_optopatch.normalize_protocol(definition);
             resolved=adaptive_optopatch.resolve_protocol(definition,fovState, ...
                 targets,gui_defaults(3.3),"Mode","2p_spiral");
@@ -111,7 +109,8 @@ classdef TestTwoPhotonPockelsVoltage < matlab.unittest.TestCase
             app.setCellCalibration("cell_001",0.8);
 
             app.setPulseProtocol(adaptive_optopatch.generate_screen_protocol( ...
-                "PulseCount",1,"ModulatorVoltage",2.7));
+                "PulseCount",1,"ModulatorVoltage",2.7, ...
+                "StimulationSource","2p_spiral"));
             plan=app.buildCurrentPlan();
             testCase.verifyEqual(unique( ...
                 string(plan.manifest.trials.stimulation_mode)),"2p_spiral");
@@ -121,9 +120,10 @@ classdef TestTwoPhotonPockelsVoltage < matlab.unittest.TestCase
 
             % A 2P protocol with no explicit command cannot be planned.
             app.setPulseProtocol( ...
-                adaptive_optopatch.generate_screen_protocol("PulseCount",1));
+                adaptive_optopatch.generate_screen_protocol("PulseCount",1, ...
+                "StimulationSource","2p_spiral"));
             testCase.verifyError(@()app.buildCurrentPlan(), ...
-                "adaptive_optopatch:ProtocolModeIncompatible");
+                "adaptive_optopatch:MissingTwoPhotonPockelsVoltage");
         end
 
         function onePhotonStillResolvesThePerCellBlueVoltage(testCase)

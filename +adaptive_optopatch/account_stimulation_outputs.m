@@ -45,7 +45,7 @@ arguments
     options.Policy (1,1) string {mustBeMember(options.Policy, ...
         ["report_only","fail_closed"])} = "report_only"
     options.Modality (1,1) string {mustBeMember(options.Modality, ...
-        ["1p_dmd","2p_spiral","unknown"])} = "unknown"
+        ["1p_dmd","2p_spiral","mixed","unknown"])} = "unknown"
     options.Context (1,1) string = ""
     options.NeutralToleranceV (1,1) double {mustBeNonnegative} = 1e-9
 end
@@ -269,6 +269,7 @@ function value=modality_owner(entry,modality)
 switch modality
     case "1p_dmd",    value=string(entry.owner.one_photon);
     case "2p_spiral", value=string(entry.owner.two_photon);
+    case "mixed",     value=string(entry.owner.one_photon);
     otherwise,        value="unknown";
 end
 end

@@ -1,0 +1,36 @@
+% Create a conservative one-acquisition mixed-source commissioning protocol.
+
+protocol_directory=fileparts(mfilename("fullpath"));
+project_directory=fileparts(protocol_directory);
+addpath(project_directory);
+if ~exist("protocol_output_directory","var") || ...
+        strlength(string(protocol_output_directory))==0
+    protocol_output_directory=fullfile(protocol_directory,"generated");
+end
+
+pulse_id=(1:2)';
+condition_id=["low_1p";"low_2p"];
+stimulation_source=["1p_dmd";"2p_spiral"];
+onset_s=[0.2;0.6];
+duration_s=[0.010;0.010];
+is_null=false(2,1);
+command_voltage_v=[0.10;0.05];
+blue_mask_adjustment_pixels=[NaN;NaN];
+events=table(pulse_id,condition_id,stimulation_source,onset_s,duration_s, ...
+    is_null,command_voltage_v,blue_mask_adjustment_pixels);
+
+acquisition=struct("acquisition_id","mixed_commissioning", ...
+    "events",events,"parameters",struct,"event_order_realized",true, ...
+    "target_repetitions",1,"acquisition_duration_s",1.0);
+protocol=struct("schema_version","4.0.0", ...
+    "artifact_type","experiment_definition", ...
+    "protocol_id","mixed_1p_2p_commissioning", ...
+    "protocol_type","mixed_commissioning", ...
+    "created_at",string(datetime("now","TimeZone","local")), ...
+    "target_policy","each_stimulation_enabled_cell", ...
+    "event_order","ordered","random_seed",1, ...
+    "parameters",struct,"acquisitions",acquisition);
+protocol=adaptive_optopatch.normalize_protocol(protocol);
+output_path=fullfile(protocol_output_directory,protocol.protocol_id+".mat");
+adaptive_optopatch.save_protocol(output_path,protocol);
+fprintf("Saved mixed commissioning protocol: %s\n",output_path);

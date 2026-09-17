@@ -7,7 +7,7 @@ function choices=list_protocol_choices(options)
 %   name any path.
 %
 %   Every candidate is opened and validated here rather than at load time,
-%   so a file that is not a schema-3 protocol is reported as unloadable in
+%   so a file that is not a schema-4 protocol is reported as unloadable in
 %   the list instead of failing after the operator has chosen it. The list
 %   is small - a handful of generated MAT files - and is read on demand, not
 %   on a poll.

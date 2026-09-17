@@ -8,6 +8,12 @@ classdef SimulatedLuminosApp < handle
         AcquisitionHistory struct = struct([])
     end
     properties
+        % Every getDevice request, as "type|name". A suppressed output is
+        % supposed to cost no device lookup at all, and the only way to
+        % show the difference between "not touched" and "resolved, then
+        % skipped" is to record what was asked for. Tests clear it before
+        % the call they are measuring.
+        DeviceLookupLog string = strings(0,1)
         acquisition_active logical = false
         exp_complete logical = false
         round_complete logical = false
@@ -80,6 +86,7 @@ classdef SimulatedLuminosApp < handle
             if strlength(requestedName)>0
                 match=match & arrayfun(@(d)d.name==requestedName,app.Devices);
             end
+            app.DeviceLookupLog(end+1,1)=requestedType+"|"+requestedName;
             devices=app.Devices(match);
         end
 

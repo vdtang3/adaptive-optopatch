@@ -2,10 +2,11 @@
 
 Pulse-protocol files own experimental design and emit explicit event timing.
 Most reusable protocols do not name cells: the current FOV's **Stim**
-checkboxes select their targets when a plan is frozen. The constrained
-round-robin protocol is deliberately FOV-specific and contains its literal
-target order and onset times. Adaptive Optopatch maps that schedule to hardware
-without changing its timing, balance, recovery rule, or randomization.
+checkboxes select their targets when a plan is frozen. The two constrained
+round-robin screens are deliberately FOV-specific and contain their literal
+target order and onset times. Adaptive Optopatch maps those schedules to
+hardware without changing their timing, balance, recovery rule, or
+randomization.
 
 Generated artifacts use protocol schema `4.0.0`. Every event explicitly owns
 `stimulation_source` (`1p_dmd`, `2p_spiral`, or `none`). Older protocol files are
@@ -15,16 +16,68 @@ intentionally rejected and must be regenerated from their source scripts.
 
 | Script | Intent | Target policy | Event order |
 |---|---|---|---|
-| `create_connectivity_screen_protocol.m` | Screen pulses with reproducible interval jitter | `each_stimulation_enabled_cell` | ordered |
-| `create_regular_pulse_protocol.m` | Fixed-rate pulse train | `each_stimulation_enabled_cell` | ordered |
-| `create_single_cell_ramp_protocol.m` | Ascending explicit Blue-voltage blocks | `each_stimulation_enabled_cell` | ordered |
+| `create_single_cell_ramp_protocol.m` | Core: ascending explicit Blue-voltage blocks, 10 ms | `each_stimulation_enabled_cell` | ordered |
+| `create_connectivity_round_robin_protocol.m` | Core: connectivity screen, 10 ms single pulses | `multi_target_continuous` | randomized |
+| `create_stp_screen_protocol.m` | Core: short-term plasticity screen, 5 pulses at 20 Hz | `multi_target_continuous` | randomized |
 | `create_blue_dmd_mask_titration_protocol.m` | Multiple Blue-mask adjustments within each cell's acquisition | `each_stimulation_enabled_cell` | randomized |
-| `create_stf_frequency_mix_protocol.m` | Mixed single, 50 Hz, and 100 Hz trains | `each_stimulation_enabled_cell` | randomized |
-| `create_paired_pulse_protocol.m` | Mixed paired-pulse intervals | `each_stimulation_enabled_cell` | randomized |
-| `create_round_robin_protocol.m` | One continuous, interleaved multi-cell acquisition | `multi_target_continuous` | randomized |
 | `create_dmd_flut_wrap_test.m` | Three-slot/eight-trigger FLUT wrap hardware diagnostic | `multi_target_continuous` | ordered |
 | `create_custom_event_protocol.m` | Minimal hand-written schema-4 example | `each_stimulation_enabled_cell` | ordered |
 | `create_mixed_1p_2p_test_protocol.m` | Conservative interleaved 1P/2P commissioning acquisition | `each_stimulation_enabled_cell` | ordered |
+
+## The three core 1P experiments
+
+They share a 10 ms Blue pulse on purpose: the per-cell voltage the calibration
+ramp stores is then the calibration for the pulse the screens actually use.
+
+Connectivity (`create_connectivity_round_robin_protocol.m`):
+
+```matlab
+target_cell_ids = compose("cell_%03d", (1:10)');
+pulses_per_cell = 1000;                     % 1500 for the higher-SNR version
+pulse_duration_s = 0.010;
+preferred_global_spacing_s = 0.020;
+minimum_same_cell_post_pulse_gap_s = 0.100; % after the pulse ENDS
+```
+
+A cell is revisited no sooner than 110 ms after its previous onset. Ten cells
+at the preferred 20 ms cadence keep the timeline continuously occupied:
+10 000 events, about 200 s.
+
+Short-term plasticity (`create_stp_screen_protocol.m`):
+
+```matlab
+target_cell_ids = compose("cell_%03d", (1:10)');
+trains_per_cell = 300;                        % n at each of P1..P5
+pulses_per_train = 5;
+frequency_hz = 20;
+pulse_duration_s = 0.010;
+preferred_inter_train_gap_s = 0.020;          % to a DIFFERENT cell's P1
+minimum_same_cell_post_train_gap_s = 1.000;   % after this cell's own P5 ENDS
+```
+
+A default train runs 0 / 50 / 100 / 150 / 200 ms and ends at 210 ms, so a cell
+starts another train no sooner than 1.210 s after its previous train started.
+Six or more cells keep the timeline continuously occupied; ten cells give
+3000 trains, 15 000 events, about 690 s.
+
+The name is STP rather than STF because the screen measures facilitation **or**
+depression.
+
+### Train granularity, and why
+
+Different targets are interleaved at TRAIN granularity only. One cell's whole
+P1..P5 train completes before another cell's train begins, and the schedule
+deliberately never contains
+
+```text
+ROI1-P1, ROI2-P1, ROI1-P2, ROI2-P2, ...
+```
+
+Pulse-level interleaving would repeat a millisecond-scale spike pairing between
+the same two stimulated neurons hundreds of times, which is an STDP induction
+protocol. The code models no plasticity; it only preserves the whole-train
+scheduling decision, and `TestStpScreenProtocol` asserts that every train is an
+uninterrupted block on the timeline.
 
 Scripts write to `pulse-protocols/generated/` by default and leave the
 definition in the workspace as `protocol`. Generated MAT files are experiment
@@ -36,13 +89,15 @@ definition and frozen acquisition schedules with the run.
 `each_stimulation_enabled_cell` applies every explicit acquisition definition
 separately to every executable Stim-enabled cell. One acquisition definition
 and eight selected cells therefore resolve to eight actual acquisitions. A
-two-entry definition resolves to sixteen. Voltage ramps, Blue-mask titrations,
-connectivity screens, and STF use this policy.
+two-entry definition resolves to sixteen. The Blue voltage ramp and Blue-mask
+titrations use this policy.
 
 `multi_target_continuous` produces one actual multi-target acquisition for each
-explicit acquisition definition. Targets vary event-by-event. The current
-round-robin generator writes those target IDs and all event times explicitly;
-every named target must be stimulation-enabled in the selected FOV.
+explicit acquisition definition. Targets vary event-by-event. The connectivity
+and STP generators write those target IDs and all event times explicitly; every
+named target must be stimulation-enabled in the selected FOV. This is the
+policy that makes the STP screen one continuous acquisition covering every
+cell, rather than the whole 300-train experiment repeated once per cell.
 
 These are the only policies. Reusable definitions normally omit
 `target_cell_id`; a FOV-specific explicit multi-target schedule may contain it
@@ -88,9 +143,13 @@ event override
 The resolved schedule stores literal values and provenance such as `event`,
 `acquisition`, `protocol`, `fov_cell`, or `gui`. No runner interprets placeholders
 such as “use GUI value.” A cell may validly have `Stim=true` and
-`selected_blue_voltage_v=NaN`; an explicit-voltage ramp still resolves. A
-round-robin definition supplies no voltage, so every selected cell must have a
-positive finite Blue voltage in the FOV.
+`selected_blue_voltage_v=NaN`; an explicit-voltage ramp still resolves. The
+connectivity and STP screens deliberately leave `command_voltage_v = NaN` on
+every event so resolution reaches `fov_cell`, so every selected cell must have
+a positive finite Blue voltage in the FOV. The schedulers accept an explicit
+per-target override, but the shipped scripts do not use it: NaN is never
+silently converted into a voltage, and `resolve_protocol` keeps owning
+precedence.
 
 ### `command_voltage_v` in a 2P protocol
 
@@ -115,7 +174,8 @@ Typical sources are:
 |---|---|---|---|---|
 | Ramp | protocol events | GUI | GUI | Stim checkboxes |
 | Blue-mask titration | per-cell FOV | protocol events | GUI | Stim checkboxes |
-| Round robin | per-cell FOV | GUI | GUI | Stim checkboxes |
+| Connectivity round robin | per-cell FOV | GUI | GUI | explicit `target_cell_ids` |
+| STP screen | per-cell FOV | GUI | GUI | explicit `target_cell_ids` |
 
 ## Parameter scopes
 
@@ -183,15 +243,21 @@ an already realized, FOV-specific `multi_target_continuous` schedule.
 Set `event_order_realized=true` when the generator has already materialized the
 requested order. AO never reshuffles an explicit target schedule.
 
-## Constrained round robin
+## Constrained round-robin schedulers
 
-`generate_constrained_round_robin_schedule` lives beside the user-facing
-round-robin script. It gives every target an exact quota, selects randomly among
-eligible targets with the largest remaining quota, and advances time only when
-all remaining targets are inside their same-cell recovery interval. The script
-records the realized order, onset and offset of every event plus descriptive
-spacing and idle-time metadata. AO performs hardware checks but does not
-recreate or repair this schedule.
+Two pure helpers in the `adaptive_optopatch` package realize the screens:
+
+- `generate_constrained_round_robin_schedule` schedules single pulses for the
+  connectivity screen.
+- `generate_constrained_stp_round_robin_schedule` schedules whole trains for
+  the STP screen.
+
+Both give every target an exact quota, select randomly among the eligible
+targets with the largest remaining quota using a protocol-local `RandStream`,
+use other targets while one is inside its recovery window, and advance time
+only when nothing is eligible. The scripts record the realized order, onset and
+offset of every event plus spacing, idle-time, and seed metadata. AO performs
+hardware checks but does not recreate or repair these schedules.
 
 ## FLUT wrap hardware diagnostic
 

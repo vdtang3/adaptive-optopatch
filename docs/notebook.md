@@ -1,5 +1,61 @@
 # Engineering notebook
 
+## 2026-09-17 — The illuminated footprint is drawn, not thresholded
+
+`measure_illumination_irradiance` now segments the footprint by asking the
+operator to draw it — a rectangle by default, or a polygon — and the
+half-contrast contour it used before is available behind
+`SegmentationMode="auto-threshold"`.
+
+The reason is what the number is for. Irradiance is power divided by the area
+the light was *meant* to cover, and a real snap of a DMD patch does not show
+that area cleanly: there is a halo, the fluorescent target is uneven, and the
+edge is several pixels wide. A contrast contour faithfully tracks all three, so
+the area it returns moves with the target and the exposure — which makes a
+power calibration that is not reproducible between sessions. A drawn rectangle
+is the operator stating the footprint they projected. It is less objective and
+completely reproducible, and for this measurement that is the better trade.
+
+A polygon is the default. A rectangle is quicker to draw and a DMD patch is
+usually approximately one, which is why rectangle mode came first and why it is
+still there — but it is the wrong shape whenever a bounding box would enclose
+dark area, and the error is not small: on a synthetic L-shaped footprint the box
+inflates the area by 33% and therefore understates the irradiance by 25%. Since
+that area is the denominator of the entire measurement, the default should be
+the mode that can always be right rather than the one that is usually right and
+quietly wrong otherwise. Rectangle mode remains for the common box-shaped patch
+and for speed.
+
+Both manual modes share one interaction (`private/draw_manual_footprint`); only
+the drawing call, the instruction line and the name the geometry is recorded
+under differ.
+
+The flip has one sharp edge: a caller that passed `RectanglePosition` and named
+no mode used to get rectangle mode and now gets the polygon default. That warns
+and then asks for a polygon, rather than inferring the mode from whichever
+geometry happens to be present. Guessing would make the mode depend on an
+argument documented as optional, and a segmentation that silently changes shape
+is exactly what this utility should not do.
+
+Auto-threshold was kept rather than replaced: it needs no operator, which is
+what makes it useful for a scripted sweep, and it is the right tool when the
+footprint genuinely is not a rectangle.
+
+Everything downstream is unchanged and mode-agnostic. `get_footprint_mask` is
+the single place that decides how a mask is obtained; the physical area is
+still `nnz(mask) * abs(det(snap.pixel_to_sample_um))` and the AOTF grouping
+never learns which mode ran. Adding polygon mode touched that one function and
+nothing after it, which is what the split was for.
+
+Two smaller decisions worth recording. Options belonging to another mode warn
+rather than erroring, under one identifier
+(`adaptive_optopatch:UnusedSegmentationOptions`), because carrying a setting
+over from a previous call is harmless and failing on it would make switching
+modes tedious — but a warning rather than a printed note, since whoever passed
+it probably believes it is being used. And a cancelled selection is an error,
+never an empty mask: an area of zero, or a fabricated one, would propagate
+silently into a published mW/mm^2.
+
 ## 2026-09-16 — A snapshot is chosen by its stem, not by its path
 
 Loading the first camera snapshot was the last step of the normal workflow
@@ -1472,3 +1528,231 @@ The saved-FOV schema remains version 2; `stimulation_mode` is retained only as
 deprecated compatibility baggage. It no longer resolves events, chooses a
 runner, or participates in plan staleness, and the React selector was removed.
 Simultaneous 1P+2P and multiple 2P targets remain deliberately unsupported.
+
+## 2026-09-17 — A 1P run suppresses the inactive 2P outputs instead of holding them
+
+A 1P-only acquisition was appending constant records for galvo X, galvo Y and
+the 2P modulator, on the reasoning that an output AO owns should carry its
+declared neutral rather than somebody else's waveform. For the Pockels cell,
+which shares Dev1 with everything else, that cost nothing. For the galvos it
+was wrong in a way no end-state assertion could see: they live on Dev2, and a
+buffered record on a second card is exactly what makes Luminos build a
+hardware-timed AO task there. That task then needs its sample clock and start
+trigger bridged from Dev1, and a 1P-only run — which has no other reason to
+touch Dev2 — failed to route it.
+
+The fix is not in the clock routing. `Dev2/PFI0`, the clock bridge, the DAQ
+master and the trigger assignments are untouched. The unwanted task disappears
+because the channels that caused it are no longer inserted: `remove` with no
+matching `append`. There is now a third answer to "who owns this line during
+this acquisition", beside `buffered` and `imperative`:
+
+    suppressed   this modality commands the output not at all, so it is absent
+                 from wfm_data entirely - the ambient record is removed and
+                 none is installed in its place
+
+That is a statement about the buffered waveform only. The declared stationary
+and dark values are still asserted, by `neutralize_all_stimulation`, through
+the devices' own explicit-update API, which writes no buffered task. Nothing
+about the rig's safety declaration changed; what changed is that a 1P run no
+longer restates it from the acquisition buffer. This is why the manifest still
+carries a `neutral_value` for a suppressed output rather than an empty one.
+
+`account_stimulation_outputs` reads the same declaration from the other side: a
+buffered record on a suppressed output is now a violation, whatever its
+samples measure. A constant sitting exactly on the declared neutral is still
+an output nothing asked for, and on the galvo card it is still the Dev2 task a
+1P run must not create. `owner` grew an explicit `mixed` field for the three 2P
+outputs, because mixed used to be answered with the 1P value and those are now
+the two cases that genuinely differ — a 1P-only run suppresses them, a mixed
+run drives them from the planned 2P waveforms exactly as a 2P-only run does.
+
+### Both 1P builders, because only one of them runs
+
+`run_1p_manifest` calls `build_luminos_mixed_waveform_config`, not
+`build_luminos_1p_waveform_config`; the older builder survives for parity and
+commissioning tests. So the constants had to go from the mixed builder's
+`has2p == false` branch as well, and that branch — not the mixed path — is
+what the NI-DAQ error was actually coming out of. `TestMixedStimulationSchema4`
+asserts the two builders compile to identical samples, which is what would
+have caught a fix applied to only one of them. The `has1p && has2p` path is
+untouched and still installs all three sampled records.
+
+### What a 1P run inherits, and why that is a different thing
+
+The distinction worth keeping is between two reasons AO does not command an
+output. Inactive 2P hardware is AO's own terminal that AO has nothing to say on
+this run: removed, not replaced. The orange imaging chain is not AO's terminal
+at all. `mod594` is how the operator sets recording power — open a Luminos
+waveform configuration, include mod594, type a voltage — and AO inherits that
+record byte for byte, untagged, so its own cleanup cannot take it out along
+with the records it added. The contrast that matters:
+
+    mod488   AO owns it and replaces the ambient record
+    mod594   the operator owns it and AO inherits it
+
+`shutter488` is a third case again, unchanged: removed because the runner
+drives it imperatively around the armed window, and a buffered record there
+would be a second runtime owner of the line.
+
+The summary field `inactive_two_photon_outputs` keeps its name, because
+archives read it, but no longer reports `galvo_stationary_v` or
+`pockels_dark_v`. Those said AO drove the outputs somewhere. It reports
+`disposition = "suppressed_from_run"` and the ports, which is what happened.
+
+Runtime restoration is unchanged: `capture_original_state` still snapshots
+`global_props` and `wfm_data` before the run and `restore_1p_hardware` still
+puts them back, so the suppression lasts exactly as long as the acquisition and
+the operator's React-tab configuration is never permanently modified.
+
+## 2026-09-17 — Neutralization is modality-aware, and "suppressed" means untouched
+
+Suppressing the inactive 2P outputs from the 1P waveform set closed half of
+the invariant. The other half was still open: `neutralize_all_stimulation`
+commanded every declared output every time, so a pure 1P run issued an
+explicit galvo update and a Pockels dark-write at run start, before every
+trial, and again during cleanup — for hardware the acquisition never touched.
+On a rig without a Chameleon it was worse than pointless: the absent device
+turned into a reported neutralization failure and a warning on every single
+1P run, which is how a real safety signal gets trained out of an operator.
+
+The symmetric behaviour was itself a fix, and the entry above it in this
+notebook defends it. It was right about the hazard — a 1P run once ended with
+the Pockels cell and the galvos exactly as the last 2P run had left them —
+and wrong about the remedy. Commanding everything is not the only way to stop
+a modality leaving the other one's hardware live; commanding what this run
+actually uses, and leaving the rest strictly alone, does the same job without
+reaching across the rig.
+
+So neutralization now takes a `Modality`, and an output whose manifest
+declaration says
+
+    owner.<modality> == "suppressed"
+
+is not commanded: no setter, no `Update_Galvos_Explicit`, and no device
+lookup. The lookup matters. "Suppressed" has to mean *not touched* rather
+than *resolved, then skipped*, or a rig that does not physically have the
+hardware still fails trying to find it — which is exactly the symptom this
+removes. The check happens before anything reaches the app, and the report
+records those outputs as `suppressed` rather than as failures, so a genuine
+failure is still worth reading.
+
+### One declaration, three readers
+
+The modality-to-field mapping moved into `manifest_runtime_owner`, because
+three places now ask the same question: the waveform builders decide what to
+install, `account_stimulation_outputs` decides what is a violation, and
+`neutralize_all_stimulation` decides what to command. If each kept its own
+copy of the mapping, the run-time safety behaviour and the check that is
+supposed to police it could quietly disagree about the same output. Nothing
+in the package decides for itself that an output is inactive any more.
+
+### Scope, and what deliberately did not change
+
+`Modality` defaults to `"all"`, which is not a rig modality and under which
+nothing suppresses. That is what the unmigrated callers keep:
+`run_2p_manifest` (three call sites), `run_galvo_calibration` and
+`run_galvo_dynamics_characterization`. The last two actively drive the galvos,
+so parking them is the whole point and must not be skipped. Only
+`run_1p_manifest` was migrated, and it derives the scope from the schedule
+rather than from its own name — it accepts 2P and mixed trials under
+`AllowMixedSources`, and a run that will drive the galvos must still be able
+to park them. Run-level steps use the run's modality, the per-trial pre-arm
+uses the trial's, so a pure 1P trial inside a mixed run still touches nothing
+it does not use.
+
+Cleanup gets the same scope, including on the two failure paths. An exception
+already propagating is not a licence to start commanding hardware the run
+never used, and the galvos are not restored to a saved value either — that
+would be a command like any other.
+
+### Testing the call, not the end state
+
+`TestOnePhotonModalityIsolation` asserts the calls. It has to: parking the
+galvos at the stationary value they already hold, or darkening a Pockels cell
+that is already dark, leaves nothing for an end-state assertion to see, so the
+old tests would have passed whether or not the command was issued. The
+simulated scanner counts `Update_Galvos_Explicit` calls, a listener counts
+Pockels `level` writes, and the simulated app logs every `getDevice` request
+so "not even looked up" is checkable.
+
+Four tests in `TestStimulationSafetyCleanup` now assert the opposite of what
+they used to, which is the honest record of a decision reversed: a pure 1P run
+leaves the Pockels cell and the galvos exactly as it found them. The
+missing-2P-device test flipped from "warns loudly" to "is silent", and a new
+one keeps the other half honest — a missing output that the modality *does*
+drive is still a reported failure, so suppression cannot be hiding errors.
+
+## 2026-09-17 — Three core 1P protocols, and the schedule that refuses to pair spikes
+
+The protocol library was a collection of things that had each been needed
+once. It is now three experiments that share one calibration: a Blue power
+ramp, a connectivity screen, and a short-term plasticity screen, all using a
+10 ms pulse. That last point is the whole reason for the consolidation. The
+ramp stores `selected_blue_voltage_v` per cell, and until now the screens used
+5 or 20 ms pulses, so the stored number was a calibration for a pulse nobody
+ran. Ten milliseconds everywhere makes the per-cell voltage mean what its name
+says. Generic helpers that happen to take a pulse duration were left alone, and
+2P spiral timing was not touched.
+
+The screen is STP rather than STF because it measures facilitation **or**
+depression. Which one a connection shows is the result.
+
+### Train granularity is a scientific constraint, not a scheduling detail
+
+The obvious way to keep ten cells busy during a 1 s recovery window is to
+interleave at the pulse level: ROI1-P1, ROI2-P1, ROI1-P2, ROI2-P2. That is
+rejected. It would repeat a fixed millisecond-scale pairing between the same
+two stimulated neurons 300 times, which is not an artifact of the schedule but
+the standard induction protocol for spike-timing-dependent plasticity. A screen
+for short-term dynamics that quietly runs an LTP protocol underneath measures
+something it cannot name.
+
+So the unit of scheduling is a whole train. One cell's P1..P5 completes before
+another cell's train starts, and `TestStpScreenProtocol` asserts the stronger
+property directly on the frozen table: sorted by onset, every train occupies an
+uninterrupted block of rows. The code models no plasticity. It only keeps the
+decision where it can be checked.
+
+Throughput survives anyway, because trains are short relative to recovery. A
+default train spans 210 ms and the next different cell may start 20 ms later,
+so six cells cover the 1.21 s same-cell interval and the timeline is
+continuously occupied. Ten cells: 3000 trains, 15 000 events, about 690 s.
+
+### Same-cell recovery is stated after the pulse ends
+
+Both schedulers express recovery as time after the previous stimulation
+*ended*, because that is how the experimenter reasons about it — 100 ms of dark
+after a connectivity pulse, 1 s after a train's last pulse. The onset interval
+(110 ms, 1.210 s) is derived and recorded in metadata rather than being the
+parameter. Idle time is inserted only when no target is eligible; the recovery
+rule is never shortened to keep the cadence. Five cells at 20 ms therefore idle,
+and six do not, which is asserted in both directions.
+
+### Voltage stays where it was
+
+The connectivity generator used to hardcode `command_voltage_v = 1.0` for every
+target, which silently overrode the calibration the ramp had just measured.
+Both screens now emit NaN, so schema-4 1P resolution falls through to
+`fov_cell`. The schedulers accept an explicit per-target override and validate
+it against (0,5] V, but NaN is never converted into a number and
+`resolve_protocol` keeps owning precedence — the generator does not duplicate
+it.
+
+### Where the schedulers live
+
+`generate_constrained_round_robin_schedule` sat in `pulse-protocols/` beside its
+script. Both schedulers are now package functions, because `pulse-protocols/`
+holds user-facing scripts the experimenter edits and these are pure functions
+the tests call directly. `create_round_robin_protocol.m` became
+`create_connectivity_round_robin_protocol.m` and `create_stf_frequency_mix_protocol.m`
+became `create_stp_screen_protocol.m`, both as renames so the history follows.
+
+### Left in place
+
+`generate_screen_protocol`, `generate_stf_protocol`, `default_stf_conditions`
+and `generate_round_robin_protocol` now have no callers outside the test suite.
+They are not deleted here: they still exercise the unrealized-timeline and
+`each_stimulation_enabled_cell` resolution paths, which the three explicit
+protocols no longer cover. Removing them is a separate decision about whether
+those paths are still wanted.

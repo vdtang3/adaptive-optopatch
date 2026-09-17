@@ -4,6 +4,15 @@ function [globalProps,wfmData,summary]=build_luminos_mixed_waveform_config( ...
 %   The resolved event table is flattened exactly once and then partitioned
 %   by its explicit stimulation_source. Ambient records on AO-owned
 %   terminals are removed before complete 1P and 2P waveforms are installed.
+%
+%   An output whose modality contributes no events is SUPPRESSED rather
+%   than held at a constant: the ambient record is removed and nothing is
+%   installed in its place. That keeps a 1P-only acquisition off the galvo
+%   card entirely, so Luminos builds no Dev2 AO task for it. The 488
+%   shutter is the same decision for the same reason - a 1P run owns it
+%   imperatively - and the Blue DMD advance line is the deliberate
+%   exception, because an advance line that nothing commands must be held
+%   low rather than left to an ambient record.
 arguments
     activeGlobalProps (1,1) struct
     activeWfmData (1,1) struct
@@ -82,15 +91,20 @@ if has2p
         "Adaptive2P_Y",two.scanner.y_port,rate,wave.y_v,wave.y_v(end)));
     wfmData.ao=append_record(wfmData.ao,sampled_record( ...
         two.modulator.name,two.modulator.name,rate,wave.pockels_v,two.modulator.dark_v));
-else
-    inactive=one.inactive_two_photon;
-    wfmData.ao=append_record(wfmData.ao,constant_record( ...
-        inactive.scanner.x_name,inactive.scanner.x_port,inactive.scanner.stationary_v(1)));
-    wfmData.ao=append_record(wfmData.ao,constant_record( ...
-        inactive.scanner.y_name,inactive.scanner.y_port,inactive.scanner.stationary_v(2)));
-    wfmData.ao=append_record(wfmData.ao,constant_record( ...
-        inactive.modulator.name,inactive.modulator.name,inactive.modulator.dark_v));
 end
+% An acquisition with no 2P events SUPPRESSES the 2P outputs instead of
+% holding them at a constant. The ambient removal above is all of it: the
+% three terminals are absent from wfm_data and no task is built for them.
+% Appending constant galvo records put Dev2/ao0 and Dev2/ao1 into wfm_data,
+% and a buffered record on a Dev2 terminal is what makes Luminos build a
+% hardware-timed AO task on that card, which then has to be clocked and
+% triggered from Dev1 - the routing conflict a 1P-only run hit. Nothing in
+% a 1P acquisition commands these outputs, so nothing here installs a
+% record to hold them - and nothing commands them imperatively instead,
+% because neutralize_all_stimulation reads the same manifest declaration
+% and skips what this modality suppresses.
+% This is the has2p==false path only. A mixed acquisition takes the branch
+% above and drives all three from the planned 2P waveforms as before.
 
 % Any acquisition containing 1P uses the runner's imperative shutter owner.
 % Otherwise the buffered line explicitly owns the closed state.

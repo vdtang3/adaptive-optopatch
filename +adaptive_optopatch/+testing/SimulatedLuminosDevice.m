@@ -65,6 +65,14 @@ classdef SimulatedLuminosDevice < handle
         % so before the flag most cleanup keys off is ever set - is
         % reachable from a test.
         FailOnStart logical = false
+        % How many times Update_Galvos_Explicit has been called. A test
+        % asserting that a pure 1P run never commands the galvos has to be
+        % able to see the CALL, not the end state: parking them at the
+        % stationary value they were already sitting at leaves no trace in
+        % galvox_wfm. Counted separately from Gen_Spiral_JS, which also
+        % writes those properties but is a trajectory rather than a
+        % neutralization command.
+        ExplicitGalvoUpdateCount double = 0
     end
 
     properties (SetObservable)
@@ -213,6 +221,7 @@ classdef SimulatedLuminosDevice < handle
         end
 
         function Update_Galvos_Explicit(device,x,y)
+            device.ExplicitGalvoUpdateCount=device.ExplicitGalvoUpdateCount+1;
             device.galvox_wfm=double(x(:));
             device.galvoy_wfm=double(y(:));
         end

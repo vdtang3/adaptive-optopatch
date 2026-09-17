@@ -38,6 +38,16 @@ classdef TestIlluminationIrradiance < matlab.unittest.TestCase
             coverage = side^2 / frame^2;
         end
 
+        % The four corners of a row/column span, as polygon vertices on the
+        % same half-pixel boundaries a rectangle would use.
+        function vertices = rectangleVertices(rows, columns)
+            x0 = min(columns) - 0.5;
+            x1 = max(columns) + 0.5;
+            y0 = min(rows) - 0.5;
+            y1 = max(rows) + 0.5;
+            vertices = [x0 y0; x1 y0; x1 y1; x0 y1];
+        end
+
         function path = writeSnap(folder, name, fields)
             snap = fields;
             path = fullfile(folder, name);
@@ -598,9 +608,10 @@ classdef TestIlluminationIrradiance < matlab.unittest.TestCase
                 struct('img', image, 'pixel_to_sample_um', J));
 
             overridden = measure_illumination_irradiance(string(path), ...
+                SegmentationMode="auto-threshold", ...
                 PlateauPercentile=99.5, Visible="off");
             usingDefault = measure_illumination_irradiance(string(path), ...
-                Visible="off");
+                SegmentationMode="auto-threshold", Visible="off");
             close all force
 
             testCase.verifyEqual(overridden.illuminated_pixels, side^2);
@@ -673,6 +684,7 @@ classdef TestIlluminationIrradiance < matlab.unittest.TestCase
 
             result = testCase.verifyWarningFree(@() measure_illumination_irradiance( ...
                 string(path), ...
+                SegmentationMode="auto-threshold", ...
                 AOTF_V=[0.5 0.5 0.5 1 1 1 1.5 1.5 1.5], ...
                 Power_mW=[0.12 0.13 0.12 0.41 0.40 0.42 0.89 0.91 0.90], ...
                 Visible="off"));
@@ -697,6 +709,379 @@ classdef TestIlluminationIrradiance < matlab.unittest.TestCase
             testCase.verifyEqual(result.snap_path, string(path));
         end
 
+        %% --- segmentation modes --------------------------------------
+        % Manual rectangle is the default. The interaction itself needs a
+        % person, so these drive the same code path with RectanglePosition,
+        % which is also how a calibration is re-run on a known footprint.
+
+        function rectangleMaskAreaIsExactlyDeterminantTimesPixelCount(testCase)
+            [image, rows, columns] = testCase.syntheticPatch(100, 1100);
+            J = testCase.J_SHEARED;
+
+            footprint = adaptive_optopatch.manual_rectangle_mask(image, ...
+                Position=[min(columns) - 0.5, min(rows) - 0.5, ...
+                          numel(columns), numel(rows)]);
+            area = adaptive_optopatch.calculate_illuminated_area(J, footprint.mask);
+
+            testCase.verifyEqual(footprint.mode, "manual-rectangle");
+            % The drawn rectangle recovers the true patch exactly.
+            testCase.verifyEqual(nnz(footprint.mask), ...
+                numel(rows) * numel(columns));
+            % And the area is still nothing but nnz * abs(det(J)).
+            testCase.verifyEqual(area.area_um2, ...
+                nnz(footprint.mask) * abs(det(J)), 'AbsTol', testCase.TOL);
+            testCase.verifyEqual(area.area_mm2, ...
+                nnz(footprint.mask) * abs(det(J)) / 1e6, 'AbsTol', testCase.TOL);
+            testCase.verifyEqual(area.pixel_area_um2, abs(det(J)), ...
+                'AbsTol', testCase.TOL);
+        end
+
+        function manualPolygonIsTheDefaultMode(testCase)
+            % Both at the dispatcher and through the top-level utility.
+            image = testCase.syntheticPatch(100, 1100);
+            triangle = [30.5 20.5; 110.5 20.5; 110.5 80.5];
+
+            footprint = adaptive_optopatch.get_footprint_mask(image, ...
+                PolygonVertices=triangle);
+            testCase.verifyEqual(footprint.mode, "manual-polygon");
+
+            folder = testCase.applyFixture( ...
+                matlab.unittest.fixtures.TemporaryFolderFixture).Folder;
+            path = testCase.writeSnap(folder, 'default_mode.mat', ...
+                struct('img', image, 'pixel_to_sample_um', testCase.J_SHEARED));
+
+            result = measure_illumination_irradiance(string(path), ...
+                PolygonVertices=triangle, Visible="off");
+            close all force
+
+            testCase.verifyEqual(result.segmentation_mode, "manual-polygon");
+            testCase.verifyEqual(result.segmentation_details.polygon_position, ...
+                triangle, 'AbsTol', testCase.TOL);
+            % Threshold fields do not apply and are empty rather than stale.
+            testCase.verifyEmpty(result.threshold_value);
+            testCase.verifyEmpty(result.threshold_fraction);
+        end
+
+        function rectangleGeometryAloneDoesNotSelectRectangleMode(testCase)
+            % The default flip has one sharp edge worth pinning: a caller that
+            % passes RectanglePosition and names no mode used to get rectangle
+            % mode and now gets the polygon default. That warns and then asks
+            % to draw, rather than quietly inferring the mode from whichever
+            % geometry turned up - guessing would make the mode depend on an
+            % argument that is documented as optional.
+            image = testCase.syntheticPatch(100, 1100);
+
+            testCase.verifyError(@() adaptive_optopatch.get_footprint_mask( ...
+                image, RectanglePosition=[30.5, 20.5, 80, 60], Visible="off"), ...
+                'adaptive_optopatch:ManualSelectionNeedsVisibleFigure');
+
+            % And it says so on the way past. Captured rather than asserted
+            % with verifyWarning, because the call warns and then errors.
+            lastwarn('');
+            try
+                adaptive_optopatch.get_footprint_mask(image, ...
+                    RectanglePosition=[30.5, 20.5, 80, 60], Visible="off");
+            catch
+                % Expected; the warning is what is under test here.
+            end
+            [~, identifier] = lastwarn;
+            testCase.verifyEqual(identifier, ...
+                'adaptive_optopatch:UnusedSegmentationOptions');
+        end
+
+        function explicitAutoThresholdStillUsesTheAutomaticPath(testCase)
+            image = testCase.syntheticPatch(100, 1100);
+            expected = adaptive_optopatch.segment_illumination_patch(image);
+
+            footprint = adaptive_optopatch.get_footprint_mask(image, ...
+                SegmentationMode="auto-threshold");
+
+            testCase.verifyEqual(footprint.mode, "auto-threshold");
+            testCase.verifyEqual(footprint.mask, expected.mask);
+            testCase.verifyEqual(footprint.details.threshold_value, ...
+                expected.threshold_value, 'AbsTol', testCase.TOL);
+            testCase.verifyEqual(footprint.details.plateau_percentile, 99);
+        end
+
+        function invalidSegmentationModeIsRejected(testCase)
+            image = testCase.syntheticPatch(100, 1100);
+
+            testCase.verifyError(@() adaptive_optopatch.get_footprint_mask( ...
+                image, SegmentationMode="freehand"), ...
+                'MATLAB:validators:mustBeMember');
+
+            folder = testCase.applyFixture( ...
+                matlab.unittest.fixtures.TemporaryFolderFixture).Folder;
+            path = testCase.writeSnap(folder, 'bad_mode.mat', ...
+                struct('img', image, 'pixel_to_sample_um', testCase.J_SHEARED));
+            testCase.verifyError(@() measure_illumination_irradiance( ...
+                string(path), SegmentationMode="manual-poly", Visible="off"), ...
+                'MATLAB:validators:mustBeMember');
+        end
+
+        function manualSelectionFailsClearlyRatherThanReturningNothing(testCase)
+            % True UI cancel cannot be driven from a test, so this covers the
+            % validation the cancel path shares: no mask is ever fabricated.
+            image = testCase.syntheticPatch(100, 1100);
+
+            % Asking to draw with no window would otherwise block forever.
+            testCase.verifyError(@() adaptive_optopatch.manual_rectangle_mask( ...
+                image, Visible="off"), ...
+                'adaptive_optopatch:ManualSelectionNeedsVisibleFigure');
+
+            % A rectangle that falls between pixel centres encloses nothing,
+            % and that is an error rather than an empty mask.
+            testCase.verifyError(@() adaptive_optopatch.manual_rectangle_mask( ...
+                image, Position=[1.6, 1.6, 0.3, 0.3]), ...
+                'adaptive_optopatch:EmptyManualFootprint');
+
+            % And a malformed or off-image rectangle is refused outright.
+            testCase.verifyError(@() adaptive_optopatch.manual_rectangle_mask( ...
+                image, Position=[10, 10, -5, 20]), ...
+                'adaptive_optopatch:BadRectanglePosition');
+            testCase.verifyError(@() adaptive_optopatch.manual_rectangle_mask( ...
+                image, Position=[10, 10, 20]), ...
+                'adaptive_optopatch:BadRectanglePosition');
+            testCase.verifyError(@() adaptive_optopatch.manual_rectangle_mask( ...
+                image, Position=[500, 500, 20, 20]), ...
+                'adaptive_optopatch:RectangleOutsideImage');
+            testCase.verifyError(@() adaptive_optopatch.manual_rectangle_mask( ...
+                image, Position=[0.1, 0.1, 0.2, 0.2]), ...
+                'adaptive_optopatch:RectangleOutsideImage');
+        end
+
+        function aotfCalibrationIsUnchangedByTheManualMask(testCase)
+            folder = testCase.applyFixture( ...
+                matlab.unittest.fixtures.TemporaryFolderFixture).Folder;
+            [image, rows, columns] = testCase.syntheticPatch(100, 1100);
+            J = testCase.J_SHEARED;
+            path = testCase.writeSnap(folder, 'manual_aotf.mat', ...
+                struct('img', image, 'pixel_to_sample_um', J));
+
+            voltage = [0.5 0.5 0.5 1 1 1 1.5 1.5 1.5];
+            power = [0.12 0.13 0.12 0.41 0.40 0.42 0.89 0.91 0.90];
+
+            result = measure_illumination_irradiance(string(path), ...
+                SegmentationMode="manual-rectangle", ...
+                RectanglePosition=[min(columns) - 0.5, min(rows) - 0.5, ...
+                                   numel(columns), numel(rows)], ...
+                AOTF_V=voltage, Power_mW=power, Visible="off");
+            close all force
+
+            % Same numbers the summariser gives for that area on its own, so
+            % the mode changed the mask and nothing downstream of it.
+            expected = adaptive_optopatch.summarize_aotf_calibration( ...
+                voltage, power, result.area_mm2);
+
+            testCase.verifyEqual(result.segmentation_mode, "manual-rectangle");
+            testCase.verifyEqual(result.voltage_V, expected.voltage_V, ...
+                'AbsTol', testCase.TOL);
+            testCase.verifyEqual(result.mean_irradiance_mW_mm2, ...
+                expected.mean_irradiance_mW_mm2, 'AbsTol', 1e-9);
+            testCase.verifyEqual(result.std_irradiance_mW_mm2, ...
+                expected.std_irradiance_mW_mm2, 'AbsTol', 1e-9);
+            testCase.verifyEqual(result.n_per_voltage, [3; 3; 3]);
+            testCase.verifyTrue(result.monotonic);
+            testCase.verifyEqual(result.irradiance_at_voltage(1.25), ...
+                expected.irradiance_at_voltage(1.25), 'AbsTol', 1e-9);
+        end
+
+        function thresholdOptionsDoNotBreakManualMode(testCase)
+            % They are unused here, and saying so must not stop the workflow.
+            image = testCase.syntheticPatch(100, 1100);
+
+            footprint = testCase.verifyWarning(@() ...
+                adaptive_optopatch.get_footprint_mask(image, ...
+                    SegmentationMode="manual-rectangle", ...
+                    RectanglePosition=[30.5, 20.5, 80, 60], ...
+                    ThresholdFraction=0.8, PlateauPercentile=99.5), ...
+                'adaptive_optopatch:UnusedSegmentationOptions');
+
+            testCase.verifyEqual(footprint.mode, "manual-rectangle");
+            testCase.verifyEqual(nnz(footprint.mask), 80 * 60);
+        end
+
+        function optionsThatBelongToAnotherModeWarn(testCase)
+            % One warning identifier for every "you passed something this mode
+            % does not use", whichever mode is running.
+            image = testCase.syntheticPatch(100, 1100);
+
+            footprint = testCase.verifyWarning(@() ...
+                adaptive_optopatch.get_footprint_mask(image, ...
+                    SegmentationMode="auto-threshold", ...
+                    RectanglePosition=[30.5, 20.5, 80, 60]), ...
+                'adaptive_optopatch:UnusedSegmentationOptions');
+            testCase.verifyEqual(footprint.mode, "auto-threshold");
+
+            % Geometry belonging to the other manual mode warns too.
+            footprint = testCase.verifyWarning(@() ...
+                adaptive_optopatch.get_footprint_mask(image, ...
+                    SegmentationMode="manual-rectangle", ...
+                    RectanglePosition=[30.5, 20.5, 80, 60], ...
+                    PolygonVertices=[10 10; 20 10; 20 20]), ...
+                'adaptive_optopatch:UnusedSegmentationOptions');
+            testCase.verifyEqual(footprint.mode, "manual-rectangle");
+
+            % And nothing is said when only the relevant options are given.
+            testCase.verifyWarningFree(@() ...
+                adaptive_optopatch.get_footprint_mask(image, ...
+                    SegmentationMode="manual-polygon", ...
+                    PolygonVertices=[30.5 20.5; 110.5 20.5; 110.5 80.5]));
+        end
+
+        %% --- manual polygon mode -------------------------------------
+        % For footprints a rectangle cannot state. Same interaction and the
+        % same createMask path, so these drive it with Vertices.
+
+        function polygonMaskAreaIsExactlyDeterminantTimesPixelCount(testCase)
+            [image, rows, columns] = testCase.syntheticPatch(100, 1100);
+            J = testCase.J_SHEARED;
+            vertices = testCase.rectangleVertices(rows, columns);
+
+            footprint = adaptive_optopatch.manual_polygon_mask(image, ...
+                Vertices=vertices);
+            area = adaptive_optopatch.calculate_illuminated_area(J, footprint.mask);
+
+            testCase.verifyEqual(footprint.mode, "manual-polygon");
+            testCase.verifyEqual(nnz(footprint.mask), ...
+                numel(rows) * numel(columns));
+            testCase.verifyEqual(area.area_um2, ...
+                nnz(footprint.mask) * abs(det(J)), 'AbsTol', testCase.TOL);
+            testCase.verifyEqual(area.pixel_area_um2, abs(det(J)), ...
+                'AbsTol', testCase.TOL);
+            testCase.verifyEqual(footprint.details.polygon_position, vertices, ...
+                'AbsTol', testCase.TOL);
+        end
+
+        function polygonAndRectangleAgreeOnTheSameRegion(testCase)
+            % The two modes must not disagree about which pixels a given region
+            % contains, or an area would depend on which tool drew it.
+            [image, rows, columns] = testCase.syntheticPatch(100, 1100);
+
+            viaRectangle = adaptive_optopatch.manual_rectangle_mask(image, ...
+                Position=[min(columns) - 0.5, min(rows) - 0.5, ...
+                          numel(columns), numel(rows)]);
+            viaPolygon = adaptive_optopatch.manual_polygon_mask(image, ...
+                Vertices=testCase.rectangleVertices(rows, columns));
+
+            testCase.verifyEqual(viaPolygon.mask, viaRectangle.mask);
+        end
+
+        function polygonFollowsANonRectangularFootprint(testCase)
+            % The reason this mode exists: an L-shaped footprint, where a
+            % bounding box would enclose dark area and inflate the denominator
+            % of the irradiance.
+            image = 100 * ones(200, 300);
+            image(51:150, 101:220) = 1100;
+            lShape = [100.5 50.5; 220.5 50.5; 220.5 100.5; ...
+                      160.5 100.5; 160.5 150.5; 100.5 150.5];
+
+            footprint = adaptive_optopatch.manual_polygon_mask(image, ...
+                Vertices=lShape);
+
+            % 120x100 box minus the 60x50 corner that was cut out.
+            testCase.verifyEqual(nnz(footprint.mask), 120 * 100 - 60 * 50);
+
+            % Strictly smaller than the bounding box it sits in, which is the
+            % whole point.
+            boundingBox = adaptive_optopatch.manual_rectangle_mask(image, ...
+                Position=[100.5, 50.5, 120, 100]);
+            testCase.verifyLessThan(nnz(footprint.mask), nnz(boundingBox.mask));
+        end
+
+        function polygonModeRunsThroughTheTopLevelUtility(testCase)
+            folder = testCase.applyFixture( ...
+                matlab.unittest.fixtures.TemporaryFolderFixture).Folder;
+            [image, rows, columns] = testCase.syntheticPatch(100, 1100);
+            J = testCase.J_SHEARED;
+            path = testCase.writeSnap(folder, 'polygon_mode.mat', ...
+                struct('img', image, 'pixel_to_sample_um', J));
+            vertices = testCase.rectangleVertices(rows, columns);
+
+            result = measure_illumination_irradiance(string(path), ...
+                SegmentationMode="manual-polygon", ...
+                PolygonVertices=vertices, Visible="off");
+            close all force
+
+            testCase.verifyEqual(result.segmentation_mode, "manual-polygon");
+            testCase.verifyEqual(result.segmentation_details.polygon_position, ...
+                vertices, 'AbsTol', testCase.TOL);
+            testCase.verifyEqual(result.illuminated_pixels, ...
+                numel(rows) * numel(columns));
+            testCase.verifyEqual(result.area_mm2, ...
+                numel(rows) * numel(columns) * abs(det(J)) / 1e6, ...
+                'AbsTol', testCase.TOL);
+            testCase.verifyEmpty(result.threshold_value);
+        end
+
+        function aotfCalibrationIsUnchangedByThePolygonMask(testCase)
+            folder = testCase.applyFixture( ...
+                matlab.unittest.fixtures.TemporaryFolderFixture).Folder;
+            [image, rows, columns] = testCase.syntheticPatch(100, 1100);
+            path = testCase.writeSnap(folder, 'polygon_aotf.mat', ...
+                struct('img', image, 'pixel_to_sample_um', testCase.J_SHEARED));
+
+            voltage = [0.5 0.5 0.5 1 1 1 1.5 1.5 1.5];
+            power = [0.12 0.13 0.12 0.41 0.40 0.42 0.89 0.91 0.90];
+
+            result = measure_illumination_irradiance(string(path), ...
+                SegmentationMode="manual-polygon", ...
+                PolygonVertices=testCase.rectangleVertices(rows, columns), ...
+                AOTF_V=voltage, Power_mW=power, Visible="off");
+            close all force
+
+            expected = adaptive_optopatch.summarize_aotf_calibration( ...
+                voltage, power, result.area_mm2);
+
+            testCase.verifyEqual(result.voltage_V, expected.voltage_V, ...
+                'AbsTol', testCase.TOL);
+            testCase.verifyEqual(result.mean_irradiance_mW_mm2, ...
+                expected.mean_irradiance_mW_mm2, 'AbsTol', 1e-9);
+            testCase.verifyEqual(result.n_per_voltage, [3; 3; 3]);
+            testCase.verifyTrue(result.monotonic);
+        end
+
+        function polygonSelectionFailsClearlyRatherThanReturningNothing(testCase)
+            image = testCase.syntheticPatch(100, 1100);
+
+            testCase.verifyError(@() adaptive_optopatch.manual_polygon_mask( ...
+                image, Visible="off"), ...
+                'adaptive_optopatch:ManualSelectionNeedsVisibleFigure');
+
+            % Fewer than three vertices is not a region.
+            testCase.verifyError(@() adaptive_optopatch.manual_polygon_mask( ...
+                image, Vertices=[10 10; 20 20]), ...
+                'adaptive_optopatch:BadPolygonVertices');
+            % Nx2 is the contract.
+            testCase.verifyError(@() adaptive_optopatch.manual_polygon_mask( ...
+                image, Vertices=[10 10 10; 20 20 20; 30 30 30]), ...
+                'adaptive_optopatch:BadPolygonVertices');
+            testCase.verifyError(@() adaptive_optopatch.manual_polygon_mask( ...
+                image, Vertices=[10 10; 20 NaN; 30 30]), ...
+                'adaptive_optopatch:BadPolygonVertices');
+            % Entirely off the sensor.
+            testCase.verifyError(@() adaptive_optopatch.manual_polygon_mask( ...
+                image, Vertices=[500 500; 600 500; 600 600]), ...
+                'adaptive_optopatch:PolygonOutsideImage');
+            % Collinear: encloses no pixels, so an error rather than an empty
+            % mask, exactly as for a degenerate rectangle.
+            testCase.verifyError(@() adaptive_optopatch.manual_polygon_mask( ...
+                image, Vertices=[10 10; 20 10; 30 10]), ...
+                'adaptive_optopatch:EmptyManualFootprint');
+        end
+
+        function polygonClippedAtTheSensorEdgeIsAllowed(testCase)
+            % Overlap with the frame is the test, not containment: a footprint
+            % running off the sensor is a real thing to measure.
+            image = testCase.syntheticPatch(100, 1100);
+
+            footprint = adaptive_optopatch.manual_polygon_mask(image, ...
+                Vertices=[-20 -20; 40 -20; 40 40; -20 40]);
+
+            testCase.verifyGreaterThan(nnz(footprint.mask), 0);
+            testCase.verifyEqual(footprint.mode, "manual-polygon");
+        end
+
         function areaOnlyCallReturnsEmptyCalibrationFields(testCase)
             folder = testCase.applyFixture( ...
                 matlab.unittest.fixtures.TemporaryFolderFixture).Folder;
@@ -704,7 +1089,8 @@ classdef TestIlluminationIrradiance < matlab.unittest.TestCase
             path = testCase.writeSnap(folder, 'area_only.mat', ...
                 struct('img', image, 'pixel_to_sample_um', testCase.J_SHEARED));
 
-            result = measure_illumination_irradiance(string(path), Visible="off");
+            result = measure_illumination_irradiance(string(path), ...
+                SegmentationMode="auto-threshold", Visible="off");
             close all force
 
             testCase.verifyGreaterThan(result.area_mm2, 0);

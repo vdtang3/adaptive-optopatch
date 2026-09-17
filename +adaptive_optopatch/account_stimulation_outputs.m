@@ -19,7 +19,8 @@ function report=account_stimulation_outputs(globalProps,wfmData,options)
 %     - a record on an AO-owned terminal in a camera-triggered subsystem
 %     - and, once a Modality has been given: an AO-owned stimulation
 %       terminal driven by a record AO does not own, or a buffered record
-%       on a line the manifest says that modality drives imperatively
+%       on a line the manifest says that modality drives imperatively or
+%       suppresses from the run entirely
 %   The last two need a modality because who SHOULD own a line is a
 %   question about the run that is about to happen. Modality "unknown" is
 %   an ambient survey of the operator's own configuration, where a live
@@ -224,6 +225,22 @@ if row(1).runtime_owner=="imperative"
          'while a task holds it.'],row(1).record_names,entry.terminal, ...
         entry.role);
 end
+% The same invariant read the other way. A suppressed output is one this
+% modality commands not at all, so the only correct configuration is the
+% one with no record on it: a buffered record here is an output nothing
+% asked for, and on the galvo card it is also what makes Luminos build a
+% second-card AO task that then has to be clocked and triggered across
+% cards. Neutral or not, the record should not exist, so this does not
+% depend on what the samples measured.
+if row(1).runtime_owner=="suppressed"
+    violations(end+1)=sprintf( ...
+        ['%s installs a buffered waveform on %s (%s), which this modality ' ...
+         'suppresses from the run. Nothing commands this output, so it ' ...
+         'must carry no record at all; the rig declares %.6g as its ' ...
+         'neutral (%s) and the modality that drives this output is the ' ...
+         'one that asserts it.'],row(1).record_names, ...
+        entry.terminal,entry.role,neutral,entry.neutral_source);
+end
 end
 
 function entry=match_declaration(canonical,manifest,aliasList)
@@ -258,7 +275,8 @@ entry=struct("role","","device_name","","terminal",first_or_empty(canonical), ..
     "No declaration in the rig stimulation manifest names this terminal.", ...
     "classification","unaccounted","stimulation_capable",missing, ...
     "neutral_value",[],"neutral_source","", ...
-    "owner",struct("one_photon","unknown","two_photon","unknown"));
+    "owner",struct("one_photon","unknown","two_photon","unknown", ...
+        "mixed","unknown"));
 end
 
 function value=first_or_empty(values)
@@ -266,12 +284,10 @@ if isempty(values), value=""; else, value=values(1); end
 end
 
 function value=modality_owner(entry,modality)
-switch modality
-    case "1p_dmd",    value=string(entry.owner.one_photon);
-    case "2p_spiral", value=string(entry.owner.two_photon);
-    case "mixed",     value=string(entry.owner.one_photon);
-    otherwise,        value="unknown";
-end
+% Through the shared helper, so the check that polices runtime ownership
+% and NEUTRALIZE_ALL_STIMULATION, which acts on it, cannot come to
+% different conclusions about the same output.
+value=adaptive_optopatch.manifest_runtime_owner(entry.owner,modality);
 end
 
 function declared=declared_coverage(manifest,rows,modality,aliasList)
@@ -279,6 +295,11 @@ function declared=declared_coverage(manifest,rows,modality,aliasList)
 %   A terminal that is missing from the configuration produces no compiled
 %   row at all, so without this an output AO forgot to neutralise would
 %   simply not appear in the report.
+%
+%   present=false is read together with runtime_owner. For an output this
+%   modality declares "suppressed" or "imperative" it is the intended
+%   result and what the report is here to show; for one it declares
+%   "buffered" it is an output that should have been driven and was not.
 declared=struct("role",{},"terminal",{},"kind",{},"runtime_owner",{}, ...
     "declared_neutral",{},"neutral_source",{},"present",{}, ...
     "classification",{},"neutral_verified",{});

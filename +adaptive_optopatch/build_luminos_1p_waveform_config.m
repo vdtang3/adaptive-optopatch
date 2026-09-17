@@ -37,7 +37,20 @@ if ~isfield(globalProps,"completion_trigger")
 end
 wfmData=ensure_wfm_fields(activeWfmData);
 wfmData=adaptive_optopatch.drop_ao_script_waveforms(wfmData);
-wfmData=neutralize_two_photon_outputs(wfmData,profile.inactive_two_photon,aliasList);
+% The inactive 2P outputs are SUPPRESSED, not neutralized. Appending
+% constant galvo records put Dev2/ao0 and Dev2/ao1 into wfm_data, and a
+% buffered record on a Dev2 terminal is what makes Luminos build a
+% hardware-timed AO task on that card - which then has to be clocked and
+% triggered from Dev1, and fails to route during a 1P-only run. A 1P
+% acquisition needs nothing from the galvos or the Pockels cell, so the
+% correct configuration is one where they do not appear at all: any ambient
+% record is removed so nothing steps them, and no replacement is installed.
+% Nor are they commanded imperatively instead: the manifest declares them
+% suppressed for one-photon operation, and neutralize_all_stimulation reads
+% the same declaration, so a 1P acquisition issues no galvo or Pockels
+% write of any kind. Making that hardware safe belongs to the run that
+% actually drives it.
+wfmData=suppress_two_photon_outputs(wfmData,profile.inactive_two_photon,aliasList);
 % The 488 shutter has one runtime owner during a 1P acquisition, and it is
 % the runner's imperative open/close around the armed window - which is
 % where the shutter has always been driven from, and moving it into the
@@ -130,29 +143,36 @@ summary.expected_start_triggers=reshape(string(profile.daq.default_trigger),1,[]
 summary.blue_shutter_runtime_owner= ...
     manifest_owner(options.Manifest,"blue_shutter").one_photon;
 summary.script_owner=adaptive_optopatch.script_owner_tag();
+% Provenance for the inactive 2P modality. The field name is unchanged
+% because archives and consumers read it, but it no longer records values
+% AO applied: nothing was driven. It records which terminals were taken out
+% of the run, which is what actually happened to them.
 summary.inactive_two_photon_outputs=struct( ...
+    "disposition","suppressed_from_run", ...
     "galvo_x_port",string(profile.inactive_two_photon.scanner.x_port), ...
     "galvo_y_port",string(profile.inactive_two_photon.scanner.y_port), ...
-    "galvo_stationary_v",double(profile.inactive_two_photon.scanner.stationary_v), ...
     "pockels_port",string(profile.inactive_two_photon.modulator.port), ...
-    "pockels_dark_v",double(profile.inactive_two_photon.modulator.dark_v), ...
-    "safe_value_source",string(profile.inactive_two_photon.safe_value_source));
+    "reason","A 1P acquisition commands none of these outputs, so no " + ...
+        "buffered record is installed on them and any ambient record is " + ...
+        "removed. They are not commanded imperatively either: the " + ...
+        "manifest declares them suppressed for one-photon operation and " + ...
+        "neutralize_all_stimulation honours the same declaration.");
 end
 
-function data=neutralize_two_photon_outputs(data,outputs,aliasList)
+function data=suppress_two_photon_outputs(data,outputs,aliasList)
+%SUPPRESS_TWO_PHOTON_OUTPUTS Remove the inactive 2P outputs from this run.
+%   Removal only. Every spelling of the two galvo terminals and the 2P
+%   modulator is taken out of the candidate AO set so no ambient record
+%   executes during a 1P acquisition, and nothing is appended in their
+%   place: a 1P run does not own these outputs and must not create a
+%   buffered task on them.
 scanner=outputs.scanner; modulator=outputs.modulator;
 data.ao=adaptive_optopatch.remove_output_records(data.ao, ...
     [scanner.x_name scanner.x_port],aliasList);
-data.ao=append_compatible(data.ao,constant_record( ...
-    scanner.x_name,scanner.x_port,scanner.stationary_v(1)));
 data.ao=adaptive_optopatch.remove_output_records(data.ao, ...
     [scanner.y_name scanner.y_port],aliasList);
-data.ao=append_compatible(data.ao,constant_record( ...
-    scanner.y_name,scanner.y_port,scanner.stationary_v(2)));
 data.ao=adaptive_optopatch.remove_output_records(data.ao, ...
     [modulator.name modulator.port],aliasList);
-data.ao=append_compatible(data.ao,constant_record( ...
-    modulator.name,modulator.name,modulator.dark_v));
 end
 
 function record=constant_record(name,port,value)

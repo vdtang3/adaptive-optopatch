@@ -56,6 +56,14 @@ end
 hardware=adaptive_optopatch.resolve_luminos_1p_hardware(app,profile);
 hasAny2p=any(cellfun(@(p)any(p.events.stimulation_source=="2p_spiral"), ...
     manifest.trials.pulse_schedule));
+% Which acquisition the run-level safety steps are making safe. Taken from
+% the schedule rather than from the runner's name: run_1p_manifest accepts
+% 2P and mixed trials under AllowMixedSources, and a run that will drive
+% the galvos must still be able to park them. A run with no 2P event
+% anywhere commands no 2P hardware at all - not through a waveform and not
+% through an explicit device write.
+runModality="1p_dmd";
+if hasAny2p, runModality="mixed"; end
 targetingTform=[];
 if hasAny2p
     usingFrozenCalibration=~isempty(options.ScannerCalibration) && ...
@@ -119,7 +127,7 @@ run=struct("schema_version","0.6.0","mode","live_1p_dmd", ...
 % power set that early.
 try
     run.initial_neutralization=adaptive_optopatch.neutralize_all_stimulation( ...
-        app,"Context","1p run start");
+        app,"Context","1p run start","Modality",runModality);
     warn_neutralization(run.initial_neutralization);
     if isfinite(options.LaserPowerW)
         hardware.laser.SetPower=options.LaserPowerW;
@@ -134,11 +142,13 @@ catch exception
     % that used to be the one path out of this function that neutralised
     % nothing.
     restore_1p_hardware(app,hardware,original,profile, ...
-        options.BlankDmdAfterTrial,isfinite(options.LaserPowerW),runnerStartedLaser);
+        options.BlankDmdAfterTrial,isfinite(options.LaserPowerW), ...
+        runnerStartedLaser,runModality);
     rethrow(exception)
 end
 cleanup=onCleanup(@()restore_1p_hardware(app,hardware,original,profile, ...
-    options.BlankDmdAfterTrial,isfinite(options.LaserPowerW),runnerStartedLaser));
+    options.BlankDmdAfterTrial,isfinite(options.LaserPowerW), ...
+    runnerStartedLaser,runModality));
 
 completedThisCall=0;
 for k=1:n
@@ -222,8 +232,9 @@ for k=1:n
         % Measure the candidate configuration BEFORE it is installed, so a
         % configuration that would drive an AO-owned stimulation line
         % nobody commanded never reaches the DAQ at all.
+        trialModality=trial_modality(onePhotonRows,twoPhotonRows);
         accounting=adaptive_optopatch.account_stimulation_outputs( ...
-            globalProps,wfmData,"Modality",trial_modality(onePhotonRows,twoPhotonRows), ...
+            globalProps,wfmData,"Modality",trialModality, ...
             "Policy",options.StimulationAccountingPolicy, ...
             "Context",sprintf("1p trial %d (%s)",k,string(row.output_tag)));
         run.trials.stimulation_accounting{k}=accounting;
@@ -237,8 +248,12 @@ for k=1:n
         % run. A multi-trial run spends minutes between its first trial and
         % its last, and an earlier trial's failure, a stop, or anything the
         % operator did to the rig in between sits between them.
+        % The trial's own modality, not the run's: a pure 1P trial inside a
+        % run that also contains 2P trials still must not command the 2P
+        % hardware it is not about to use.
         adaptive_optopatch.neutralize_all_stimulation(app, ...
-            "Context",sprintf("1p trial %d pre-arm",k),"BlankBlueDmd",false);
+            "Context",sprintf("1p trial %d pre-arm",k),"BlankBlueDmd",false, ...
+            "Modality",trialModality);
 
         hardware.daq.global_props=globalProps;
         hardware.daq.wfm_data=wfmData;
@@ -461,14 +476,19 @@ else
 end
 end
 
-function restore_1p_hardware(app,hardware,original,profile,blankDmd,restorePower,stopLaser)
-% Stimulation goes safe first and symmetrically. A 1P run used to end with
-% the Pockels cell and the galvos exactly as the previous 2P run had left
-% them, because 1P cleanup only knew about 1P outputs; the beams share a
-% preparation, so cleanup has to as well.
+function restore_1p_hardware(app,hardware,original,profile,blankDmd, ...
+        restorePower,stopLaser,modality)
+% Stimulation goes safe first, over what this run actually used. Cleanup
+% once unwound only the modality that had been selected, so a 1P run ended
+% with the Pockels cell and the galvos exactly as the previous 2P run had
+% left them; the remedy for that was to command everything, which made a
+% pure 1P run write to 2P hardware it never touched. Both are wrong. What
+% this run owned is made safe, and what the manifest declares suppressed
+% for it is not commanded - not darkened, and not restored to a saved
+% value either, which would be a command like any other.
 try
     adaptive_optopatch.neutralize_all_stimulation(app, ...
-        "Context","1p cleanup","BlankBlueDmd",blankDmd);
+        "Context","1p cleanup","BlankBlueDmd",blankDmd,"Modality",modality);
 catch
 end
 try

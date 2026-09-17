@@ -835,7 +835,9 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
                 globalProps,wfm,protocol, ...
                 adaptive_optopatch.virtual_upright_1p_profile());
             testCase.verifyEqual(updatedGlobal.total_time,protocol.acquisition_duration_s);
-            testCase.verifyEqual(numel(updatedWfm.ao),5);
+            % The operator's mod594 and AO's mod488, and nothing else: a 1P
+            % build no longer adds galvo and Pockels constants.
+            testCase.verifyEqual(numel(updatedWfm.ao),2);
             testCase.verifyTrue(any(string({updatedWfm.ao.name})=="mod594"));
             idx=find(string({updatedWfm.ao.name})=="mod488",1);
             testCase.verifyEqual(string(updatedWfm.ao(idx).wavefile), ...
@@ -849,7 +851,11 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             testCase.verifyEqual(y(end),0);
         end
 
-        function onePhotonConfigNeutralizesOnlyTwoPhotonStimulation(testCase)
+        function onePhotonConfigSuppressesOnlyTwoPhotonStimulation(testCase)
+            % The inactive 2P outputs leave the run entirely rather than
+            % being held at a constant. A constant on Dev2/ao0 or Dev2/ao1
+            % is what makes Luminos build an AO task on the galvo card
+            % during a 1P-only acquisition.
             profile=adaptive_optopatch.virtual_upright_1p_profile();
             globalProps=struct("rate",200000,"total_time",1, ...
                 "clock_source","Internal Dev1","trigger_source","Dev1/PFI9", ...
@@ -864,18 +870,20 @@ classdef TestAdaptiveOptopatch < matlab.unittest.TestCase
             [~,configured,summary]=adaptive_optopatch.build_luminos_1p_waveform_config( ...
                 globalProps,wfm,protocol,profile);
 
-            testCase.verifyEqual(constant_value(configured.ao,"Adaptive2P_X"), ...
-                profile.inactive_two_photon.scanner.stationary_v(1));
-            testCase.verifyEqual(constant_value(configured.ao,"Adaptive2P_Y"), ...
-                profile.inactive_two_photon.scanner.stationary_v(2));
-            testCase.verifyEqual(constant_value(configured.ao,"2P mod"), ...
-                profile.inactive_two_photon.modulator.dark_v);
+            for terminal=[string(profile.inactive_two_photon.scanner.x_port) ...
+                    string(profile.inactive_two_photon.scanner.y_port) ...
+                    string(profile.inactive_two_photon.modulator.port)]
+                testCase.verifyFalse(terminal_present(configured.ao,terminal), ...
+                    terminal+" must not appear in a 1P configuration at all.");
+            end
             testCase.verifyEqual(constant_value(configured.ao,"unrelated"),4.2);
             mod488=configured.ao(string({configured.ao.name})=="mod488");
             testCase.verifyEqual(string(mod488.wavefile), ...
                 "adaptive_optopatch.luminos_event_waveform");
             testCase.verifyEqual(mod488.params{3},1.5);
-            testCase.verifyEqual(summary.inactive_two_photon_outputs.galvo_stationary_v,[0 0]);
+            testCase.verifyEqual( ...
+                summary.inactive_two_photon_outputs.disposition, ...
+                "suppressed_from_run");
         end
 
         function twoPhotonConfigNeutralizesOnlyOnePhotonStimulation(testCase)
@@ -2123,6 +2131,20 @@ end
 function value=constant_value(records,name)
 record=records(string({records.name})==string(name));
 value=record.params{1};
+end
+
+function present=terminal_present(records,terminal)
+%TERMINAL_PRESENT Whether any record resolves to this physical terminal.
+%   By canonical terminal rather than by name, so a record stored under a
+%   rig alias or a slash variant still counts as present.
+present=false;
+if isempty(records), return; end
+target=adaptive_optopatch.canonical_terminal(terminal);
+for k=1:numel(records)
+    spellings=adaptive_optopatch.canonical_terminal( ...
+        [string(records(k).name) string(records(k).port)]);
+    if any(spellings==target), present=true; return; end
+end
 end
 
 function [trials,targets,sim]=make_multi_trial_2p_fixture(trialCount,outputRoot)

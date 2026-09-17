@@ -1,0 +1,69 @@
+function footprint=manual_polygon_mask(image,options)
+%MANUAL_POLYGON_MASK Draw the illuminated footprint by hand, as a polygon.
+%   Click vertices around the patch, double-click or click the first vertex to
+%   close the polygon, adjust the vertices, then accept. That polygon IS the
+%   segmentation - nothing is refined against intensity afterwards.
+%
+%   For an approximately rectangular patch manual_rectangle_mask is quicker and
+%   has fewer ways to go wrong. This exists for the footprints a rectangle
+%   cannot state: an L-shape, a patch clipped by the field stop, two merged
+%   spots, or anything where a bounding box would enclose a lot of dark area and
+%   inflate the denominator of the irradiance.
+%
+%   Vertices accepts a polygon directly and skips the interaction, as an Nx2
+%   [x y] list in image pixel coordinates. That is how a calibration can be
+%   re-run later on the same footprint, and how this is tested.
+arguments
+    image {mustBeNumeric,mustBeNonempty}
+    options.Vertices double = []
+    options.Visible (1,1) string ...
+        {mustBeMember(options.Visible,["on","off"])} = "on"
+end
+
+vertices=[];
+if ~isempty(options.Vertices)
+    vertices=validate_vertices(options.Vertices,size(image(:,:,1)));
+end
+
+footprint=draw_manual_footprint(image, ...
+    Mode="manual-polygon", ...
+    Instruction="Click vertices around the intended illuminated footprint, " + ...
+        "then close the polygon.", ...
+    DrawNew=@(ax) drawpolygon(ax, ...
+        "Color",[1 0 0],"LineWidth",1.5,"FaceAlpha",0.08), ...
+    DrawAt=@(ax,pos) drawpolygon(ax,"Position",pos), ...
+    GeometryField="polygon_position", ...
+    Position=vertices, ...
+    Visible=options.Visible);
+end
+
+
+% Vertices supplied programmatically still have to describe a real region.
+function vertices=validate_vertices(vertices,imageSize)
+vertices=double(vertices);
+if ndims(vertices)~=2 || size(vertices,2)~=2 %#ok<ISMAT>
+    error("adaptive_optopatch:BadPolygonVertices", ...
+        "Vertices must be an Nx2 list of [x y] positions; got %s.", ...
+        mat2str(size(vertices)));
+end
+if size(vertices,1)<3
+    error("adaptive_optopatch:BadPolygonVertices", ...
+        "A polygon needs at least 3 vertices; got %d.",size(vertices,1));
+end
+if ~all(isfinite(vertices(:)))
+    error("adaptive_optopatch:BadPolygonVertices", ...
+        "Vertices must all be finite.");
+end
+% Overlap with the frame, not containment: clipping a footprint at the sensor
+% edge is a real thing to want to do.
+if max(vertices(:,1))<0.5 || max(vertices(:,2))<0.5 || ...
+        min(vertices(:,1))>imageSize(2)+0.5 || ...
+        min(vertices(:,2))>imageSize(1)+0.5
+    error("adaptive_optopatch:PolygonOutsideImage", ...
+        "The polygon spans x %g..%g, y %g..%g, which lies outside a " + ...
+        "%dx%d image.", ...
+        min(vertices(:,1)),max(vertices(:,1)), ...
+        min(vertices(:,2)),max(vertices(:,2)), ...
+        imageSize(1),imageSize(2));
+end
+end

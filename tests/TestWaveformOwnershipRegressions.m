@@ -58,7 +58,13 @@ classdef TestWaveformOwnershipRegressions < matlab.unittest.TestCase
         % -----------------------------------------------------------------
         % 1P: stale 2P records, written under alias/slash/case variants
         % -----------------------------------------------------------------
-        function staleTwoPhotonRecordsAreNeutralizedDuringAOnePhotonRun(testCase)
+        function staleTwoPhotonRecordsAreSuppressedDuringAOnePhotonRun(testCase)
+            % Written under alias, slash and case variants, because that is
+            % how Waveforms actually stores them. All three terminals must
+            % leave the run: removed, and NOT replaced by a constant. A
+            % constant on Dev2/ao0 or Dev2/ao1 is a buffered record on the
+            % galvo card, which is what made Luminos build a Dev2 AO task
+            % during a 1P-only acquisition and fail to route its clock.
             [~,protocol]=screen_sequence_plan();
             ambient=empty_wfm_data();
             ambient.ao=[constant("legacy galvo x","/Dev2/AO0",3.1), ...
@@ -69,16 +75,53 @@ classdef TestWaveformOwnershipRegressions < matlab.unittest.TestCase
                 live_global_props(200000),ambient,protocol);
 
             manifest=adaptive_optopatch.virtual_upright_stimulation_manifest();
+            compiled=adaptive_optopatch.compile_output_samples( ...
+                globalProps,configured.ao,manifest.alias_list);
             for role=["galvo_x","galvo_y","two_photon_modulator"]
                 entry=declaration(manifest,role);
-                measured=terminal_samples(testCase,globalProps,configured.ao, ...
-                    entry.terminal);
-                testCase.verifyEqual(measured.record_count,1, ...
-                    "A stale spelling survived onto "+entry.terminal+".");
-                testCase.verifyTrue( ...
-                    all(measured.samples==double(entry.neutral_value)), ...
-                    entry.terminal+" did not hold its declared neutral.");
+                canonical=adaptive_optopatch.canonical_terminal( ...
+                    entry.terminal,manifest.alias_list);
+                testCase.verifyFalse( ...
+                    any([compiled.canonical_terminal]==canonical), ...
+                    entry.terminal+" must carry no record during a 1P run, " + ...
+                    "neither a stale one nor an AO replacement.");
             end
+            % Accounting reads the same configuration the same way.
+            report=adaptive_optopatch.account_stimulation_outputs( ...
+                globalProps,configured,"Modality","1p_dmd");
+            for role=["galvo_x","galvo_y","two_photon_modulator"]
+                row=report.declared(report.declared.role==role,:);
+                testCase.verifyFalse(row.present);
+                testCase.verifyEqual(row.runtime_owner,"suppressed");
+            end
+            testCase.verifyEmpty(report.violations);
+        end
+
+        function aSurvivingGalvoRecordIsAViolationDuringAOnePhotonRun(testCase)
+            % The runtime guard behind the removal above. A buffered record
+            % on a suppressed output is an output nothing asked for, and on
+            % the galvo card it is also the Dev2 AO task a 1P run must not
+            % create - so it blocks whatever its samples measure, including
+            % a constant sitting exactly on the declared neutral.
+            [~,protocol]=screen_sequence_plan();
+            [globalProps,configured]= ...
+                adaptive_optopatch.build_luminos_1p_waveform_config( ...
+                live_global_props(200000),empty_wfm_data(),protocol);
+            neutral=constant("stray galvo x","Dev2/ao0",0);
+            neutral.script_owner=char(adaptive_optopatch.script_owner_tag());
+            configured.ao=append_wfm_record(configured.ao,neutral);
+            for policy=["report_only","fail_closed"]
+                report=adaptive_optopatch.account_stimulation_outputs( ...
+                    globalProps,configured,"Modality","1p_dmd","Policy",policy);
+                testCase.verifyFalse(report.passed);
+                testCase.verifySubstring( ...
+                    char(strjoin(report.violations," ")),"suppresses from the run");
+            end
+            % A mixed acquisition genuinely drives the galvos, so the same
+            % record there is not this fault.
+            mixed=adaptive_optopatch.account_stimulation_outputs( ...
+                globalProps,configured,"Modality","mixed");
+            testCase.verifyEmpty(mixed.violations);
         end
 
         % -----------------------------------------------------------------
@@ -231,8 +274,9 @@ classdef TestWaveformOwnershipRegressions < matlab.unittest.TestCase
                     tags(k)=string(records(k).script_owner);
                 end
             end
-            testCase.verifyEqual(sum(tags==owner),5, ...
-                "mod488, both galvos, the Pockels neutral and the DMD train.");
+            testCase.verifyEqual(sum(tags==owner),2, ...
+                "mod488 and the DMD train, and nothing else: the galvos " + ...
+                "and the Pockels cell are suppressed rather than driven.");
             % The operator's own record is left untagged, so dropping AO's
             % entries can never take it with them.
             inherited=configured.ao(string({configured.ao.name})=="mod594");
@@ -252,9 +296,15 @@ classdef TestWaveformOwnershipRegressions < matlab.unittest.TestCase
             [globalProps,configured]= ...
                 adaptive_optopatch.build_luminos_1p_waveform_config( ...
                 live_global_props(200000),ambient,protocol);
-            galvo=terminal_samples(testCase,globalProps,configured.ao,"Dev2/ao0");
-            testCase.verifyEqual(galvo.record_count,1);
-            testCase.verifyTrue(all(galvo.samples==0));
+            % The orphan galvo record is taken out and nothing takes its
+            % place: a 1P run leaves the galvo card out of the acquisition.
+            compiled=adaptive_optopatch.compile_output_samples( ...
+                globalProps,configured.ao);
+            testCase.verifyFalse(any([compiled.canonical_terminal]== ...
+                adaptive_optopatch.canonical_terminal("Dev2/ao0")));
+            % The advance line is the deliberate exception: it is AO's own
+            % during a 1P run, so a stale record is replaced rather than
+            % merely dropped.
             trigger=terminal_samples(testCase,globalProps,configured.do, ...
                 "Dev1/port0/line4");
             testCase.verifyEqual(trigger.record_count,1);

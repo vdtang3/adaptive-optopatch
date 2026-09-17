@@ -10,12 +10,17 @@ classdef TestStimulationAccounting < matlab.unittest.TestCase
             % record that merely looks like a zero constant is not evidence.
             manifest=adaptive_optopatch.virtual_upright_stimulation_manifest();
 
+            % A 1P run suppresses the 2P outputs rather than holding them,
+            % so there is no sample to read back on them at all - the
+            % declared roll-up is what says so. mod488 and the advance line
+            % are the 1P outputs a sample-level read-back applies to.
             [globalProps,onePhoton]=one_photon_configuration();
             report=adaptive_optopatch.account_stimulation_outputs( ...
                 globalProps,onePhoton,"Modality","1p_dmd");
             for role=["galvo_x","galvo_y","two_photon_modulator"]
-                verify_neutral(testCase,report,manifest,role);
+                verify_suppressed(testCase,report,role);
             end
+            verify_neutral(testCase,report,manifest,"blue_dmd_advance_trigger");
 
             [globalProps,twoPhoton]=two_photon_configuration();
             report=adaptive_optopatch.account_stimulation_outputs( ...
@@ -98,12 +103,16 @@ classdef TestStimulationAccounting < matlab.unittest.TestCase
         function duplicateRecordsOnOneOwnedTerminalAreDetected(testCase)
             [globalProps,configured]=one_photon_configuration();
             % Same terminal, same spelling: Luminos combines these into one
-            % waveform that neither record describes.
+            % waveform that neither record describes. Asserted on mod488,
+            % which is the AO-owned analog output a 1P build actually
+            % installs - the galvo and Pockels terminals are suppressed
+            % from a 1P run, so a single record there is not a duplicate of
+            % anything.
             configured.ao=append_wfm_record(configured.ao, ...
-                constant("second pockels","2P mod",0));
+                constant("second mod488","mod488",0));
             report=adaptive_optopatch.account_stimulation_outputs( ...
                 globalProps,configured,"Modality","1p_dmd");
-            row=row_for(report,"Dev1/ao3");
+            row=row_for(report,"Dev1/ao2");
             testCase.verifyTrue(row.duplicate_records);
             testCase.verifyEqual(row.record_count,2);
             testCase.verifyFalse(report.passed);
@@ -112,9 +121,13 @@ classdef TestStimulationAccounting < matlab.unittest.TestCase
         end
 
         function twoSpellingsOfOneOwnedTerminalAreDetectedAsACollision(testCase)
+            % AO installs mod488 under the rig alias, which de-aliases to
+            % Dev1/ao2. A slash-and-case spelling of the same terminal does
+            % NOT de-alias, so Luminos groups it separately and resolves
+            % two channels onto one physical line.
             [globalProps,configured]=one_photon_configuration();
             configured.ao=append_wfm_record(configured.ao, ...
-                constant("legacy galvo","/Dev2/AO0",0));
+                constant("legacy mod488","/DEV1/AO2",0));
             report=adaptive_optopatch.account_stimulation_outputs( ...
                 globalProps,configured,"Modality","1p_dmd");
             testCase.verifyFalse(report.passed);
@@ -210,9 +223,19 @@ classdef TestStimulationAccounting < matlab.unittest.TestCase
                 "A 1P run installs no buffered record for the 488 shutter.");
             testCase.verifyEqual(shutter.classification,"absent");
             testCase.verifyEqual(shutter.runtime_owner,"imperative");
+            % present=false is read together with runtime_owner: for a
+            % suppressed output it is the intended result, and for the
+            % imperatively owned shutter above it is too.
             galvo=declared(declared.role=="galvo_x",:);
-            testCase.verifyTrue(galvo.present);
-            testCase.verifyTrue(galvo.neutral_verified);
+            testCase.verifyFalse(galvo.present, ...
+                "A 1P run installs no buffered record on the galvo card.");
+            testCase.verifyEqual(galvo.classification,"absent");
+            testCase.verifyEqual(galvo.runtime_owner,"suppressed");
+            testCase.verifyFalse(galvo.neutral_verified);
+            % The neutral is still declared, because the modality that
+            % DOES drive this output asserts it. A 1P run does not - it
+            % neither installs a record nor writes the device.
+            testCase.verifyEqual(galvo.declared_neutral,0);
         end
 
         function theReportCarriesWhatAnArchiveNeedsToBeReadLater(testCase)
@@ -247,6 +270,15 @@ testCase.verifyEqual(row.declared_neutral,double(entry.neutral_value));
 testCase.verifyEqual(row.neutral_source,entry.neutral_source);
 testCase.verifyEqual(row.measured_minimum,double(entry.neutral_value));
 testCase.verifyEqual(row.measured_maximum,double(entry.neutral_value));
+end
+
+function verify_suppressed(testCase,report,role)
+%VERIFY_SUPPRESSED The output is absent from the run, by declaration.
+declared=report.declared(report.declared.role==role,:);
+testCase.verifyFalse(declared.present, ...
+    role+" must not appear in a configuration that suppresses it.");
+testCase.verifyEqual(declared.classification,"absent");
+testCase.verifyEqual(declared.runtime_owner,"suppressed");
 end
 
 function row=row_for(report,terminal)

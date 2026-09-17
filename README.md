@@ -99,52 +99,60 @@ protocol data; it never executes a protocol-generation script.
 
 ### 1. Generate a pulse protocol
 
-Connectivity example:
+The three core 1P experiments share a 10 ms Blue pulse, so the per-cell voltage
+stored by the calibration ramp is the calibration for the pulse actually used in
+the screens.
+
+| Script | Experiment | Pulse | Per cell |
+|---|---|---|---|
+| `create_single_cell_ramp_protocol.m` | Blue power calibration | 10 ms | ascending voltage blocks |
+| `create_connectivity_round_robin_protocol.m` | Connectivity screen | 10 ms | 1000 single pulses (1500 optional) |
+| `create_stp_screen_protocol.m` | Short-term plasticity screen | 10 ms | 300 trains of 5 pulses at 20 Hz |
+
+Connectivity and STP are explicit FOV-specific `multi_target_continuous`
+acquisitions: edit `target_cell_ids` at the top of the script, run it, and the
+realized cross-target schedule is frozen into the artifact. Both leave
+`command_voltage_v = NaN` so resolution reaches each cell's calibrated
+`selected_blue_voltage_v`.
 
 ```matlab
-protocol = adaptive_optopatch.generate_screen_protocol( ...
-    "PulseCount", 2000, ...
-    "PulseDurationMs", 5, ...
-    "DarkIntervalMs", [45 55], ...
-    "PreDelayMs", 100, ...
-    "PostDelayMs", 100, ...
-    "RandomSeed", 42);
-protocol.protocol_id = "connectivity_2hz";
-
-adaptive_optopatch.save_protocol("connectivity_2hz.mat", protocol);
+% pulse-protocols/create_connectivity_round_robin_protocol.m
+target_cell_ids = compose("cell_%03d", (1:10)');
+pulses_per_cell = 1000;                     % 1500 for the higher-SNR version
+pulse_duration_s = 0.010;
+preferred_global_spacing_s = 0.020;         % global onset-to-onset cadence
+minimum_same_cell_post_pulse_gap_s = 0.100; % dark time after a cell's pulse ends
 ```
-
-STF example:
 
 ```matlab
-conditions = adaptive_optopatch.default_stf_conditions( ...
-    "RepeatsPerCondition", 100, ...
-    "PulsesPerTrain", 10, ...
-    "PulseDurationMs", 5);
-
-protocol = adaptive_optopatch.generate_stf_protocol(conditions, ...
-    "EventDarkIntervalMs", [450 550], ...
-    "PreDelayMs", 100, ...
-    "PostDelayMs", 100, ...
-    "RandomSeed", 1001);
-protocol.protocol_id = "stf_50_100hz";
-
-adaptive_optopatch.save_protocol("stf_50_100hz.mat", protocol);
+% pulse-protocols/create_stp_screen_protocol.m
+target_cell_ids = compose("cell_%03d", (1:10)');
+trains_per_cell = 300;                        % n at each of P1..P5
+pulses_per_train = 5;
+frequency_hz = 20;
+pulse_duration_s = 0.010;
+preferred_inter_train_gap_s = 0.020;          % train end to a DIFFERENT cell's P1
+minimum_same_cell_post_train_gap_s = 1.000;   % recovery after this cell's own P5
 ```
 
-Editable generators for connectivity, regular-rate, STF, paired-pulse, Blue
-voltage ramps, Blue-mask titration, round robin, and custom schedules are in
-`pulse-protocols/`. Protocol schema 4 separates ROI-independent experiment
-definitions from fully resolved acquisitions. Target policy, acquisition
-boundaries, and event order are explicit. Resolution follows event, then
-acquisition/protocol, then per-cell FOV, then GUI precedence; unresolved
-required values fail before freezing.
+Both schedulers stimulate other cells while a target is inside its recovery
+window and insert idle time only when no target is eligible. STP interleaves
+targets at TRAIN granularity only; it never emits ROI1-P1, ROI2-P1, ROI1-P2,
+which would build a repeated millisecond-scale spike pairing between
+stimulated neurons.
+
+Generators for Blue-mask titration, DMD diagnostics, mixed 1P/2P commissioning,
+and custom schedules are also in `pulse-protocols/`. Protocol schema 4 separates
+ROI-independent experiment definitions from fully resolved acquisitions. Target
+policy, acquisition boundaries, and event order are explicit. Resolution follows
+event, then acquisition/protocol, then per-cell FOV, then GUI precedence;
+unresolved required values fail before freezing.
 
 For the EPSP workflow, use `create_single_cell_ramp_protocol.m` to apply an
 ordered voltage ramp separately to every Stim-enabled cell, store the chosen
-per-cell voltages in the FOV, then load the ROI-independent round-robin
-definition. Round robin resolves the current cells and voltages only when the
-run is built and frozen.
+per-cell voltages in the FOV, then generate and load the connectivity or STP
+screen. Those screens resolve the current cells and voltages only when the run
+is built and frozen.
 
 ### 2. Open Adaptive Optopatch
 

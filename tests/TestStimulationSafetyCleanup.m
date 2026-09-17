@@ -1,8 +1,14 @@
 classdef TestStimulationSafetyCleanup < matlab.unittest.TestCase
     %TESTSTIMULATIONSAFETYCLEANUP Neutral state, ordering, unwind, archive.
-    %   The asymmetry these cover is the one where a 1P run ended with the
+    %   These began as cover for the asymmetry where a 1P run ended with the
     %   Pockels cell and the galvos exactly as the last 2P run had left
     %   them, because cleanup only ever unwound the modality it was running.
+    %   The remedy then was to command every declared output every time,
+    %   which overshot: a pure 1P run has no business issuing galvo or
+    %   Pockels writes at all. Neutralization is now scoped by the
+    %   manifest's per-modality ownership, so what these assert is that an
+    %   ACTIVE modality's hardware is still made safe while hardware
+    %   declared suppressed for the run is left completely alone.
 
     properties
         OutputRoot string
@@ -71,22 +77,44 @@ classdef TestStimulationSafetyCleanup < matlab.unittest.TestCase
                 "A missing device stopped the other systems being neutralized.");
         end
 
-        function anIncompleteNeutralizationIsSaidOutLoudAndArchived(testCase)
-            % A rig missing a device is not a reason to refuse a run it can
-            % still do safely, but it is never allowed to be silent.
+        function aPureOnePhotonRunOnARigWithoutTwoPhotonHardwareIsSilent(testCase)
+            % This once asserted the opposite, and the change is the point.
+            % An absent Pockels cell used to make every 1P run report a
+            % neutralization failure and warn about it, because 1P cleanup
+            % tried to darken hardware the rig did not have. A pure 1P run
+            % does not command that output at all now, so there is nothing
+            % to be absent for and nothing to warn about - and the archive
+            % says "suppressed" rather than "failed", which is the
+            % distinction that makes a real failure worth reading.
             [manifest,targets]=one_photon_manifest();
             app=adaptive_optopatch.testing.make_simulated_luminos( ...
                 "SimulationOutputRoot",testCase.OutputRoot, ...
                 "CameraRoi",targets.reference_camera.roi, ...
                 "MissingDevice","2P mod");
-            run=testCase.verifyWarning(@()adaptive_optopatch.run_1p_manifest( ...
-                manifest,targets,app,"ConfirmLiveOutput",true, ...
-                "ShutterSettleTimeS",0,"OutputDirectory",testCase.OutputRoot), ...
-                "adaptive_optopatch:StimulationNeutralizationIncomplete");
+            run=testCase.verifyWarningFree( ...
+                @()adaptive_optopatch.run_1p_manifest( ...
+                    manifest,targets,app,"ConfirmLiveOutput",true, ...
+                    "ShutterSettleTimeS",0, ...
+                    "OutputDirectory",testCase.OutputRoot));
             testCase.verifyEqual(run.trials.acquisition_status(1),"completed");
-            testCase.verifyFalse(run.initial_neutralization.all_succeeded);
-            testCase.verifyEqual(run.initial_neutralization.failures, ...
-                "two_photon_modulator");
+            testCase.verifyTrue(run.initial_neutralization.all_succeeded);
+            testCase.verifyEmpty(run.initial_neutralization.failures);
+            testCase.verifyTrue(any(run.initial_neutralization.suppressed== ...
+                "two_photon_modulator"));
+        end
+
+        function suppressionDoesNotSwallowARealNeutralizationFailure(testCase)
+            % The other half of that: an output the modality DOES drive is
+            % still reported as a failure when it cannot be commanded. If
+            % suppression had been implemented as "try, then ignore", this
+            % is the test that would not be able to tell the difference.
+            app=adaptive_optopatch.testing.make_simulated_luminos( ...
+                "MissingDevice","2P mod");
+            report=adaptive_optopatch.neutralize_all_stimulation(app, ...
+                "Modality","mixed");
+            testCase.verifyFalse(report.all_succeeded);
+            testCase.verifyEqual(report.failures,"two_photon_modulator");
+            testCase.verifyEmpty(report.suppressed);
         end
 
         % -----------------------------------------------------------------
@@ -123,27 +151,36 @@ classdef TestStimulationSafetyCleanup < matlab.unittest.TestCase
         end
 
         % -----------------------------------------------------------------
-        % Symmetric cleanup
+        % Modality-scoped cleanup
         % -----------------------------------------------------------------
-        function aOnePhotonRunLeavesTheTwoPhotonHardwareSafe(testCase)
+        function aPureOnePhotonRunLeavesTheTwoPhotonHardwareAlone(testCase)
+            % The inverse of what this once asserted, and deliberately so.
+            % A pure 1P acquisition does not use the Pockels cell or the
+            % galvos, so it must not command them - not to park them, and
+            % not to darken them. Whatever they held before the run they
+            % still hold after it. Making 2P hardware safe belongs to the
+            % run that actually drives it.
             [manifest,targets]=one_photon_manifest();
             app=simulated_rig(testCase,targets);
             pockels=app.getDevice("NI_DAQ_Modulator","name","2P mod");
             scanner=app.getDevice("Scanning_Device", ...
                 "name","Chameleon (To friends: Ben)");
             pockels.level=2.5; scanner.galvox_wfm=4.0; scanner.galvoy_wfm=4.0;
+            scanner.ExplicitGalvoUpdateCount=0;
 
             adaptive_optopatch.run_1p_manifest(manifest,targets,app, ...
                 "ConfirmLiveOutput",true,"ShutterSettleTimeS",0, ...
                 "OutputDirectory",testCase.OutputRoot);
 
-            testCase.verifyEqual(pockels.level,0, ...
-                "A 1P run left the Pockels cell where a 2P run had put it.");
-            testCase.verifyEqual(scanner.galvox_wfm,0);
-            testCase.verifyEqual(scanner.galvoy_wfm,0);
+            testCase.verifyEqual(pockels.level,2.5, ...
+                "A pure 1P run wrote the Pockels cell it never uses.");
+            testCase.verifyEqual(scanner.ExplicitGalvoUpdateCount,0, ...
+                "A pure 1P run issued an explicit galvo update.");
+            testCase.verifyEqual(scanner.galvox_wfm,4.0);
+            testCase.verifyEqual(scanner.galvoy_wfm,4.0);
         end
 
-        function aFailedAcquisitionStillNeutralizesEverything(testCase)
+        function aFailedAcquisitionStillNeutralizesWhatTheRunOwned(testCase)
             [manifest,targets]=one_photon_manifest();
             app=simulated_rig(testCase,targets);
             app.FailOnAcquisitionNumber=1;
@@ -160,8 +197,12 @@ classdef TestStimulationSafetyCleanup < matlab.unittest.TestCase
             testCase.verifyEqual(modulator.level,0);
             testCase.verifyFalse(logical(shutter.State), ...
                 "A failed acquisition left the 488 shutter open.");
-            testCase.verifyEqual(pockels.level,0, ...
-                "A failed 1P acquisition left the Pockels cell live.");
+            % The 1P outputs the run owned are made safe on the way out.
+            % The Pockels cell is not one of them, and an exception on the
+            % unwind path is not a licence to start commanding hardware the
+            % run never used.
+            testCase.verifyEqual(pockels.level,2.5, ...
+                "Failure cleanup wrote the Pockels cell during a pure 1P run.");
         end
 
         function aPreArmFailureNeutralizesEvenThoughNothingWasEverArmed(testCase)
@@ -181,7 +222,8 @@ classdef TestStimulationSafetyCleanup < matlab.unittest.TestCase
                 "ShutterSettleTimeS",0,"OutputDirectory",testCase.OutputRoot), ...
                 "adaptive_optopatch:SimulatedLaserStartFailure");
             testCase.verifyEqual(modulator.level,0);
-            testCase.verifyEqual(pockels.level,0);
+            testCase.verifyEqual(pockels.level,2.5, ...
+                "Pre-arm cleanup wrote the Pockels cell during a pure 1P run.");
             testCase.verifyFalse(logical(app.acquisition_active));
         end
 
@@ -203,6 +245,37 @@ classdef TestStimulationSafetyCleanup < matlab.unittest.TestCase
             testCase.verifyEqual(daq.wfm_data,originalWfm);
             testCase.verifyFalse(daq.waveforms_built, ...
                 "Restoring the operator's configuration must not arm it.");
+        end
+
+        function theSuppressedGalvoRecordIsPutBackAfterTheRun(testCase)
+            % Suppression is temporary and belongs to the acquisition. An
+            % ambient galvo waveform must not execute during a 1P run, and
+            % must still be in the operator's configuration afterwards -
+            % AO borrows the React-tab configuration, it does not edit it.
+            [manifest,targets]=one_photon_manifest();
+            app=simulated_rig(testCase,targets);
+            daq=app.getDevice("DAQ");
+            ambient=daq.wfm_data;
+            ambient.ao=append_wfm_record(ambient.ao, ...
+                constant("operator galvo x","Dev2/ao0",3.1));
+            daq.wfm_data=ambient;
+
+            run=adaptive_optopatch.run_1p_manifest(manifest,targets,app, ...
+                "ConfirmLiveOutput",true,"ShutterSettleTimeS",0, ...
+                "OutputDirectory",testCase.OutputRoot);
+
+            % It did not run: the configuration that was installed had no
+            % record on the galvo card at all.
+            declared=run.trials.stimulation_accounting{1}.declared;
+            galvo=declared(declared.role=="galvo_x",:);
+            testCase.verifyFalse(galvo.present, ...
+                "The ambient galvo waveform executed during a 1P run.");
+            testCase.verifyEqual(galvo.runtime_owner,"suppressed");
+
+            % And it is back, exactly as the operator left it.
+            testCase.verifyEqual(daq.wfm_data,ambient, ...
+                "AO permanently modified the operator's configuration.");
+            testCase.verifyFalse(daq.waveforms_built);
         end
 
         function failClosedIsAvailableThroughTheRunnerButIsNotTheDefault(testCase)
@@ -313,8 +386,12 @@ classdef TestStimulationSafetyCleanup < matlab.unittest.TestCase
             % what was commanded, what was neutral and whether that neutral
             % was actually verified in the compiled samples.
             perTrial=run.trials.stimulation_accounting{1};
+            % The galvos are suppressed from a 1P run, so the archive says
+            % they were absent by declaration rather than measured neutral.
             galvo=perTrial.declared(perTrial.declared.role=="galvo_x",:);
-            testCase.verifyTrue(galvo.neutral_verified);
+            testCase.verifyFalse(galvo.present);
+            testCase.verifyEqual(galvo.runtime_owner,"suppressed");
+            testCase.verifyFalse(galvo.neutral_verified);
             mod488=perTrial.terminals( ...
                 perTrial.terminals.role=="blue_modulator",:);
             testCase.verifyEqual(mod488.classification,"commanded");

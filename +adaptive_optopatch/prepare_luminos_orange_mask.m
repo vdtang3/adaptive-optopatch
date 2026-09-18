@@ -29,9 +29,9 @@ if numel(dmd)~=1
     error("adaptive_optopatch:AmbiguousDevice", ...
         "Expected one Luminos DMD named '%s', found %d.",profile.orange_dmd.name,numel(dmd));
 end
-if isempty(dmd.tform) || is_identity_transform(dmd.tform) || isempty(dmd.refimage)
+if isempty(dmd.refimage)
     error("adaptive_optopatch:UncalibratedOrangeDmd", ...
-        "DMD_Orange requires a nonidentity camera transform and calibration reference image.");
+        "DMD_Orange requires a calibration reference image.");
 end
 enabled=arrayfun(@(target)logical(target.recording_enabled),targets.targets);
 configuration=struct("schema_version","1.0.0", ...
@@ -41,23 +41,21 @@ configuration=struct("schema_version","1.0.0", ...
     "orange_expansion_pixels",targets.parameters.orange_expansion_pixels, ...
     "camera_mask",logical(targets.orange_combined_mask));
 if options.DryRun, return; end
+% Validated independently of the Blue DMD: they are separate devices with
+% separate per-camera calibration stores, and a recording mask projected
+% through the wrong camera's transform mislabels which cells were recorded
+% just as surely as a wrong stimulation mask mistargets them.
+configuration.calibration_identity= ...
+    adaptive_optopatch.validate_dmd_calibration_identity( ...
+    dmd,targets.reference_camera,string(profile.orange_dmd.name));
 configuration.dmd_reference_mask= ...
     adaptive_optopatch.remap_camera_mask_to_dmd_reference( ...
     configuration.camera_mask,targets.reference_camera,dmd,profile.orange_dmd.name);
 transformed=dmd.setPatterningROI(configuration.dmd_reference_mask, ...
     "write_when_complete",true);
 configuration.device_mask=logical(transformed);
+configuration.owned_pattern_fingerprint= ...
+    adaptive_optopatch.record_owned_dmd_pattern(dmd);
 configuration.loaded=true;
 configuration.programmed_at=string(datetime("now","TimeZone","local"));
-end
-
-function tf=is_identity_transform(tform)
-if isa(tform,"affinetform2d") || isa(tform,"projtform2d")
-    matrix=tform.A;
-elseif isa(tform,"affine2d") || isa(tform,"projective2d")
-    matrix=tform.T';
-else
-    tf=false; return
-end
-tf=norm(double(matrix)-eye(3),"fro")<1e-9;
 end

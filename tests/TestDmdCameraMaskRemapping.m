@@ -101,13 +101,16 @@ classdef TestDmdCameraMaskRemapping < matlab.unittest.TestCase
 end
 
 function value=geometry(origin,imageSize,bin)
-value=struct("image_size",imageSize,"origin_xy",origin,"bin",bin, ...
+value=struct("name","Orca Fusion","image_size",imageSize, ...
+    "origin_xy",origin,"bin",bin, ...
     "roi",[origin(1) imageSize(2)*bin origin(2) imageSize(1)*bin]);
 end
 
 function dmd=reference_dmd(origin,imageSize,bin,name)
 dmd=adaptive_optopatch.testing.SimulatedLuminosDevice("DMD",name);
 dmd.refimage=reference_struct(origin,imageSize,bin);
+adaptive_optopatch.testing.calibrate_simulated_dmd(dmd, ...
+    geometry(origin,imageSize,bin));
 end
 
 function value=reference_struct(origin,imageSize,bin)

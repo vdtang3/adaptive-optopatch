@@ -79,7 +79,15 @@ if ~motionValidation.passed
         strjoin(motionValidation.issues,newline));
 end
 original=capture_state(hardware);
-cleanup=onCleanup(@()restore_state(app,hardware,original,profile));
+% A 2P run programs the Blue DMD too - blank, so the preloaded 1P path
+% cannot stimulate while the galvos work - and programs the Orange
+% recording mask. Both would be replaced by an autoloaded generic stack at
+% acquisition startup, which on the Blue DMD means 488 nm light during a
+% 2P trial. Claimed before the blank write below and released in
+% restore_state, which runs on success, on error and on Ctrl-C.
+dmdOwnership=adaptive_optopatch.claim_dmd_pattern_ownership( ...
+    [hardware.blue_dmd,orange_dmd_or_empty(app)]);
+cleanup=onCleanup(@()restore_state(app,hardware,original,profile,dmdOwnership));
 % Every AO-owned stimulation output, not only this modality's. The
 % statements below repeat three of those through the resolved handles this
 % runner already holds; both are kept because the manifest-driven sweep
@@ -101,6 +109,7 @@ hardware.blue_shutter.State=profile.inactive_one_photon.shutter.closed_state;
 % the preloaded Blue-DMD state non-stimulating throughout this 2P run.
 hardware.blue_dmd.Target=adaptive_optopatch.blank_dmd_pattern(hardware.blue_dmd);
 hardware.blue_dmd.Write_Static();
+adaptive_optopatch.record_owned_dmd_pattern(hardware.blue_dmd);
 trials=manifest.trials; n=height(trials);
 trials=ensure_column(trials,"settings_snapshot",cell(n,1));
 trials=ensure_column(trials,"waveform_summary",cell(n,1));
@@ -345,7 +354,21 @@ end
 function trials=ensure_column(trials,name,value)
 if ~ismember(name,string(trials.Properties.VariableNames)), trials.(name)=value; end
 end
-function restore_state(app,hardware,original,profile)
+function device=orange_dmd_or_empty(app)
+% The Orange DMD is the 1P profile's, and prepare_luminos_orange_mask is
+% what requires it. Resolved here only so its programming can be protected
+% alongside the Blue DMD's; a rig without one simply has nothing to claim.
+device=[];
+try
+    profile1p=adaptive_optopatch.virtual_upright_1p_profile();
+    found=app.getDevice("DMD","name",profile1p.orange_dmd.name, ...
+        "displayWarning",false);
+    if numel(found)==1, device=found; end
+catch
+end
+end
+
+function restore_state(app,hardware,original,profile,dmdOwnership)
 % Symmetric: a 2P run leaves mod488, the 488 shutter and the Blue DMD safe
 % as well as its own Pockels cell and galvos. Cleanup that only unwound the
 % modality it happened to be running is what made the two runners able to
@@ -373,4 +396,5 @@ end
 for k=1:numel(hardware.cameras)
     try, hardware.cameras(k).frames_requested=original.camera_frames(k); catch, end
 end
+adaptive_optopatch.release_dmd_pattern_ownership(dmdOwnership);
 end

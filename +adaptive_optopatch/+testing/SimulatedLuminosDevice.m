@@ -40,6 +40,14 @@ classdef SimulatedLuminosDevice < handle
         ResetCount double = 0
         StaticWriteCount double = 0
         pattern_stack logical = false(0,0,0)
+        % Luminos's generic "send my stack before every acquisition" toggle,
+        % and the ownership claim that suspends it. Modelled because the bug
+        % they exist for is an interaction between the two: neither a static
+        % write nor the FLUT slot path clears pattern_stack, so an AO target
+        % was replaced by a stale generic stack at acquisition startup.
+        auto_write_stack logical = false
+        pattern_owner string = ""
+        pattern_owner_fingerprint string = ""
         % Declared ALP_MIN_PICTURE_TIME equivalent. NaN means the simulated
         % DMD declares no capability, so no advance-interval limit is
         % invented; tests set it to exercise the real check.
@@ -96,6 +104,17 @@ classdef SimulatedLuminosDevice < handle
         % writes those properties but is a trajectory rather than a
         % neutralization command.
         ExplicitGalvoUpdateCount double = 0
+        % Per-camera calibration store, as Patterning_Device keeps it: one
+        % field per camera, each holding at least a tform. Modelled so a test
+        % can put the device into the state the calibration checks exist for -
+        % a nonidentity, correctly shaped transform belonging to a different
+        % camera than the one the plan was made on.
+        calibrations struct = struct()
+        calibration_camera string = ""
+    end
+
+    properties (Access=private)
+        saved_auto_write_stack logical = false
     end
 
     properties (SetObservable)
@@ -199,6 +218,172 @@ classdef SimulatedLuminosDevice < handle
                 end
             end
             if writeNow, device.Write_Static(); end
+        end
+
+        % ---- Per-camera calibration, mirroring Patterning_Device ---------
+
+        function key=calibration_key(~,cameraName)
+            name=string(cameraName);
+            if strlength(name)==0, key=""; return; end
+            key=string(matlab.lang.makeValidName(char(name)));
+        end
+
+        function set_calibration_entry(device,cameraName,transform,metadata)
+            arguments
+                device
+                cameraName
+                transform
+                metadata struct = struct()
+            end
+            key=device.calibration_key(cameraName);
+            if strlength(key)==0, return; end
+            entry=metadata;
+            entry.camera=char(string(cameraName));
+            entry.tform=transform;
+            entry.session='SIMULATION';
+            entry.utc=posixtime(datetime('now','TimeZone','UTC'));
+            device.calibrations.(key)=entry;
+            device.tform=transform;
+        end
+
+        function entry=get_calibration_entry(device,cameraName)
+            entry=[];
+            key=device.calibration_key(cameraName);
+            if strlength(key)>0 && isfield(device.calibrations,key)
+                entry=device.calibrations.(key);
+            end
+        end
+
+        function tf=has_any_calibration_entry(device)
+            tf=~isempty(fieldnames(device.calibrations));
+        end
+
+        function status=calibration_status(device,cameraName)
+            entry=device.get_calibration_entry(cameraName);
+            if isempty(entry) || ~isfield(entry,'tform') || isempty(entry.tform)
+                status="none";
+            else
+                status="session";
+            end
+        end
+
+        function status=use_calibration_camera(device,cameraName)
+            % Reproduces the behaviour the calibration checks exist for: the
+            % selected camera changes, and when the newly selected pair has
+            % no entry the PREVIOUS camera's transform stays active.
+            device.calibration_camera=string(cameraName);
+            entry=device.get_calibration_entry(cameraName);
+            if ~isempty(entry) && isfield(entry,'tform') && ~isempty(entry.tform)
+                device.tform=entry.tform;
+            end
+            status=device.calibration_status(cameraName);
+        end
+
+        function identity=calibration_identity(device,cameraName)
+            arguments
+                device
+                cameraName string = device.calibration_camera
+            end
+            identity=struct("schema_version","1.0.0", ...
+                "device",device.name,"device_class",string(class(device)), ...
+                "camera",string(cameraName), ...
+                "selected_camera",device.calibration_camera, ...
+                "status",device.calibration_status(cameraName), ...
+                "has_pair_calibration",false, ...
+                "active_transform_is_pair_transform",false, ...
+                "has_any_pair_calibration",device.has_any_calibration_entry(), ...
+                "pair_transform",[],"active_transform",device.tform, ...
+                "measured_utc",NaN,"bin",NaN,"roi",[],"mode","");
+            entry=device.get_calibration_entry(cameraName);
+            if isempty(entry) || ~isfield(entry,'tform') || isempty(entry.tform)
+                return
+            end
+            identity.has_pair_calibration=true;
+            identity.pair_transform=entry.tform;
+            if isfield(entry,'utc'), identity.measured_utc=entry.utc; end
+            if isfield(entry,'bin'), identity.bin=entry.bin; end
+            if isfield(entry,'roi'), identity.roi=entry.roi; end
+            if isfield(entry,'mode'), identity.mode=string(entry.mode); end
+            identity.active_transform_is_pair_transform= ...
+                same_transform(device.tform,entry.tform);
+        end
+
+        % ---- Exclusive pattern ownership ---------------------------------
+
+        function previous=Claim_Pattern_Ownership(device,owner)
+            owner=string(owner);
+            held=strlength(device.pattern_owner)>0;
+            if held && device.pattern_owner~=owner
+                error("DMD:PatternOwnershipHeld", ...
+                    "%s is currently programmed by '%s'.", ...
+                    device.name,device.pattern_owner);
+            end
+            previous=struct("device",device.name,"owner",owner, ...
+                "auto_write_stack",device.auto_write_stack, ...
+                "already_owned",held);
+            if held
+                previous.auto_write_stack=device.saved_auto_write_stack;
+                return
+            end
+            device.saved_auto_write_stack=device.auto_write_stack;
+            device.pattern_owner=owner;
+            device.pattern_owner_fingerprint="";
+            device.auto_write_stack=false;
+        end
+
+        function Release_Pattern_Ownership(device,owner)
+            arguments
+                device
+                owner string = ""
+            end
+            if strlength(device.pattern_owner)==0, return; end
+            if strlength(owner)>0 && device.pattern_owner~=owner, return; end
+            device.auto_write_stack=device.saved_auto_write_stack;
+            device.pattern_owner="";
+            device.pattern_owner_fingerprint="";
+        end
+
+        function fingerprint=Pattern_Fingerprint(device)
+            % Same contract as DMD.Pattern_Fingerprint: MATLAB-side state
+            % only, changing whenever what the device would project changes -
+            % the static pattern, the loaded bank, the playlist order, the
+            % playback mode - and not otherwise. No hardware inquiry, for the
+            % reason given there: an ALP inquiry may answer -1 at any time,
+            % and an intermittently unavailable answer must not read as "the
+            % pattern changed".
+            parts=strings(0,1);
+            parts(end+1,1)=summarize_mask(device.Target);
+            for k=1:numel(device.slot_patterns)
+                parts(end+1,1)=summarize_mask(device.slot_patterns{k}); %#ok<AGROW>
+            end
+            parts(end+1,1)=string(mat2str(double(device.playlist(:))'));
+            parts(end+1,1)=string(device.playlist_mode);
+            parts(end+1,1)=string(double(device.invert_output));
+            fingerprint=string(keyHash(strjoin(parts,"|")));
+        end
+
+        function fingerprint=Record_Owned_Pattern(device,owner)
+            owner=string(owner);
+            if device.pattern_owner~=owner
+                error("DMD:PatternOwnershipNotHeld", ...
+                    "'%s' does not own %s.",owner,device.name);
+            end
+            fingerprint=device.Pattern_Fingerprint();
+            device.pattern_owner_fingerprint=fingerprint;
+        end
+
+        function report=Verify_Owned_Pattern(device)
+            report=struct("device",string(device.name), ...
+                "owner",device.pattern_owner,"checked",false, ...
+                "matches",false,"expected",device.pattern_owner_fingerprint, ...
+                "actual","");
+            if strlength(device.pattern_owner)==0 || ...
+                    strlength(device.pattern_owner_fingerprint)==0
+                return
+            end
+            report.actual=device.Pattern_Fingerprint();
+            report.checked=true;
+            report.matches=report.actual==report.expected;
         end
 
         function Write_Stack(device,mode)
@@ -307,6 +492,35 @@ end
 function code=mode_code(mode)
 % alp.h: ALP_MASTER 2301, ALP_SLAVE 2302.
 if strcmpi(string(mode),"slave"), code=2302; else, code=2301; end
+end
+
+function text=summarize_mask(mask)
+% Size, population count and a position-weighted sum: enough to notice a
+% different pattern and a rearranged one, cheaply.
+mask=double(logical(mask));
+v=mask(:);
+text=string(sprintf('%s#%d#%.17g',mat2str(size(mask)),nnz(v), ...
+    sum(v.*(1:numel(v))')));
+end
+
+function tf=same_transform(a,b)
+A=matrix_of(a); B=matrix_of(b);
+tf=false;
+if isempty(A) || isempty(B) || ~isequal(size(A),size(B)), return; end
+A=A/A(end,end); B=B/B(end,end);
+tf=max(abs(A-B),[],"all")<=1e-9;
+end
+
+function A=matrix_of(transform)
+A=[];
+if isempty(transform), return; end
+if isa(transform,"affinetform2d") || isa(transform,"projtform2d")
+    A=double(transform.A);
+elseif isa(transform,"affine2d") || isa(transform,"projective2d")
+    A=double(transform.T)';
+elseif isnumeric(transform) && isequal(size(transform),[3 3])
+    A=double(transform);
+end
 end
 
 function value=unavailable_as_minus_one(value)

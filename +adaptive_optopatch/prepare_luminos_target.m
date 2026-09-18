@@ -31,6 +31,11 @@ if trialRow.is_null
         if options.WriteDmdImmediately
             dmd.Write_Static();
             result = record_static_execution_state(result, dmd);
+            % A blank is a programmed state like any other: an autoloaded
+            % generic stack over the top of it would be stimulating light
+            % during a trial that asked for none.
+            result.owned_pattern_fingerprint = ...
+                adaptive_optopatch.record_owned_dmd_pattern(dmd);
         end
     end
     result.configured = true;
@@ -43,6 +48,13 @@ if result.mode == "1p_dmd"
     result.camera_mask = targetBundle.dmd_camera_masks(:,:,trialRow.target_index);
     if options.DryRun, return; end
     dmd = app.getDevice("DMD", "name", options.DmdName);
+    % Before anything reaches the mirrors: the transform this mask is about
+    % to be warped through has to be the one measured for this DMD against
+    % the camera the plan's reference image came from, not merely a
+    % transform that exists and is the right shape.
+    result.calibration_identity = ...
+        adaptive_optopatch.validate_dmd_calibration_identity( ...
+        dmd,targetBundle.reference_camera,options.DmdName);
     result.dmd_reference_mask= ...
         adaptive_optopatch.remap_camera_mask_to_dmd_reference( ...
         result.camera_mask,targetBundle.reference_camera,dmd,options.DmdName);
@@ -53,6 +65,8 @@ if result.mode == "1p_dmd"
         % written, so the device-space pattern that actually reached
         % Device_Pattern is read back from Target, not from its return value.
         result = record_static_execution_state(result, dmd);
+        result.owned_pattern_fingerprint = ...
+            adaptive_optopatch.record_owned_dmd_pattern(dmd);
     end
 elseif result.mode == "2p_spiral"
     result.action = "camera_center_to_spiral";

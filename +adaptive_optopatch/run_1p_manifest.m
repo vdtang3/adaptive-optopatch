@@ -85,7 +85,18 @@ adaptive_optopatch.validate_dmd_reference_geometry( ...
     hardware.dmd,targets.reference_camera,profile.dmd.name);
 adaptive_optopatch.validate_dmd_reference_geometry( ...
     hardware.orange_dmd,targets.reference_camera,profile.orange_dmd.name);
+% Which camera's calibration each DMD is actually projecting through. The
+% per-trial prepare_* functions check this again at the moment they program,
+% which is where the invariant belongs; doing it once here as well means a
+% run with the wrong calibration selected fails before the OBIS is raised
+% rather than after.
+dmdCalibrationIdentity=struct( ...
+    "blue",adaptive_optopatch.validate_dmd_calibration_identity( ...
+        hardware.dmd,targets.reference_camera,profile.dmd.name), ...
+    "orange",adaptive_optopatch.validate_dmd_calibration_identity( ...
+        hardware.orange_dmd,targets.reference_camera,profile.orange_dmd.name));
 dmdCalibration=adaptive_optopatch.capture_1p_dmd_calibration(hardware,targets);
+dmdCalibration.identity=dmdCalibrationIdentity;
 original=capture_original_state(hardware);
 runnerStartedLaser=false;
 
@@ -121,6 +132,16 @@ run=struct("schema_version","0.6.0","mode","live_1p_dmd", ...
     "initial_settings_snapshot",adaptive_optopatch.snapshot_luminos_settings(app), ...
     "trials",trials);
 
+% Exclusive DMD programming for the length of this run, taken before
+% anything writes a pattern. Luminos acquisition startup reloads a DMD's
+% retained generic pattern_stack when auto_write_stack is set, which happens
+% after AO has programmed and verified the device and before the first
+% trigger; the claim suspends that and nothing else. Released in
+% restore_1p_hardware, which runs on success, on error and on Ctrl-C.
+dmdOwnership=adaptive_optopatch.claim_dmd_pattern_ownership( ...
+    [hardware.dmd,hardware.orange_dmd]);
+run.dmd_ownership=dmdOwnership.report;
+
 % Neutral state first, source power second. The OBIS setpoint used to be
 % raised before mod488 was known to be dark, so for the length of those two
 % statements the laser was at experiment power behind a modulator holding
@@ -144,12 +165,12 @@ catch exception
     % nothing.
     restore_1p_hardware(app,hardware,original,profile, ...
         options.BlankDmdAfterTrial,isfinite(options.LaserPowerW), ...
-        runnerStartedLaser,runModality);
+        runnerStartedLaser,runModality,dmdOwnership);
     rethrow(exception)
 end
 cleanup=onCleanup(@()restore_1p_hardware(app,hardware,original,profile, ...
     options.BlankDmdAfterTrial,isfinite(options.LaserPowerW), ...
-    runnerStartedLaser,runModality));
+    runnerStartedLaser,runModality,dmdOwnership));
 
 completedThisCall=0;
 for k=1:n
@@ -510,7 +531,7 @@ end
 end
 
 function restore_1p_hardware(app,hardware,original,profile,blankDmd, ...
-        restorePower,stopLaser,modality)
+        restorePower,stopLaser,modality,dmdOwnership)
 % Stimulation goes safe first, over what this run actually used. Cleanup
 % once unwound only the modality that had been selected, so a 1P run ended
 % with the Pockels cell and the galvos exactly as the previous 2P run had
@@ -572,6 +593,10 @@ try
     if stopLaser, hardware.laser.Stop(); end
 catch
 end
+% Last, after the DMDs have been blanked: releasing restores each device's
+% Write Stack setting, and doing it earlier would let the generic stack
+% reload over the blank if anything else armed an acquisition in between.
+adaptive_optopatch.release_dmd_pattern_ownership(dmdOwnership);
 end
 
 function disconnect_clock_bridge(daq)

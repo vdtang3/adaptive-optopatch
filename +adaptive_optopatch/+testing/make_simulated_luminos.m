@@ -15,6 +15,10 @@ arguments
     options.LaserInterlockEnabled (1,1) logical = true
     options.Modulator488Port (1,1) string = "Dev1/ao2"
     options.ValidDaqSync (1,1) logical = true
+    % Which camera the DMD calibrations are stored against. Defaults to the
+    % profile's voltage camera, which is the camera an AO reference is taken
+    % with; a test states a different one to build the wrong-camera case.
+    options.CalibrationCamera (1,1) string = ""
 end
 if options.LaserPowerMw>55
     error("adaptive_optopatch:SimulatedLaserPowerOutOfRange", ...
@@ -26,6 +30,9 @@ end
 
 profile1p=adaptive_optopatch.virtual_upright_1p_profile();
 profile2p=adaptive_optopatch.virtual_upright_2p_profile();
+if strlength(options.CalibrationCamera)==0
+    options.CalibrationCamera=string(profile1p.camera.name);
+end
 daq=device("DAQ","Dev1");
 daq.alias_list=adaptive_optopatch.virtual_upright_stimulation_manifest().alias_list;
 daq.global_props=struct("rate",200000,"total_time",1, ...
@@ -53,12 +60,16 @@ camera.maximum_frame_rate_hz=max(options.CameraFrameRateHz/0.85, ...
     options.CameraFrameRateHz+1);
 
 dmd=device("DMD",profile1p.dmd.name);
-dmd.tform=affinetform2d([1.01 0 2;0 1.01 3;0 0 1]);
 dmd.refimage=camera_reference(options.CameraRoi,options.CameraBin);
 dmd.trigger_channel=profile1p.dmd.trigger_port;
 orangeDmd=device("DMD",profile1p.orange_dmd.name);
-orangeDmd.tform=affinetform2d([1.02 0 1;0 1.02 2;0 0 1]);
 orangeDmd.refimage=camera_reference(options.CameraRoi,options.CameraBin);
+% Stored against the camera pair, not just dropped into tform. A transform
+% with no camera recorded is exactly the state AO now refuses, because
+% nothing about it says which camera it was measured against; a simulated
+% rig that skipped the pair store would be a rig AO would refuse to run on.
+calibrate(dmd,options.CalibrationCamera,affinetform2d([1.01 0 2;0 1.01 3;0 0 1]));
+calibrate(orangeDmd,options.CalibrationCamera,affinetform2d([1.02 0 1;0 1.02 2;0 0 1]));
 laser=device("Laser_Device",profile1p.laser.name);
 laser.Mode=options.LaserMode;
 laser.SetPower=options.LaserPowerMw/1000;
@@ -93,6 +104,13 @@ app=adaptive_optopatch.testing.SimulatedLuminosApp( ...
 
     function value=device(type,name)
         value=adaptive_optopatch.testing.SimulatedLuminosDevice(type,name);
+    end
+
+    function calibrate(patterningDevice,cameraName,transform)
+        patterningDevice.set_calibration_entry(cameraName,transform, ...
+            struct("mode","simulated","bin",options.CameraBin, ...
+            "roi",options.CameraRoi));
+        patterningDevice.use_calibration_camera(cameraName);
     end
 end
 

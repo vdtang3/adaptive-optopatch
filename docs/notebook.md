@@ -2036,3 +2036,107 @@ checkbox is not in it and could not be. A preview of what an *uncommitted*
 draft would command is deliberately absent: it would mean resolving a protocol
 against state MATLAB does not hold, which is a second resolution path for the
 one question this tab exists to answer honestly.
+
+## 2026-09-18 — What reaches the mirrors, as distinct from what AO programmed
+
+The state model of the previous entry is about intent: React holds
+uncommitted intent, MATLAB holds committed state, Update plan is the commit
+boundary, and Run executes only the prepared plan. None of it is touched
+here. This entry is about the step after all of that — whether the DMD
+pattern the acquisition actually runs on is the one the applied plan
+describes.
+
+It was not guaranteed, in three independent ways. Each of them leaves every
+artifact AO archives correct, which is why they were invisible: the plan, the
+manifest, the camera masks, the transform matrices, the read-back DMD state
+and the camera-space preview were all right in each case.
+
+### 1. The stale generic stack
+
+AO programs `DMD_Blue` — a static target, or a bank of unique masks with a
+FLUT playlist over it — and the `DMD_Orange` recording mask, verifies both,
+and then calls `Waveform_Camera_Sync_Acquisition`. That script reloads each
+DMD's retained `pattern_stack` for every DMD whose `auto_write_stack` is set.
+That happens after AO has finished and before the first trigger.
+
+This is the one that explains the shape of the symptom. A standalone DMD or
+FLUT diagnostic passes, because it never goes through acquisition startup; a
+real acquisition with the same code does not.
+
+AO now takes exclusive ownership of the Blue and Orange DMDs for the length
+of a run (`claim_dmd_pattern_ownership`, released in the runners' guaranteed
+cleanup). Ownership is Luminos's own mechanism, added there rather than here:
+the autoload is Luminos's and the DMD tab's stack is Luminos's, so the guard
+belongs beside them. **Nothing is deleted.** The operator's `pattern_stack`
+survives the run untouched and is written again the next time a generic
+acquisition asks for it; what the claim suspends is the autoload, for this
+run, and the `auto_write_stack` value is restored on success, on error and on
+Ctrl-C.
+
+The invariant AO now asserts is not "the write succeeded" — it already knew
+that, and it was true in the failing case — but "the device is still
+projecting what AO programmed at the moment the acquisition is triggered".
+`record_owned_dmd_pattern` takes a fingerprint after programming and Luminos
+checks it immediately before `Start_Tasks`, after every startup hook that
+could have touched a DMD.
+
+The regression tests run Luminos's own `Write_Pending_Dmd_Stacks` and
+`Verify_Owned_Dmd_Patterns`, reached through the simulated backend, rather
+than an AO-side reimplementation of the same sequence. That is the whole
+point: a reimplementation would have kept agreeing with itself while the real
+startup overwrote the target. `SimulatedLuminosApp.simulateAcquisition` calls
+both, at the same two moments the real script does.
+
+### 2. The wrong camera's calibration
+
+Luminos holds one camera-to-DMD calibration per device/camera pair, but
+projection goes through one active transform. `use_calibration_camera`
+changes the selected camera and leaves that transform alone when the newly
+selected pair has no stored entry. So the AO reference can belong to camera A
+while the DMD projects through camera B's calibration.
+
+None of the things that look like evidence are evidence. The transform is
+nonidentity; its dimensions, the reference origin and the binning all still
+match, so `validate_dmd_reference_geometry` passes; and the preview is drawn
+in camera coordinates, before the transform is applied, so it looks correct.
+The dropdown says what was selected, which is not the same as what is loaded.
+
+`validate_dmd_calibration_identity` asks Luminos's new
+`Patterning_Device.calibration_identity` for the only record that ties a
+transform to a camera — the per-pair store — and requires that the transform
+now loaded *is* that pair's, for the camera the plan's reference image was
+taken with. It fails closed and names the calibration to run, because AO
+cannot tell a missing calibration from a wrong one by looking at the
+projection and the experimenter can. Blue and Orange are validated
+independently; they are separate devices with separate stores, and a
+recording mask through the wrong transform mislabels which cells were
+recorded exactly as a stimulation mask through the wrong transform
+mistargets them.
+
+Deliberately not done: restoring the planning-time transform to make the
+check pass. The live Luminos calibration stays authoritative, as
+`capture_1p_dmd_calibration` has always said; the planning snapshot remains
+provenance only.
+
+The cost is that a reference bundle that does not record its camera's name is
+now refused. That is the honest outcome — such a bundle cannot be attributed
+to a calibration at all — and the message says to plan again from a current
+Snap.
+
+### 3. The projective crop-origin shortcut
+
+Fixed in Luminos; see its notebook for the algebra. It matters here because
+AO is the reason the cropped-FOV path exists: AO plans on a sub-ROI snap and
+projects through a full-field DMD calibration, which is precisely the case
+where the reference origin is nonzero. For an affine calibration the old code
+was exactly right; for a projective one it was a different transform, by over
+a hundred device pixels at a realistic crop offset.
+
+### What is still unproven in software
+
+Ownership and the fingerprint are statements about MATLAB-side state and the
+programming calls that reach the controller. That the ALP then holds what it
+was sent, that the mirrors follow the trigger line, and that the optical path
+matches the calibration are hardware facts, and no test here can establish
+them. `read_dmd_execution_state` remains the positive hardware readback, and
+remains advisory.

@@ -48,6 +48,15 @@ configuration.physical_upload_count=uniqueCount;
 configuration.playlist_entry_count=playlistCount;
 if options.DryRun, return; end
 
+% The transform every mask below is warped through has to belong to this
+% DMD and to the camera the plan's reference image came from. Checked once,
+% before the first mask is transformed, rather than per mask: it is a
+% property of the device, and a failure must happen before anything reaches
+% the mirrors.
+configuration.calibration_identity= ...
+    adaptive_optopatch.validate_dmd_calibration_identity( ...
+    dmd,plan.reference_camera,"DMD_Blue");
+
 referenceMask=adaptive_optopatch.remap_camera_mask_to_dmd_reference( ...
     plan.unique_camera_masks(:,:,1),plan.reference_camera,dmd,"DMD_Blue");
 transformed=dmd.setPatterningROI(referenceMask,"write_when_complete",false);
@@ -78,6 +87,12 @@ else
     configuration.playlist_entry_count=n;
 end
 configuration.loaded=true;
+% What the device is playing now, so Luminos can confirm immediately before
+% the trigger that nothing replaced it. For the FLUT path this covers the
+% pattern bank and the playlist order, which is the whole stimulus; for the
+% stack path it covers the loaded sequence.
+configuration.owned_pattern_fingerprint= ...
+    adaptive_optopatch.record_owned_dmd_pattern(dmd);
 % The stack is armed but the DAQ waveform is not built and the shutter is
 % still closed, so this is the last point at which the frozen advance
 % schedule can be checked against what this DMD can physically display.

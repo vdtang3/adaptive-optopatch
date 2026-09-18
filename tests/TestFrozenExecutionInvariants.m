@@ -193,9 +193,16 @@ classdef TestFrozenExecutionInvariants < matlab.unittest.TestCase
             % Optics drift; the operator recalibrates DMD_Blue and DMD_Orange
             % in Luminos. Adaptive Optopatch must neither fail nor restore
             % the planning-time transform.
+            % Through the per-camera store, which is what a Luminos
+            % recalibration does. Assigning tform directly would leave a
+            % transform no camera claims, and AO now refuses that state
+            % rather than projecting through it.
             calibrationB=affinetform2d([1.05 0 4;0 1.05 6;0 0 1]);
-            blue.tform=calibrationB;
-            orange.tform=affinetform2d([1.07 0 5;0 1.07 7;0 0 1]);
+            adaptive_optopatch.testing.calibrate_simulated_dmd( ...
+                blue,targets.reference_camera,calibrationB);
+            adaptive_optopatch.testing.calibrate_simulated_dmd( ...
+                orange,targets.reference_camera, ...
+                affinetform2d([1.07 0 5;0 1.07 7;0 0 1]));
             second=adaptive_optopatch.run_1p_manifest(manifest,targets,sim, ...
                 "ConfirmLiveOutput",true,"ShutterSettleTimeS",0,"Resume",false);
             testCase.verifyEqual(second.trials.acquisition_status,"completed");

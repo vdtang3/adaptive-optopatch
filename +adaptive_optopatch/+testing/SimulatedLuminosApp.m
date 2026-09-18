@@ -19,6 +19,10 @@ classdef SimulatedLuminosApp < handle
         round_complete logical = false
         expfolder string = ""
         FailOnAcquisitionNumber double = NaN
+        % What Luminos's generic stack autoload did, per DMD, on the last
+        % simulated acquisition. Kept so a test can assert that an AO-owned
+        % device was skipped rather than merely that its pattern survived.
+        DmdStartupReport struct = struct([])
     end
     properties (Access=private)
         AcquisitionCount double = 0
@@ -100,6 +104,15 @@ classdef SimulatedLuminosApp < handle
             app.exp_complete=false;
             app.round_complete=false;
             app.acquisition_active=true;
+            % The two points in Luminos acquisition startup that can change
+            % what a DMD projects, run here in the same order and at the same
+            % two moments the real script runs them: the generic stack
+            % autoload early, and the owned-pattern check at the last moment
+            % before the trigger. Luminos's own functions, not copies - a
+            % copy would keep agreeing with itself while the real startup
+            % overwrote the target, which is the failure being simulated
+            % against.
+            app.DmdStartupReport=app.runDmdAcquisitionStartup();
             tag="simulated";
             outputRoot=app.SimulationOutputRoot;
             for k=1:2:numel(varargin)
@@ -110,6 +123,7 @@ classdef SimulatedLuminosApp < handle
             if strlength(outputRoot)==0
                 outputRoot=fullfile(tempdir,"adaptive_optopatch_simulation");
             end
+            Verify_Owned_Dmd_Patterns(app.getDevice("DMD"));
             if ~isfolder(outputRoot), mkdir(outputRoot); end
             app.AcquisitionCount=app.AcquisitionCount+1;
             if app.AcquisitionCount==app.FailOnAcquisitionNumber
@@ -145,6 +159,13 @@ classdef SimulatedLuminosApp < handle
     end
 
     methods (Access=private)
+        function report=runDmdAcquisitionStartup(app)
+            adaptive_optopatch.require_luminos_acquisition_helpers();
+            dmds=app.getDevice("DMD");
+            if isempty(dmds), report=struct([]); return; end
+            report=Write_Pending_Dmd_Stacks(dmds);
+        end
+
         function populateGalvoFeedback(~,daq)
             if isempty(daq) || ~isstruct(daq.wfm_data) || ...
                     ~isfield(daq.wfm_data,"ao"), return; end

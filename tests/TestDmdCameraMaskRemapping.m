@@ -97,6 +97,28 @@ classdef TestDmdCameraMaskRemapping < matlab.unittest.TestCase
             testCase.verifyTrue(configuration.dmd_reference_mask(14,12));
             testCase.verifyEqual(nnz(configuration.dmd_reference_mask),1);
         end
+
+        % ---------------------------------------------------------------
+        % The Orange recording mask, composed and programmed
+        % ---------------------------------------------------------------
+        function programsCurrentCombinedOrangeMask(testCase)
+            [fovState,~]=AoFixtures.fovState();
+            fovState.cells(2).recording_enabled=false;
+            fovState.reference.cells=fovState.cells;
+            targets=adaptive_optopatch.build_target_bundle(fovState.reference, ...
+                "SpiralRadiusUm",2,"ParkingClearancePixels",1, ...
+                "OrangeExpansionPixels",4);
+            sim=adaptive_optopatch.testing.make_simulated_luminos();
+            configuration=adaptive_optopatch.prepare_luminos_orange_mask( ...
+                sim,targets,"DryRun",false);
+            dmd=sim.getDevice("DMD","name","DMD_Orange");
+            testCase.verifyTrue(configuration.loaded);
+            testCase.verifyEqual(configuration.recording_cell_ids,["cell_001","cell_003"]);
+            testCase.verifyEqual(configuration.orange_expansion_pixels,4);
+            testCase.verifyEqual(dmd.Target,configuration.dmd_reference_mask);
+            testCase.verifyEqual(nnz(dmd.Target),nnz(targets.orange_combined_mask));
+            testCase.verifyEqual(dmd.StaticWriteCount,1);
+        end
     end
 end
 

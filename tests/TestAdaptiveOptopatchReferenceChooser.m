@@ -86,11 +86,14 @@ classdef TestAdaptiveOptopatchReferenceChooser < matlab.unittest.TestCase
         end
 
         function listingIsReadOnly(testCase)
+            % Both listings: referenceChoices is the one a frontend reads,
+            % and snapshotChoices is still reachable on its own.
             controller=testCase.sessionWithSavedFov();
             before=controller.getState();
 
             controller.referenceChoices();
             controller.referenceChoices();
+            controller.snapshotChoices();
 
             testCase.verifyTrue(isequaln(controller.getState(),before));
             testCase.verifyEqual(controller.Revision,before.revision);
@@ -105,7 +108,8 @@ classdef TestAdaptiveOptopatchReferenceChooser < matlab.unittest.TestCase
             for field=["choice_id","kind","label","name","folder","path", ...
                     "loadable","issue","reference_id","fov_number","fov_id", ...
                     "cell_count","camera_name","camera_bin","image_size", ...
-                    "roi_origin_xy","group_index","is_current"]
+                    "roi_origin_xy","roi_size_xy","source_snapshot", ...
+                    "timestamp","group_index","is_current"]
                 testCase.verifyTrue(isfield(decoded,field), ...
                     sprintf("The encoded listing is missing %s.",field));
             end
@@ -263,6 +267,16 @@ classdef TestAdaptiveOptopatchReferenceChooser < matlab.unittest.TestCase
             testCase.verifyEqual(current.choice_id, ...
                 "120000full_cam-OrcaFusion_FOV001");
             testCase.verifyEqual(current.kind,"ao_fov");
+
+            % A snapshot loaded through its own endpoint is marked the same
+            % way, and in the snapshot-only listing too.
+            testCase.act(controller,"load_snapshot_choice", ...
+                struct("choice_id","120000full_cam-OrcaFusion"));
+            snapshots=controller.snapshotChoices();
+            currentSnapshot=snapshots([snapshots.is_current]);
+            testCase.verifyNumElements(currentSnapshot,1);
+            testCase.verifyEqual(currentSnapshot.choice_id, ...
+                "120000full_cam-OrcaFusion");
         end
 
         % ---------------------------------------------------------------
@@ -380,12 +394,19 @@ classdef TestAdaptiveOptopatchReferenceChooser < matlab.unittest.TestCase
                 "../not_offered"
                 "/etc/passwd"];
 
+            endpoints=[ ...
+                "load_reference_choice","adaptive_optopatch:UnknownReferenceChoice"
+                "load_snapshot_choice","adaptive_optopatch:UnknownSnapshotChoice"];
             for candidate=candidates'
-                response=testCase.act(controller,"load_reference_choice", ...
-                    struct("choice_id",candidate));
-                testCase.verifyEqual(response.identifier, ...
-                    "adaptive_optopatch:UnknownReferenceChoice", ...
-                    sprintf("'%s' must not resolve to a file.",candidate));
+                for k=1:size(endpoints,1)
+                    response=testCase.act(controller,endpoints(k,1), ...
+                        struct("choice_id",candidate));
+                    testCase.verifyEqual(response.identifier,endpoints(k,2), ...
+                        sprintf("'%s' must not resolve to a file through %s.", ...
+                        candidate,endpoints(k,1)));
+                    testCase.verifyFalse(response.state.fov.source_kind=="", ...
+                        "A refused load must leave the reference in use.");
+                end
             end
         end
 
@@ -438,10 +459,14 @@ classdef TestAdaptiveOptopatchReferenceChooser < matlab.unittest.TestCase
             load=adaptive_optopatch.apply_controller_action(controller, ...
                 "load_reference_choice", ...
                 struct("choice_id","120000full_cam-OrcaFusion"),stale);
+            loadSnapshot=adaptive_optopatch.apply_controller_action(controller, ...
+                "load_snapshot_choice", ...
+                struct("choice_id","130000crop_cam-OrcaFusion"),stale);
             save=adaptive_optopatch.apply_controller_action(controller, ...
                 "save_fov",struct(),stale);
 
             testCase.verifyEqual(load.status,"stale_revision");
+            testCase.verifyEqual(loadSnapshot.status,"stale_revision");
             testCase.verifyEqual(save.status,"stale_revision");
             testCase.verifyTrue(isequaln(controller.getState(),before));
             testCase.verifyFalse(isfile(fullfile(folder, ...
@@ -452,11 +477,13 @@ classdef TestAdaptiveOptopatchReferenceChooser < matlab.unittest.TestCase
         function anEmptySelectionIsRefusedBeforeTheController(testCase)
             controller=testCase.sessionWithSavedFov();
 
-            for payload={struct(),struct("choice_id",""),struct("choice_id",7)}
-                response=testCase.act(controller,"load_reference_choice", ...
-                    payload{1});
-                testCase.verifyFalse(response.ok);
-                testCase.verifyEqual(response.status,"validation_error");
+            for action=["load_reference_choice","load_snapshot_choice"]
+                for payload={struct(),struct("choice_id",""), ...
+                        struct("choice_id",7)}
+                    response=testCase.act(controller,action,payload{1});
+                    testCase.verifyFalse(response.ok);
+                    testCase.verifyEqual(response.status,"validation_error");
+                end
             end
         end
 
@@ -489,6 +516,229 @@ classdef TestAdaptiveOptopatchReferenceChooser < matlab.unittest.TestCase
             testCase.verifyEqual(number,1, ...
                 "Another reference's bundles are a different sequence.");
             testCase.verifyEqual(path,string(fullfile(folder,"snap_FOV001.mat")));
+        end
+
+        % ---------------------------------------------------------------
+        % The camera-snapshot endpoint
+        %   load_snapshot_choice predates the unified chooser and is still
+        %   allowlisted: it is the narrow "start a fresh FOV from a snap"
+        %   path, and it reads the camera identity, crop origin and binning
+        %   out of the file itself. These came from
+        %   TestAdaptiveOptopatchSnapshotChoices, which owned that endpoint
+        %   before the chooser existed and had nothing else left in it.
+        % ---------------------------------------------------------------
+        function theNewestReferenceIsOfferedFirst(testCase)
+            % The one an operator wants is almost always the one they just
+            % took, and both listings are capped, so ordering is not
+            % cosmetic. The folder is built with distinguishable file times
+            % because this is the one test that reads the listing by
+            % position.
+            folder = testCase.orderedSnapshotFolder();
+            controller = testCase.snapshotSession(folder);
+
+            snapshots = controller.snapshotChoices();
+            references = controller.referenceChoices();
+
+            testCase.verifyEqual(snapshots(1).choice_id, ...
+                "130000crop_cam-OrcaFusion");
+            testCase.verifyEqual(references(1).choice_id, ...
+                "130000crop_cam-OrcaFusion", ...
+                "The unified listing groups by reference, newest first.");
+        end
+
+        function croppedAndBinnedMetadataIsReportedBeforeLoading(testCase)
+            controller = testCase.snapshotSession(testCase.snapshotFolder());
+
+            choices = controller.snapshotChoices();
+            cropped = choices([choices.choice_id] == "130000crop_cam-OrcaFusion");
+
+            testCase.verifyEqual(cropped.camera_name, "Orca Fusion");
+            testCase.verifyEqual(cropped.camera_bin, 2);
+            testCase.verifyEqual(cropped.image_size, [96 140]);
+            testCase.verifyEqual(cropped.roi_origin_xy, [512 300]);
+            testCase.verifyEqual(cropped.roi_size_xy, [140 96]);
+        end
+
+        function aSnapshotFromAnotherCameraIsListedAsUnloadable(testCase)
+            % Listed with the reason rather than hidden: an operator who
+            % cannot see the snap they just took has no way to find out why.
+            folder = testCase.snapshotFolder();
+            testCase.writeSnapshot(folder, "140000other", ...
+                [0 100 0 100], 1, "Kinetix");
+            controller = testCase.snapshotSession(folder);
+
+            choices = controller.snapshotChoices();
+            other = choices([choices.choice_id] == "140000other");
+
+            testCase.verifyEqual(numel(choices), 3, ...
+                "A wrong-camera snap must not hide the usable ones.");
+            testCase.verifyFalse(other.loadable);
+            testCase.verifySubstring(char(other.issue), "Kinetix");
+        end
+
+        function anUnreadableSnapshotIsListedAsUnloadableNotHidden(testCase)
+            folder = testCase.snapshotFolder();
+            fid = fopen(fullfile(folder, "rubbish.mat"), "w");
+            fprintf(fid, "this is not a MAT file");
+            fclose(fid);
+            controller = testCase.snapshotSession(folder);
+
+            choices = controller.snapshotChoices();
+            bad = choices([choices.choice_id] == "rubbish");
+
+            testCase.verifyEqual(numel(choices), 3);
+            testCase.verifyFalse(bad.loadable);
+            testCase.verifyNotEqual(bad.issue, "");
+        end
+
+        function aSessionWithNoSnapshotFolderOffersNothing(testCase)
+            % The simulated backend has no datafolder at all, which is also
+            % what a session that has not written a snap yet looks like.
+            controller = adaptive_optopatch.AdaptiveOptopatchController( ...
+                "LuminosApp", simulatedLuminosApp());
+            testCase.addTeardown(@() delete(controller));
+
+            testCase.verifyEmpty(controller.snapshotChoices());
+            testCase.verifyEqual( ...
+                adaptive_optopatch.luminos_snapshot_root(simulatedLuminosApp()), "");
+            testCase.verifyEqual(adaptive_optopatch.luminos_snapshot_root(), "");
+        end
+
+        function onlyTheOfferedFolderIsReachable(testCase)
+            % The same claim from the other side: a snapshot outside the
+            % configured root is not listed, so there is no id for it.
+            folder = testCase.snapshotFolder();
+            elsewhere = testCase.temporaryFolder();
+            testCase.writeSnapshot(elsewhere, "not_offered", ...
+                [0 64 0 64], 1, "Orca Fusion");
+            controller = testCase.snapshotSession(folder);
+
+            choices = controller.snapshotChoices();
+
+            testCase.verifyFalse(any([choices.choice_id] == "not_offered"));
+            testCase.verifyTrue(all(startsWith([choices.folder], folder)));
+        end
+
+        function choosingASnapshotLoadsTheCanonicalFov(testCase)
+            controller = testCase.snapshotSession(testCase.snapshotFolder());
+            testCase.verifyFalse(controller.getState().fov.loaded);
+
+            response = testCase.act(controller, "load_snapshot_choice", ...
+                struct("choice_id", "130000crop_cam-OrcaFusion"));
+
+            testCase.verifyTrue(response.ok, response.message);
+            testCase.verifyEqual(response.status, "applied");
+            fov = response.state.fov;
+            testCase.verifyTrue(fov.loaded);
+            testCase.verifyEqual(fov.fov_id, "130000crop_cam-OrcaFusion");
+            testCase.verifyEqual(fov.camera_name, "Orca Fusion");
+            testCase.verifyEqual(fov.camera_bin, 2);
+            testCase.verifyEqual(fov.image_size, [96 140]);
+            testCase.verifyEqual(fov.roi_origin_xy, [512 300]);
+            testCase.verifyEqual(fov.image_coordinate_space, ...
+                "snapshot_intrinsic_pixels");
+        end
+
+        function loadingAdvancesBothRevisions(testCase)
+            controller = testCase.snapshotSession(testCase.snapshotFolder());
+            before = controller.Revision;
+            beforeReference = controller.getState().fov.reference_revision;
+
+            response = testCase.act(controller, "load_snapshot_choice", ...
+                struct("choice_id", "120000full_cam-OrcaFusion"));
+
+            testCase.verifyGreaterThan(response.revision, before);
+            testCase.verifyEqual(response.revision, controller.Revision);
+            testCase.verifyGreaterThan( ...
+                response.state.fov.reference_revision, beforeReference, ...
+                "The reference revision is what makes a view refetch the image.");
+        end
+
+        function theReferenceImageMatchesTheSnapshotThatWasLoaded(testCase)
+            controller = testCase.snapshotSession(testCase.snapshotFolder());
+
+            for choiceId = ["120000full_cam-OrcaFusion", "130000crop_cam-OrcaFusion"]
+                response = testCase.act(controller, "load_snapshot_choice", ...
+                    struct("choice_id", choiceId));
+                image = controller.referenceDisplayImage();
+
+                testCase.verifyEqual(double(size(image)), ...
+                    response.state.fov.image_size, ...
+                    "A view reshapes by fov.image_size and nothing else.");
+                testCase.verifyClass(image, "uint8");
+                testCase.verifyEqual(numel(reshape(image, 1, [])), ...
+                    prod(response.state.fov.image_size));
+            end
+        end
+
+        function loadingASnapshotMakesRoiDrawingAvailable(testCase)
+            controller = testCase.snapshotSession(testCase.snapshotFolder());
+            testCase.verifyFalse(controller.getState().legal_actions.edit_cells);
+
+            state = testCase.act(controller, "load_snapshot_choice", ...
+                struct("choice_id", "120000full_cam-OrcaFusion")).state;
+
+            testCase.verifyTrue(state.legal_actions.edit_cells);
+            testCase.verifyEmpty(state.cells);
+            testCase.verifyEqual(state.fov.next_cell_index, 1);
+
+            drawn = testCase.act(controller, "add_soma", ...
+                struct("vertices_xy", [20 20; 34 20; 34 34; 20 34]));
+            testCase.verifyTrue(drawn.ok, drawn.message);
+            testCase.verifyEqual(drawn.state.cells(1).cell_id, "cell_001");
+        end
+
+        function aSnapshotThatHasGoneAwayIsRefusedCleanly(testCase)
+            folder = testCase.snapshotFolder();
+            controller = testCase.snapshotSession(folder);
+            controller.snapshotChoices();
+            delete(fullfile(folder, "120000full_cam-OrcaFusion.mat"));
+
+            response = testCase.act(controller, "load_snapshot_choice", ...
+                struct("choice_id", "120000full_cam-OrcaFusion"));
+
+            testCase.verifyFalse(response.ok);
+            testCase.verifyEqual(response.identifier, ...
+                "adaptive_optopatch:UnknownSnapshotChoice", ...
+                "A file that has gone away must send the operator back to " + ...
+                "the list, not report a path they never chose.");
+            testCase.verifyFalse(response.state.fov.loaded);
+        end
+
+        function aSnapshotFromAnotherCameraIsRefusedOnLoadToo(testCase)
+            folder = testCase.snapshotFolder();
+            testCase.writeSnapshot(folder, "140000other", ...
+                [0 100 0 100], 1, "Kinetix");
+            controller = testCase.snapshotSession(folder);
+
+            response = testCase.act(controller, "load_snapshot_choice", ...
+                struct("choice_id", "140000other"));
+
+            testCase.verifyEqual(response.status, "validation_error");
+            testCase.verifyEqual(response.identifier, ...
+                "adaptive_optopatch:WrongReferenceCamera");
+            testCase.verifyFalse(response.state.fov.loaded, ...
+                "A rejected snapshot must not half-load.");
+        end
+
+        function aMalformedSnapshotIsRefusedWithoutDisturbingTheCurrentFov(testCase)
+            folder = testCase.snapshotFolder();
+            fid = fopen(fullfile(folder, "rubbish.mat"), "w");
+            fprintf(fid, "this is not a MAT file");
+            fclose(fid);
+            controller = testCase.snapshotSession(folder);
+            testCase.act(controller, "load_snapshot_choice", ...
+                struct("choice_id", "120000full_cam-OrcaFusion"));
+            loaded = controller.getState().fov;
+
+            response = testCase.act(controller, "load_snapshot_choice", ...
+                struct("choice_id", "rubbish"));
+
+            testCase.verifyFalse(response.ok);
+            testCase.verifyEqual(response.state.fov.fov_id, loaded.fov_id, ...
+                "The reference in use must survive a failed load.");
+            testCase.verifyEqual(response.state.fov.reference_revision, ...
+                loaded.reference_revision);
         end
     end
 
@@ -532,7 +782,34 @@ classdef TestAdaptiveOptopatchReferenceChooser < matlab.unittest.TestCase
             controller.saveNextFov();
         end
 
+        function controller=snapshotSession(testCase,snapshotRoot)
+            %SNAPSHOTSESSION A session with a snapshot folder and no FOV.
+            controller=adaptive_optopatch.AdaptiveOptopatchController( ...
+                "LuminosApp",simulatedLuminosApp());
+            testCase.addTeardown(@()delete(controller));
+            controller.SnapshotRoot=snapshotRoot;
+        end
+
         function folder=snapshotFolder(testCase)
+            %SNAPSHOTFOLDER One full-frame snapshot and one cropped, binned one.
+            %   Written back to back. Nothing here reads the listing
+            %   POSITIONALLY - every test selects by choice_id - so the two
+            %   files do not need distinguishable modification times, and
+            %   the second of wall clock it used to cost was being paid once
+            %   per test in the suite. The one test that is about ordering
+            %   builds its own folder with orderedSnapshotFolder.
+            folder=testCase.temporaryFolder();
+            testCase.writeSnapshot(folder,"120000full_cam-OrcaFusion", ...
+                [0 160 0 128],1,"Orca Fusion");
+            testCase.writeSnapshot(folder,"130000crop_cam-OrcaFusion", ...
+                [512 140 300 96],2,"Orca Fusion");
+        end
+
+        function folder=orderedSnapshotFolder(testCase)
+            %ORDEREDSNAPSHOTFOLDER The same two snaps, a second apart.
+            %   The listing orders by file time, so a test about ordering has
+            %   to wait long enough for the two files to be distinguishable
+            %   on any filesystem the rig might use.
             folder=testCase.temporaryFolder();
             testCase.writeSnapshot(folder,"120000full_cam-OrcaFusion", ...
                 [0 160 0 128],1,"Orca Fusion");

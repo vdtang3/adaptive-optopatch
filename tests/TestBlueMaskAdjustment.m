@@ -33,7 +33,7 @@ classdef TestBlueMaskAdjustment < matlab.unittest.TestCase
         end
 
         function sameTargetAcrossEventsProducesPhysicallyDistinctMasksInDmdPlan(testCase)
-            [fovState,~]=test_fov_state();
+            [fovState,~]=AoFixtures.fovState();
             fovState=adaptive_optopatch.update_cell_calibration( ...
                 fovState,"cell_001","CommandVoltageV",1);
             targets=adaptive_optopatch.build_target_bundle(fovState.reference, ...
@@ -46,7 +46,7 @@ classdef TestBlueMaskAdjustment < matlab.unittest.TestCase
             definition=adaptive_optopatch.generate_blue_mask_titration_protocol( ...
                 [-2 -1 0 1],"EventOrder","ordered","RandomSeed",5);
             resolved=adaptive_optopatch.resolve_protocol(definition,fovState, ...
-                targets,test_gui_defaults(),"Mode","1p_dmd");
+                targets,AoFixtures.guiDefaults(),"Mode","1p_dmd");
             resolved=resolved{1};
 
             testCase.verifyEqual(resolved.events.blue_mask_adjustment_pixels, ...
@@ -73,7 +73,7 @@ classdef TestBlueMaskAdjustment < matlab.unittest.TestCase
         end
 
         function requestedErosionThatEmptiesMaskFailsResolutionInsteadOfSubstitutingCanonicalMask(testCase)
-            [fovState,~]=test_fov_state();
+            [fovState,~]=AoFixtures.fovState();
             fovState=adaptive_optopatch.update_cell_calibration( ...
                 fovState,"cell_001","CommandVoltageV",1);
             targets=adaptive_optopatch.build_target_bundle(fovState.reference, ...
@@ -91,8 +91,27 @@ classdef TestBlueMaskAdjustment < matlab.unittest.TestCase
             % deferring the failure to DMD-sequence construction.
             testCase.verifyError( ...
                 @()adaptive_optopatch.resolve_protocol(definition,fovState, ...
-                targets,test_gui_defaults(),"Mode","1p_dmd"), ...
+                targets,AoFixtures.guiDefaults(),"Mode","1p_dmd"), ...
                 "adaptive_optopatch:EmptyBlueMaskAdjustment");
+        end
+
+        % ---------------------------------------------------------------
+        % The adjustment a target bundle carries
+        % ---------------------------------------------------------------
+        function signedBlueAdjustmentDilatesMask(testCase)
+            img=zeros(30); masks=false(30,30,1); masks(14:16,14:16,1)=true;
+            metadata=struct("rig_name","Virtual_Upright", ...
+                "voltage_camera",struct("serial","001125"));
+            ref=adaptive_optopatch.create_reference_model(img,masks,metadata);
+            contracted=adaptive_optopatch.build_target_bundle(ref, ...
+                "SpiralRadiusUm",1,"ParkingClearancePixels",1, ...
+                "BlueMaskAdjustmentPixels",-1);
+            expanded=adaptive_optopatch.build_target_bundle(ref, ...
+                "SpiralRadiusUm",1,"ParkingClearancePixels",1, ...
+                "BlueMaskAdjustmentPixels",2);
+            testCase.verifyGreaterThan(nnz(expanded.dmd_camera_masks), ...
+                nnz(contracted.dmd_camera_masks));
+            testCase.verifyTrue(all(expanded.dmd_camera_masks(masks)));
         end
     end
 end
@@ -102,24 +121,4 @@ mask=false(30,30);
 mask(11:20,11:20)=true;
 end
 
-function [fovState,polygons]=test_fov_state()
-image=zeros(70,90); masks=false(70,90,3);
-masks(15:24,15:24,1)=true;
-masks(15:24,40:49,2)=true;
-masks(40:49,65:74,3)=true;
-polygons={ [15 15;24 15;24 24;15 24], ...
-    [40 15;49 15;49 24;40 24], ...
-    [65 40;74 40;74 49;65 49] };
-metadata=struct("rig_name","Virtual_Upright", ...
-    "voltage_camera",struct("name","Orca Fusion","bin",1));
-reference=adaptive_optopatch.create_reference_model(image,masks,metadata, ...
-    "FovId","test_fov","CellIds",["cell_001";"cell_002";"cell_003"], ...
-    "RoiPolygons",polygons);
-fovState=adaptive_optopatch.create_fov_state(reference,polygons);
-end
 
-function defaults=test_gui_defaults()
-defaults=struct("command_voltage_v",1,"pulse_duration_s",0.005, ...
-    "blue_mask_adjustment_pixels",0,"orange_expansion_pixels",2, ...
-    "spiral_radius_um",2,"spiral_density_points_per_volt",10);
-end

@@ -1,22 +1,26 @@
-classdef TestAdaptiveOptopatchFrontendPreviews < matlab.unittest.TestCase
-    %TESTADAPTIVEOPTOPATCHFRONTENDPREVIEWS Blue V editing, and the read-only previews.
-    %   Three things a second frontend needs that the MATLAB GUI already had,
-    %   and the properties that keep adding them safe:
+classdef TestAdaptiveOptopatchPreviews < matlab.unittest.TestCase
+    %TESTADAPTIVEOPTOPATCHPREVIEWS Showing the experiment without running it.
+    %   Two questions, and this suite holds both because answering one
+    %   without the other is how a preview lies.
     %
-    %     set_cell_blue_voltage   the per-cell 488 nm CALIBRATION, editable
-    %                             from a table. The property that matters is
-    %                             that it is not a command source: a protocol
-    %                             naming command_voltage_v must be unaffected
-    %                             by anything stored here, and a 2P Pockels
-    %                             command must be unreachable from it.
+    %     Is the endpoint safe?      spatialPreview and waveformPreview must
+    %                                change nothing, bump no revision, reach
+    %                                no hardware, carry the revision they
+    %                                describe, and survive JSON encoding.
+    %                                They are read by a browser, repeatedly.
     %
-    %     spatialPreview          the targeting geometry the planning window
-    %                             draws, as coordinates. Must be produced by
-    %                             the canonical mask and spiral code, must
-    %                             change nothing, and must reach no hardware.
+    %     Is it the truth?           what is drawn must be what would
+    %                                execute: the resolved per-event Blue
+    %                                masks rather than the bundle default,
+    %                                the resolved Orange expansion, and the
+    %                                resolved spiral geometry - each compared
+    %                                against the canonical helper execution
+    %                                itself goes through.
     %
-    %     waveformPreview         the commands the planning window plots, as
-    %                             samples. Same three requirements.
+    %   The second group came from TestPreviewMatchesExecution and is not
+    %   redundant with the first: an endpoint can be perfectly inert and
+    %   perfectly wrong. It sits one layer below, on build_target_preview,
+    %   because that is where preview and execution have to agree.
     %
     %   No hardware is touched anywhere here: the session is the packaged
     %   simulator, and every call under test is one that must be inert even
@@ -24,154 +28,7 @@ classdef TestAdaptiveOptopatchFrontendPreviews < matlab.unittest.TestCase
 
     methods (Test)
         % ---------------------------------------------------------------
-        % A. Blue V is a calibration, not a command source
-        % ---------------------------------------------------------------
-        function blueVoltageIsEditableThroughTheAllowlistedAction(testCase)
-            controller=testCase.loadedController();
-
-            response=testCase.act(controller,"set_cell_blue_voltage", ...
-                struct("cell_id","cell_002","voltage_v",2.25));
-
-            testCase.verifyTrue(response.ok,response.message);
-            testCase.verifyEqual(response.status,"applied");
-            testCase.verifyEqual( ...
-                response.state.cells(2).selected_blue_voltage_v,2.25);
-        end
-
-        function theActionWritesTheFieldTheMatlabTableWrites(testCase)
-            % The MATLAB cell table's edit callback calls
-            % setCellBlueVoltage, which updates selected_blue_voltage_v in
-            % the canonical FOV cell record. The action must land in the
-            % same place, not in a parallel one.
-            controller=testCase.loadedController();
-
-            testCase.act(controller,"set_cell_blue_voltage", ...
-                struct("cell_id","cell_001","voltage_v",1.75));
-
-            fovState=controller.currentFovState();
-            testCase.verifyEqual( ...
-                double(fovState.cells(1).selected_blue_voltage_v),1.75);
-        end
-
-        function anOutOfRangeVoltageIsRefusedAndChangesNothing(testCase)
-            controller=testCase.loadedController();
-            testCase.act(controller,"set_cell_blue_voltage", ...
-                struct("cell_id","cell_001","voltage_v",1.5));
-            before=controller.getState();
-
-            for voltage={0,-1,5.5,Inf,NaN,"high"}
-                response=testCase.act(controller,"set_cell_blue_voltage", ...
-                    struct("cell_id","cell_001","voltage_v",voltage{1}));
-                testCase.verifyEqual(response.status,"validation_error");
-                testCase.verifyEqual(response.identifier, ...
-                    "adaptive_optopatch:InvalidCellCalibration");
-                testCase.verifyTrue(isequaln(controller.getState(),before), ...
-                    "A refused edit leaves the stored calibration alone.");
-            end
-        end
-
-        function anUnknownCellIsRefused(testCase)
-            controller=testCase.loadedController();
-
-            response=testCase.act(controller,"set_cell_blue_voltage", ...
-                struct("cell_id","cell_999","voltage_v",1.5));
-
-            testCase.verifyFalse(response.ok);
-            testCase.verifyEqual(response.identifier, ...
-                "adaptive_optopatch:UnknownCellId");
-        end
-
-        function theControllerMethodNameIsStillNotAnAction(testCase)
-            % The action is set_cell_blue_voltage. The METHOD name must
-            % remain unreachable, because a dispatcher that accepted it
-            % would be reaching controller.(action) rather than reading an
-            % allowlist.
-            controller=testCase.loadedController();
-
-            response=testCase.act(controller,"setCellBlueVoltage", ...
-                struct("cell_id","cell_001","voltage_v",1.5));
-
-            testCase.verifyEqual(response.status,"unknown_action");
-        end
-
-        % ---------------------------------------------------------------
-        % B. Editing Blue V does not override a protocol
-        % ---------------------------------------------------------------
-        function aStoredBlueVoltageNeverOverridesAnExplicitProtocolVoltage(testCase)
-            % The claim the editable cell table makes. A protocol whose
-            % events carry command_voltage_v must execute that voltage no
-            % matter what is stored per cell, because the resolver's order
-            % is event > acquisition > protocol > fov_cell.
-            controller=testCase.loadedController();
-            controller.setProtocol(adaptive_optopatch.generate_screen_protocol( ...
-                "PulseCount",2,"ModulatorVoltage",1.2));
-            controller.setPlanParameter("mode","1p_dmd");
-
-            testCase.act(controller,"set_cell_blue_voltage", ...
-                struct("cell_id","cell_001","voltage_v",4.5));
-
-            resolved=controller.buildPlan().resolved_protocols{1};
-            events=resolved.events(~resolved.events.is_null,:);
-            testCase.verifyNotEmpty(events);
-            testCase.verifyEqual(unique(events.command_voltage_v),1.2, ...
-                "The protocol's explicit voltage is what executes.");
-            testCase.verifyTrue(all(events.command_voltage_source=="event"), ...
-                "and it is resolved from the event tier, not from fov_cell.");
-        end
-
-        function theStoredCalibrationIsUsedOnlyWhenNothingElseDefinesOne(testCase)
-            % The other half of the same claim: the fov_cell tier is real,
-            % and it is reached only when the event, the acquisition and the
-            % protocol all leave the voltage unset. Without this the first
-            % test would pass for a stored value that never resolves at all.
-            controller=testCase.loadedController();
-            controller.setProtocol(adaptive_optopatch.generate_screen_protocol( ...
-                "PulseCount",2));
-            controller.setPlanParameter("mode","1p_dmd");
-
-            % Every stimulated cell needs one: an uncalibrated cell in a
-            % protocol that names no voltage is an unresolved event, which
-            % the resolver refuses rather than guesses at.
-            for cellId=["cell_001","cell_002"]
-                testCase.act(controller,"set_cell_blue_voltage", ...
-                    struct("cell_id",cellId,"voltage_v",3.25));
-            end
-
-            resolved=controller.buildPlan().resolved_protocols{1};
-            events=resolved.events(~resolved.events.is_null,:);
-            testCase.verifyEqual(unique(events.command_voltage_v),3.25);
-            testCase.verifyTrue(all(events.command_voltage_source=="fov_cell"));
-        end
-
-        function aStoredBlueVoltageCannotBecomeAPockelsCommand(testCase)
-            % selected_blue_voltage_v is a 488 nm calibration. For
-            % 2p_spiral the allowed tiers are narrowed to event,
-            % acquisition and protocol, so a 2P protocol with no explicit
-            % voltage must FAIL rather than quietly command a Chameleon
-            % with a Blue number.
-            controller=testCase.loadedController();
-            controller.setProtocol(adaptive_optopatch.generate_screen_protocol( ...
-                "PulseCount",2,"StimulationSource","2p_spiral"));
-            controller.setPlanParameter("mode","2p_spiral");
-            testCase.act(controller,"set_cell_blue_voltage", ...
-                struct("cell_id","cell_001","voltage_v",3.25));
-
-            identifier="<no error was raised>";
-            try
-                controller.buildPlan();
-            catch exception
-                identifier=string(exception.identifier);
-            end
-            testCase.verifyTrue(ismember(identifier, [ ...
-                "adaptive_optopatch:MissingTwoPhotonPockelsVoltage"
-                "adaptive_optopatch:ProtocolModeIncompatible"]), ...
-                "A 2P plan with no explicit Pockels voltage must be " + ...
-                "refused, not resolved from a Blue calibration. Got: " + ...
-                identifier);
-        end
-
-        % ---------------------------------------------------------------
-        % C. The spatial preview
+        % A. The spatial preview endpoint
         % ---------------------------------------------------------------
         function theSpatialPreviewIsReadOnlyAndBumpsNoRevision(testCase)
             controller=testCase.loadedController();
@@ -317,7 +174,7 @@ classdef TestAdaptiveOptopatchFrontendPreviews < matlab.unittest.TestCase
         end
 
         % ---------------------------------------------------------------
-        % D. The waveform preview
+        % B. The waveform preview endpoint
         % ---------------------------------------------------------------
         function withNoProtocolTheWaveformPreviewSaysToLoadOne(testCase)
             controller=testCase.loadedController();
@@ -426,58 +283,148 @@ classdef TestAdaptiveOptopatchFrontendPreviews < matlab.unittest.TestCase
                     sprintf("The encoded preview is missing %s.",field));
             end
         end
+
+        % ---------------------------------------------------------------
+        % C. The preview is the experiment that would run
+        %   One layer below the endpoints above: build_target_preview
+        %   against the same canonical mask, expansion and spiral helpers
+        %   the DMD sequence builder and the waveform builder use. A
+        %   preview that agrees with the endpoint contract but disagrees
+        %   with execution is the failure these exist to find.
+        % ---------------------------------------------------------------
+        function bluePreviewShowsResolvedEventMasksNotTheBundleDefault(testCase)
+            [fovState,targets]=single_cell_fixture(0);
+            adjustments=[-1 0 2];
+            definition=adaptive_optopatch.generate_blue_mask_titration_protocol( ...
+                adjustments,"EventOrder","ordered");
+            resolved=adaptive_optopatch.resolve_protocol(definition,fovState, ...
+                targets,gui_defaults(),"Mode","1p_dmd");
+
+            bundlePreview=adaptive_optopatch.build_target_preview(targets,"1p_dmd");
+            testCase.verifyEqual(bundlePreview.source,"bundle_default");
+            testCase.verifyNumElements(bundlePreview.blue,1);
+
+            preview=adaptive_optopatch.build_target_preview(targets,"1p_dmd", ...
+                "ResolvedProtocols",resolved);
+            testCase.verifyEqual(preview.source,"resolved_plan");
+            testCase.verifyEqual(sort([preview.blue.adjustment_pixels]), ...
+                sort(double(adjustments)));
+
+            % Each previewed mask is exactly the pattern the DMD sequence
+            % builder will project for that event.
+            plan=adaptive_optopatch.build_dmd_sequence_plan(resolved{1},targets);
+            events=resolved{1}.events;
+            for k=1:height(events)
+                adjustment=events.blue_mask_adjustment_pixels(k);
+                index=find([preview.blue.adjustment_pixels]==adjustment,1);
+                testCase.verifyNotEmpty(index);
+                slot=plan.event_slot_indices(k);
+                testCase.verifyEqual(preview.blue(index).mask, ...
+                    plan.unique_camera_masks(:,:,slot));
+            end
+
+            % The bundle default is only one of them, so the old preview
+            % showed a mask that two of the three pulses never use.
+            defaultMask=bundlePreview.blue(1).mask;
+            differing=arrayfun(@(entry)~isequal(entry.mask,defaultMask), ...
+                preview.blue);
+            testCase.verifyGreaterThan(sum(differing),0);
+        end
+
+        function orangePreviewShowsTheResolvedExpansion(testCase)
+            [fovState,targets]=single_cell_fixture(0);
+            definition=adaptive_optopatch.generate_screen_protocol( ...
+                "PulseCount",1,"ModulatorVoltage",1);
+            definition.parameters.orange_expansion_pixels=5;
+            resolved=adaptive_optopatch.resolve_protocol(definition,fovState, ...
+                targets,gui_defaults(),"Mode","1p_dmd");
+            preview=adaptive_optopatch.build_target_preview(targets,"1p_dmd", ...
+                "ResolvedProtocols",resolved);
+            executed=adaptive_optopatch.apply_acquisition_parameters( ...
+                targets,resolved{1});
+            testCase.verifyEqual([preview.orange.expansion_pixels],5);
+            testCase.verifyEqual(preview.orange(1).mask, ...
+                executed.orange_camera_masks(:,:,1));
+            testCase.verifyNotEqual(nnz(preview.orange(1).mask), ...
+                nnz(targets.orange_camera_masks(:,:,1)));
+        end
+
+        function spiralPreviewUsesResolvedRadiusDensityAndDuration(testCase)
+            [fovState,targets]=single_cell_fixture(0);
+            definition=adaptive_optopatch.generate_screen_protocol( ...
+                "PulseCount",1,"PulseDurationMs",8,"ModulatorVoltage",1, ...
+                "StimulationSource","2p_spiral");
+            definition.parameters.spiral_radius_um=5;
+            definition.parameters.spiral_density_points_per_volt=17;
+            resolved=adaptive_optopatch.resolve_protocol(definition,fovState, ...
+                targets,gui_defaults(),"Mode","2p_spiral");
+            preview=adaptive_optopatch.build_target_preview(targets,"2p_spiral", ...
+                "ResolvedProtocols",resolved);
+            executed=adaptive_optopatch.apply_acquisition_parameters( ...
+                targets,resolved{1});
+
+            testCase.verifyNumElements(preview.spiral,1);
+            testCase.verifyEqual(preview.spiral.radius_pixels, ...
+                executed.targets(1).spiral_preview_radius_pixels);
+            testCase.verifyEqual(preview.spiral.density_points_per_volt,17);
+            testCase.verifyEqual(preview.spiral.pulse_duration_ms,8,"AbsTol",1e-9);
+
+            bundlePreview=adaptive_optopatch.build_target_preview( ...
+                targets,"2p_spiral");
+            testCase.verifyNotEqual(bundlePreview.spiral.radius_pixels, ...
+                preview.spiral.radius_pixels);
+            testCase.verifyNotEqual(bundlePreview.spiral.density_points_per_volt, ...
+                preview.spiral.density_points_per_volt);
+        end
+
+        function unifiedPreviewDerivesFromTheResolvedPlan(testCase)
+            root=tempname; mkdir(root);
+            cleanup=onCleanup(@()remove_if_present(root)); %#ok<NASGU>
+            [app,~]=open_simulated_test_gui( ...
+                "CameraRoi",[974 100 984 80],"Visible","off","RunRoot",root);
+            appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
+            app.setReferenceData(ones(80,100),unified_info(root), ...
+                {[40 30;60 30;60 50;40 50]});
+            app.setPlanParameter("mode","1p_dmd");
+            app.setPlanParameter("blue_mask_adjustment_pixels",0);
+            % A mask titration deliberately runs at the cell's calibrated
+            % voltage, so its parameter_sources exclude the GUI default.
+            app.setCellCalibration("cell_001",1);
+            app.setPulseProtocol( ...
+                adaptive_optopatch.generate_blue_mask_titration_protocol( ...
+                [-2 0],"EventOrder","ordered"));
+
+            resolved=app.buildCurrentPlan().resolved_protocols;
+            testCase.verifyNumElements(resolved,1);
+            testCase.verifyEqual( ...
+                sort(unique(resolved{1}.events.blue_mask_adjustment_pixels))', ...
+                [-2 0]);
+
+            app.previewCurrentPlan();
+            status=string(app.statusText());
+            testCase.verifyTrue(any(contains(status,"resolved acquisition values")), ...
+                char(strjoin(status,newline)));
+            testCase.verifyTrue(any(contains(status,"-2")), ...
+                char(strjoin(status,newline)));
+        end
     end
 
     % -------------------------------------------------------------------
     % Fixtures
     % -------------------------------------------------------------------
     methods (Access=private)
-        function response=act(testCase,controller,action,payload)
+        function response=act(~,controller,action,payload)
             arguments
-                testCase %#ok<INUSA>
+                ~
                 controller
                 action (1,1) string
                 payload = struct()
             end
-            response=adaptive_optopatch.apply_controller_action( ...
-                controller,action,payload,controller.Revision);
+            response=AoFixtures.act(controller,action,payload);
         end
 
         function controller=loadedController(testCase)
-            %LOADEDCONTROLLER A reference FOV with two somata on it.
-            rows=128; columns=160;
-            [x,y]=meshgrid(1:columns,1:rows);
-            image=120+8*randn(RandStream("mt19937ar","Seed",20260916), ...
-                rows,columns);
-            centres=[38 40; 104 56]; radii=[9 8];
-            polygons=cell(2,1);
-            for k=1:2
-                centre=centres(k,:); radius=radii(k);
-                image=image+900*exp(-((x-centre(1)).^2+(y-centre(2)).^2) ...
-                    /(2*(radius/2)^2));
-                angles=(0:7)'*pi/4;
-                polygons{k}=[centre(1)+(radius+2)*cos(angles), ...
-                    centre(2)+(radius+2)*sin(angles)];
-            end
-
-            folder=string(tempname); mkdir(folder);
-            testCase.addTeardown(@()remove_if_present(folder));
-            snap=struct; %#ok<NASGU>
-            snap.img=uint16(image);
-            snap.name="Orca Fusion";
-            snap.bin=1;
-            snap.ref2d=imref2d([rows columns],[0 columns],[0 rows]);
-            snap.timestamp=datetime("now");
-            snap.tform=struct("name","DMD_Blue","tform",affine2d());
-            save(fullfile(folder,"120000preview_cam-OrcaFusion.mat"),"snap");
-
-            controller=adaptive_optopatch.AdaptiveOptopatchController( ...
-                "LuminosApp",simulatedLuminosApp( ...
-                    "CameraRoi",[974 columns 984 rows]));
-            testCase.addTeardown(@()delete(controller));
-            controller.SnapshotRoot=folder;
-            controller.loadSnapshotChoice("120000preview_cam-OrcaFusion");
-            controller.setSomaPolygons(polygons);
+            controller=AoFixtures.previewController(testCase);
         end
 
         function controller=onePhotonController(testCase,pulseCount)
@@ -496,4 +443,37 @@ end
 
 function remove_if_present(folder)
 if isfolder(folder), rmdir(folder,"s"); end
+end
+
+function [fovState,targets]=single_cell_fixture(defaultAdjustment)
+image=zeros(40,40); masks=false(40,40);
+masks(14:25,14:25)=true;
+polygons={[14 14;25 14;25 25;14 25]};
+metadata=struct("rig_name","Virtual_Upright", ...
+    "voltage_camera",struct("name","Orca Fusion","bin",1));
+reference=adaptive_optopatch.create_reference_model(image,masks,metadata, ...
+    "FovId","preview_test","CellIds","cell_001","RoiPolygons",polygons);
+fovState=adaptive_optopatch.create_fov_state(reference,polygons);
+fovState=adaptive_optopatch.update_cell_calibration( ...
+    fovState,"cell_001","CommandVoltageV",1);
+targets=adaptive_optopatch.build_target_bundle(fovState.reference, ...
+    "SpiralRadiusUm",2,"SpiralDensityPointsPerVolt",10, ...
+    "ParkingClearancePixels",1,"OrangeExpansionPixels",2, ...
+    "BlueMaskAdjustmentPixels",defaultAdjustment);
+end
+
+function defaults=gui_defaults()
+defaults=struct("command_voltage_v",1,"pulse_duration_s",0.005, ...
+    "blue_mask_adjustment_pixels",0,"orange_expansion_pixels",2, ...
+    "spiral_radius_um",2,"spiral_density_points_per_volt",10);
+end
+
+function info=unified_info(root)
+camera=struct("name","Orca Fusion","ROI",[0 0 100 80],"bin",1, ...
+    "x_world_limits",[974 1074],"y_world_limits",[984 1064]);
+metadata=struct("rig_name","Virtual_Upright","voltage_camera",camera);
+info=struct("snapshot_name","preview_test", ...
+    "snapshot_directory",string(root), ...
+    "snapshot_path",string(fullfile(root,"snapshot.mat")), ...
+    "metadata",metadata);
 end

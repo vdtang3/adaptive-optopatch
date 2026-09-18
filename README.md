@@ -545,6 +545,21 @@ cd(packageRoot)
 results = run_tests()
 ```
 
+`run_tests()` runs everything, which is what commissioning needs. During
+ordinary development it takes a tier instead:
+
+| Command | What it runs | Roughly |
+| --- | --- | --- |
+| `run_tests("core")` | The controller and action contract, the plan and reference lifecycle, DMD targeting and ownership, waveform ownership, output suppression, modality isolation, stimulation accounting, safety cleanup, and one simulation smoke test. **Run this after a normal edit.** | 380 tests, ~80 s |
+| `run_tests("extended")` | Simulated acquisitions, the frozen-run lifecycle, the constrained schedulers, 2P scanner and calibration, protocol generators, irradiance, offline analysis. | 194 tests, ~130 s |
+| `run_tests("legacy")` | The MATLAB-only planning window, still supported. | 27 tests, ~12 s |
+| `run_tests("performance")` | Waveform benchmarks, kept apart from correctness. | 3 tests, ~2 s |
+| `run_tests("all")`, `run_tests()` | Everything. | 604 tests, ~200 s |
+
+Every suite under `tests/` is assigned to exactly one tier by the manifest in
+`run_tests.m`, and `run_tests` refuses to run if one is unassigned - so a new
+suite cannot quietly never run.
+
 The returned test table must contain no failed or incomplete tests, and
 `run_tests` must return without an `assertSuccess` error. Do not proceed
 otherwise. Save the complete test report or screenshot with the Git commit

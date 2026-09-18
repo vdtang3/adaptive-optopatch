@@ -2140,3 +2140,119 @@ was sent, that the mirrors follow the trigger line, and that the optical path
 matches the calibration are hardware facts, and no test here can establish
 them. `read_dmd_execution_state` remains the positive hardware readback, and
 remains advisory.
+
+## 2026-09-18 — The test suite, reorganised around owners and tiers
+
+Nothing about the system changed here. What changed is that the tests now say
+who owns what, and that running them after an ordinary edit costs eighty
+seconds instead of four and a half minutes.
+
+### The catch-all is gone
+
+`TestAdaptiveOptopatch.m` was 2226 lines and 86 tests, and had been the place
+a test went when the suite that should own it did not exist yet. It spanned
+galvo calibration, spiral geometry, protocol generators, camera cadence,
+snapshot ingest, connectivity inference, the Luminos waveform builders, the
+frozen-run lifecycle and the manifest runners. Reading it told you nothing
+about which of those a change might break.
+
+It is now ten focused suites plus fourteen tests moved to suites that already
+owned the behaviour. Exactly **one** test was deleted:
+`onePhotonConfigSuppressesOnlyTwoPhotonStimulation`, because
+`TestOnePhotonOutputSuppression` asserts the same thing per output, and does
+it through **both** builders rather than one. One more was split, its unique
+half kept.
+
+The rule applied throughout, and worth restating because it is the one that
+keeps this suite useful: **two tests that reach the same conclusion through
+different layers are not duplicates.** Waveform construction, runtime
+ownership, independent accounting and failure cleanup all end up saying "the
+galvo card was not driven", and all four stay, because each fails for a
+different reason. The same holds for camera-space mask construction, DMD
+programming, acquisition-time DMD state and calibration identity.
+
+### Suites named for behaviour, not for chronology or schema version
+
+`TestProtocolSchema3` became `TestProtocolResolution`: the tests were never
+about schema 3, they were about precedence and target policy, and schema 4
+did not touch one of them. `TestMixedStimulationSchema4` became
+`TestMixedStimulationTimeline` for the same reason. Explicit refusals of
+retired schemas stay, and now say which schema they refuse.
+
+`TestRigCommissioningFixes` was a bag of five unrelated regressions held
+together by the week they were found in. Each moved to the suite that owns
+the behaviour and the file is gone. The history is in git, where chronology
+belongs; the test layout should describe the architecture, not the calendar.
+
+### Two merges, and what was not merged
+
+`TestAdaptiveOptopatchSnapshotChoices` folded into
+`TestAdaptiveOptopatchReferenceChooser`. The chooser already listed both
+camera snapshots and saved FOVs, so eight tests were genuinely the same
+assertions against the narrower listing. Thirteen were not — crop and bin
+metadata, the wrong-camera refusal, the unreadable-file listing, the
+`reference_revision` bump, the empty-folder case — and those moved. The
+`load_snapshot_choice` endpoint is still allowlisted, so the properties that
+matter to it (opaque ids, only offered files reachable, stale revision
+refuses, malformed entries fail without disturbing the FOV) are now asserted
+against **both** endpoints in one place rather than against one each.
+
+`TestPreviewMatchesExecution` folded into what is now
+`TestAdaptiveOptopatchPreviews`. This one deserves care, because the two were
+not redundant: the endpoint tests say the preview is inert, revisioned and
+JSON-safe, and the execution-agreement tests say it is *true* — that the mask
+drawn is the mask `build_dmd_sequence_plan` will project, and the spiral drawn
+is the one `apply_acquisition_parameters` resolves. An endpoint can be
+perfectly inert and perfectly wrong. Both groups survive, in one file, under
+headings that say which is which.
+
+The Blue-voltage tests came out of that file into
+`TestBlueVoltageCalibration`. They were never previews; they are the claim
+that a stored 488 nm calibration can never become a command, which is a
+different thing to be sure of.
+
+### Tiers
+
+`run_tests` takes a tier. `core` is the gate for ordinary work and is
+deliberately the tier that holds the safety suites — DMD ownership,
+calibration identity, waveform ownership, suppression, isolation, accounting,
+cleanup — because those are the failures that cost a rig. `extended` is
+simulated acquisitions and the slower science. `legacy` is the MATLAB
+planning window, which is still supported and still green, but which React
+work should not wait on. `performance` is separate so that a slow machine
+never reads as a broken waveform.
+
+The manifest lives in one commented block in `run_tests.m` and
+`run_tests` **errors** if a suite under `tests/` is in no tier. A tier scheme
+that silently drops new suites is worse than no tier scheme.
+
+### Where the time went
+
+Two fixtures dominated, and neither needed to.
+
+`TestAdaptiveOptopatchReferenceChooser` paused 1.1 s per test so two snapshot
+files would have distinguishable modification times. Only one test reads the
+listing by position; the rest select by `choice_id`. The pause now belongs to
+that one test, and the suite went from 31 s to 3 s with the same assertions.
+
+In the React tests, jsdom implements no layout, so `offsetParent` is always
+null, so the session hook believed the tab was off screen and polled every
+five seconds instead of every one. The re-base test waited three seconds for
+a snapshot that could not arrive, swallowed the timeout with `.catch()`, and
+accepted either revision. It was asserting nothing. Giving an attached
+element its parent as `offsetParent` — which is what a browser does — makes
+the rendered suite exercise the foreground poll, and that test now asserts
+the commit carries revision 9 and takes one second.
+
+Neither of those weakened an assertion. Both made one real that was not.
+
+### The React split was already right
+
+The stated worry was rendered tests that merely repeat a pure helper
+assertion. There are none. Every one of the twenty-two rendered tests asserts
+something only the component can answer — a disabled checkbox, a visible
+message, a button's enabled state, or the number of calls that crossed the
+backend boundary — and the twenty-four pure tests are all model-level. The
+`fake_ao_session` tests stay as they are: their duplication of MATLAB
+behaviour is the point, because the development backend has to obey the same
+contract as the real one.

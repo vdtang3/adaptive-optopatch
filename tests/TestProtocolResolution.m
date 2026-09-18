@@ -1,4 +1,18 @@
-classdef TestProtocolSchema3 < matlab.unittest.TestCase
+classdef TestProtocolResolution < matlab.unittest.TestCase
+    %TESTPROTOCOLRESOLUTION Turning a protocol definition into an experiment.
+    %   A protocol DEFINITION says what to do; resolving it against a FOV,
+    %   a target bundle and the planning-window defaults says what will
+    %   happen to which cell at which voltage. This suite owns that step:
+    %   target-policy resolution, the precedence order the command voltage
+    %   is chosen by, the scope rules for Orange, the independence of
+    %   ordering from jitter, the FOV schema resolution reads, and the
+    %   refusal of definitions written under a retired schema.
+    %
+    %   Named for that behaviour rather than for a schema version. It was
+    %   TestProtocolSchema3 and the tests never were about schema 3; they
+    %   outlived it, and schema 4 did not change any of them. Explicit
+    %   compatibility checks for retired schemas stay, and say which schema
+    %   they are refusing.
     methods (Test)
         function targetPoliciesResolveFromCurrentFov(testCase)
             [fov,targets,gui]=fixture();
@@ -190,10 +204,70 @@ classdef TestProtocolSchema3 < matlab.unittest.TestCase
             testCase.verifyFalse(isfield(updated.cells,"calibration_status"));
         end
 
+
+        function nonIncreasingOnsetsFailValidation(testCase)
+            % The obsolete-schema half of the catch-all's
+            % rejectsInvalidAndObsoleteTrainProtocols is
+            % obsoleteSchemasFailClearly below, and Schema 3 is refused by
+            % TestMixedStimulationTimeline. What was only asserted there is
+            % this: two events may not start at the same instant.
+            invalid=adaptive_optopatch.generate_screen_protocol("PulseCount",2);
+            invalid.acquisitions.events.onset_s(2)= ...
+                invalid.acquisitions.events.onset_s(1);
+
+            report=adaptive_optopatch.validate_protocol(invalid);
+
+            testCase.verifyFalse(report.passed);
+        end
+
         function obsoleteSchemasFailClearly(testCase)
             old=struct("schema_version","2.0.0");
             testCase.verifyError(@()adaptive_optopatch.normalize_protocol(old), ...
                 "adaptive_optopatch:ObsoleteProtocolSchema");
+        end
+
+        % ---------------------------------------------------------------
+        % Resolution against a live FOV, and the persisted definition
+        % ---------------------------------------------------------------
+        function roundRobinUsesOnlyCalibratedEnabledCells(testCase)
+            [fovState,~]=AoFixtures.fovState();
+            fovState=adaptive_optopatch.update_cell_calibration( ...
+                fovState,"cell_001","CommandVoltageV",0.8);
+            fovState=adaptive_optopatch.update_cell_calibration( ...
+                fovState,"cell_002","CommandVoltageV",1.2);
+            fovState=adaptive_optopatch.update_cell_eligibility( ...
+                fovState,"cell_003","StimulationEnabled",false);
+            targets=adaptive_optopatch.build_target_bundle(fovState.reference, ...
+                "SpiralRadiusUm",2,"ParkingClearancePixels",1, ...
+                "BlueMaskAdjustmentPixels",0);
+            firstDefinition=adaptive_optopatch.generate_round_robin_protocol( ...
+                "PulsesPerCell",5,"RandomSeed",99);
+            secondDefinition=adaptive_optopatch.generate_round_robin_protocol( ...
+                "PulsesPerCell",5,"RandomSeed",99);
+            first=adaptive_optopatch.resolve_protocol(firstDefinition,fovState, ...
+                targets,AoFixtures.guiDefaults(),"Mode","1p_dmd"); first=first{1};
+            second=adaptive_optopatch.resolve_protocol(secondDefinition,fovState, ...
+                targets,AoFixtures.guiDefaults(),"Mode","1p_dmd"); second=second{1};
+            testCase.verifyEqual(first.events,second.events);
+            testCase.verifyFalse(any(first.events.target_cell_id=="cell_003"));
+            testCase.verifyTrue(fovState.cells(3).recording_enabled);
+            testCase.verifyFalse(fovState.cells(3).stimulation_enabled);
+            expected=0.8*double(first.events.target_cell_id=="cell_001") + ...
+                1.2*double(first.events.target_cell_id=="cell_002");
+            testCase.verifyEqual(first.events.command_voltage_v,expected);
+        end
+
+        function savesAndLoadsCanonicalProtocolExactly(testCase)
+            folder=tempname; mkdir(folder);
+            cleanup=onCleanup(@()AoFixtures.removeFolder(folder)); %#ok<NASGU>
+            protocol=adaptive_optopatch.generate_screen_protocol( ...
+                "PulseCount",4,"RandomSeed",42);
+            protocol.protocol_id="round_trip_test";
+            path=fullfile(folder,"pulse_protocol.mat");
+            adaptive_optopatch.save_protocol(path,protocol);
+            loaded=adaptive_optopatch.load_protocol(path);
+            testCase.verifyEqual(loaded, ...
+                adaptive_optopatch.normalize_protocol(protocol));
         end
     end
 end

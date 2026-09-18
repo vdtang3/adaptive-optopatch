@@ -290,6 +290,36 @@ classdef TestInspectAcquisition < matlab.unittest.TestCase
                 "Snaps/run_001/reference_model.mat");
             testCase.verifyFalse(startsWith(actual,"D:"));
         end
+
+        % ---------------------------------------------------------------
+        % Trace extraction, which the analysis above is built on
+        % ---------------------------------------------------------------
+        function extractsBackgroundCorrectedRoiTrace(testCase)
+            folder=tempname; mkdir(folder); cleanup=onCleanup(@()rmdir(folder,"s")); %#ok<NASGU>
+            camera=struct("deviceType","Camera","name","Voltage", ...
+                "cam_id","S/N: 001125","ROI",[0 8 0 8],"bin",1, ...
+                "bit_depth",16,"frames_requested",4,"exposuretime",1);
+            dmd=struct("deviceType","DMD_Device","name","DMD_Blue");
+            Device_Data={struct("rigName","Virtual_Upright"),camera,dmd}; %#ok<NASGU>
+            save(fullfile(folder,"output_data.mat"),"Device_Data");
+            fid=fopen(fullfile(folder,"frames1.bin"),"w","ieee-le");
+            masks=false(8,8,1); masks(3:5,3:5,1)=true;
+            expected=zeros(4,1);
+            for k=1:4
+                frame=uint16(10*ones(8)); frame(masks)=uint16(10+2*k);
+                expected(k)=2*k;
+                fwrite(fid,permute(frame,[2 1]),"uint16");
+            end
+            fclose(fid);
+            metadata=adaptive_optopatch.load_luminos_metadata( ...
+                fullfile(folder,"output_data.mat"));
+            ref=adaptive_optopatch.create_reference_model(zeros(8),masks,metadata);
+            out=adaptive_optopatch.extract_roi_traces(folder,ref, ...
+                "BackgroundMode","local_annulus","AnnulusInnerPixels",0, ...
+                "AnnulusOuterPixels",2,"FrameRateHz",1000);
+            testCase.verifyEqual(out.corrected_traces,expected,"AbsTol",1e-12);
+            testCase.verifyEqual(out.frame_rate_hz,1000);
+        end
     end
 end
 

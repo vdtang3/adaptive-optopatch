@@ -136,6 +136,42 @@ classdef TestGuiPanelPresentation < matlab.unittest.TestCase
             testCase.verifyNumElements( ...
                 findall(app.Figure,"Text","Draw Polygon Soma"),1);
         end
+
+        % ---------------------------------------------------------------
+        % The other MATLAB-only windows
+        % ---------------------------------------------------------------
+        function constructsGalvoCalibrationGui(testCase)
+            gui=adaptive_optopatch.GalvoCalibrationApp([],"Visible","off");
+            cleanup=onCleanup(@()delete(gui)); %#ok<NASGU>
+            testCase.verifyClass(gui,"adaptive_optopatch.GalvoCalibrationApp");
+            testCase.verifyTrue(isvalid(gui.Figure));
+        end
+
+        function rampReviewStoresManualDecisionWithoutSpikeDetector(testCase)
+            [fovState,~]=AoFixtures.fovState();
+            definition=adaptive_optopatch.generate_single_cell_ramp_protocol( ...
+                [0.6 0.9],"RepeatsPerVoltage",2);
+            protocol=AoFixtures.resolvedProtocol(definition,"1p_dmd");
+            t=(0:0.001:protocol.acquisition_duration_s)';
+            traces=struct("tvec",t,"frame_rate_hz",1000, ...
+                "corrected_traces",sin(2*pi*5*t)*(1:3));
+            review=adaptive_optopatch.RampReviewApp("simulated_ramp",protocol, ...
+                fovState,"Visible","off","TraceResult",traces);
+            cleanup=onCleanup(@()delete(review)); %#ok<NASGU>
+            updated=review.applyDecision(0.9,"manual review");
+            calibration=updated.cells(1).blue_calibration;
+            testCase.verifyEqual(updated.cells(1).selected_blue_voltage_v,0.9);
+            testCase.verifyEqual(calibration.pulse_duration_ms,10);
+            testCase.verifyEqual(calibration.calibration_acquisition,"simulated_ramp");
+        end
+
+        function fovDialogFilterUsesCharacterVectors(testCase)
+            filter=adaptive_optopatch.fov_file_dialog_filter();
+            testCase.verifyTrue(iscell(filter));
+            testCase.verifySize(filter,[1 2]);
+            testCase.verifyTrue(all(cellfun(@ischar,filter)));
+            testCase.verifyEqual(filter,{'*.mat','FOV state MAT (*.mat)'});
+        end
     end
 end
 

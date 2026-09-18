@@ -196,6 +196,79 @@ classdef TestDmdFlutExecution < matlab.unittest.TestCase
             testCase.verifyEqual(plan.programmed_playlist_slots,[1;2;3]);
             testCase.verifyEqual(numel(plan.dmd_trigger_s),8);
         end
+
+        % ---------------------------------------------------------------
+        % The hardware-timed advance train the playlist is stepped by
+        % ---------------------------------------------------------------
+        function buildsHardwareTimedDmdSequenceAtPulseOffsets(testCase)
+            [fovState,~]=AoFixtures.fovState();
+            for k=1:3
+                fovState=adaptive_optopatch.update_cell_calibration(fovState, ...
+                    compose("cell_%03d",k),"CommandVoltageV",0.5+0.2*k);
+            end
+            fovState.blue_mask_adjustment_pixels=0;
+            protocol=adaptive_optopatch.generate_round_robin_protocol( ...
+                "PulsesPerCell",2,"RandomSeed",7);
+            targets=adaptive_optopatch.build_target_bundle(fovState.reference, ...
+                "SpiralRadiusUm",2,"ParkingClearancePixels",1, ...
+                "BlueMaskAdjustmentPixels",0);
+            manifest=adaptive_optopatch.build_manifest(fovState.reference,targets, ...
+                protocol,"Mode","1p_dmd","FovState",fovState, ...
+                "GuiDefaults",AoFixtures.guiDefaults());
+            resolved=manifest.trials.pulse_schedule{1};
+            plan=adaptive_optopatch.build_dmd_sequence_plan(resolved,targets);
+            testCase.verifyEqual(plan.pattern_activation_s, ...
+                [0;resolved.events.offset_s(1:end-1)]);
+            testCase.verifyEqual(plan.advance_onset_s, ...
+                resolved.events.offset_s(1:end-1));
+            testCase.verifyTrue(plan.no_artificial_settle_interval);
+            for k=1:height(resolved.events)
+                index=resolved.events.target_index(k);
+                slot=plan.event_slot_indices(k);
+                testCase.verifyEqual(plan.unique_camera_masks(:,:,slot), ...
+                    targets.blue_camera_masks(:,:,index));
+            end
+            sim=adaptive_optopatch.testing.make_simulated_luminos();
+            dmd=sim.getDevice("DMD","name","DMD_Blue");
+            config=adaptive_optopatch.prepare_luminos_dmd_sequence(dmd,plan, ...
+                "DryRun",false);
+            testCase.verifyTrue(config.loaded);
+            testCase.verifyEqual(dmd.playlist_mode,"slave");
+            testCase.verifyEqual(dmd.slot_write_count,plan.unique_mask_count);
+            testCase.verifyEqual(dmd.playlist,plan.event_slot_indices);
+            globalProps=struct("rate",200000,"total_time",1, ...
+                "clock_source","Internal Dev1","trigger_source","Dev1/PFI9", ...
+                "daq_master",true);
+            wfm=struct("ao",[],"do",[],"ai",[],"di",[],"ctri",[], ...
+                "ao_camera_triggered",[],"do_camera_triggered",[]);
+            [~,configured,summary]=adaptive_optopatch.build_luminos_1p_waveform_config( ...
+                globalProps,wfm,resolved,adaptive_optopatch.virtual_upright_1p_profile(), ...
+                "DmdSequencePlan",plan);
+            trigger=find(string({configured.do.name})=="AdaptiveOptopatch DMD trigger",1);
+            testCase.verifyNotEmpty(trigger);
+            testCase.verifyEqual(configured.do(trigger).params{1}, ...
+                [0;resolved.events.offset_s(1:end-1)]);
+            testCase.verifyEqual(summary.dmd_sequence.dmd_trigger_s, ...
+                [0;resolved.events.offset_s(1:end-1)]);
+            testCase.verifyEqual(summary.dmd_sequence.trigger_associated_pulse_id, ...
+                resolved.events.pulse_id);
+            testCase.verifyEqual(summary.dmd_sequence.stack_pattern_number, ...
+                plan.event_slot_indices);
+            testCase.verifyLessThan(plan.initialization_trigger_s, ...
+                resolved.events.onset_s(1));
+            triggerWaveform=adaptive_optopatch.luminos_event_waveform( ...
+                [0 1/globalProps.rate],configured.do(trigger).params{:});
+            testCase.verifyEqual(triggerWaveform(1),1);
+            noPreDelay=resolved;
+            shift=noPreDelay.events.onset_s(1);
+            noPreDelay.events.onset_s=noPreDelay.events.onset_s-shift;
+            noPreDelay.acquisition_duration_s=noPreDelay.acquisition_duration_s-shift;
+            noPrePlan=adaptive_optopatch.build_dmd_sequence_plan(noPreDelay,targets);
+            testCase.verifyError(@()adaptive_optopatch.build_luminos_1p_waveform_config( ...
+                globalProps,wfm,noPreDelay,adaptive_optopatch.virtual_upright_1p_profile(), ...
+                "DmdSequencePlan",noPrePlan), ...
+                "adaptive_optopatch:DmdInitializationNotDark");
+        end
     end
 end
 

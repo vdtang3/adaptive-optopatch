@@ -1,4 +1,18 @@
-classdef TestMixedStimulationSchema4 < matlab.unittest.TestCase
+classdef TestMixedStimulationTimeline < matlab.unittest.TestCase
+    %TESTMIXEDSTIMULATIONTIMELINE One acquisition, two stimulation sources.
+    %   An acquisition may mix 1P DMD and 2P spiral events, and when it does
+    %   there is still exactly ONE timeline: one set of samples, one DMD
+    %   index sequence consumed only by the 1P rows, and no second
+    %   compilation pass. The parity tests are the load-bearing ones - a
+    %   pure-1P or pure-2P acquisition compiled by the mixed builder must
+    %   produce the same samples the hardened single-modality builder does,
+    %   so the mixed path is not a third implementation.
+    %
+    %   Named for that behaviour rather than for a schema version. It was
+    %   TestMixedStimulationSchema4; every event carrying a stimulation
+    %   source is what makes mixing expressible, and the explicit refusal of
+    %   a schema-3 definition stays here because that is the compatibility
+    %   boundary this behaviour introduced.
     methods (Test)
         function sourceIsRequiredAndSchemaThreeIsRejected(testCase)
             definition=adaptive_optopatch.generate_screen_protocol( ...

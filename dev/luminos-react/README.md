@@ -155,7 +155,7 @@ the spiral is an analytic curve rather than the Fermat spiral Luminos scans,
 and the waveform is a made-up pulse train rather than a resolved schedule. **Do
 not read any of it as Adaptive Optopatch geometry or timing.** The real ones are
 computed by MATLAB and tested in
-`tests/TestAdaptiveOptopatchFrontendPreviews.m`.
+`tests/TestAdaptiveOptopatchPreviews.m`.
 
 Everything **below** that — what a polygon means, how a cell is named, whether a
 protocol is valid, when a plan may be frozen, what a run does — is a plausible

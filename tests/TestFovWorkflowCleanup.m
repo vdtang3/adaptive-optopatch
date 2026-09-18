@@ -189,6 +189,113 @@ classdef TestFovWorkflowCleanup < matlab.unittest.TestCase
                 "adaptive_optopatch:RequiredDeviceMissing");
             testCase.verifyEmpty(dir(fullfile(root,"adaptive_optopatch_run_*")));
         end
+
+        % ---------------------------------------------------------------
+        % Canonical identity survives saving, reloading and editing
+        % ---------------------------------------------------------------
+        function persistsCanonicalFovAndIndependentDerivedMasks(testCase)
+            [fovState,polygons]=AoFixtures.fovState();
+            folder=tempname; mkdir(folder);
+            cleanup=onCleanup(@()AoFixtures.removeFolder(folder)); %#ok<NASGU>
+            path=fullfile(folder,"fov_state.mat");
+            adaptive_optopatch.save_fov_state(path,fovState);
+            loaded=adaptive_optopatch.load_fov_state(path);
+            testCase.verifyEqual(string({loaded.cells.cell_id}), ...
+                ["cell_001","cell_002","cell_003"]);
+            testCase.verifyEqual(loaded.canonical_roi_polygons,polygons(:));
+            before=loaded.canonical_roi_masks;
+            first=adaptive_optopatch.build_target_bundle(loaded.reference, ...
+                "OrangeExpansionPixels",1,"BlueMaskAdjustmentPixels",-1, ...
+                "SpiralRadiusUm",2,"ParkingClearancePixels",1);
+            second=adaptive_optopatch.build_target_bundle(loaded.reference, ...
+                "OrangeExpansionPixels",4,"BlueMaskAdjustmentPixels",2, ...
+                "SpiralRadiusUm",2,"ParkingClearancePixels",1);
+            testCase.verifyEqual(loaded.canonical_roi_masks,before);
+            testCase.verifyGreaterThan(nnz(second.orange_combined_mask), ...
+                nnz(first.orange_combined_mask));
+            testCase.verifyGreaterThan(nnz(second.blue_camera_masks), ...
+                nnz(first.blue_camera_masks));
+        end
+
+        function guiReloadsFovWithStableIdsAndCalibration(testCase)
+            root=tempname; mkdir(root);
+            cleanup=onCleanup(@()AoFixtures.removeFolder(root)); %#ok<NASGU>
+            [first,~]=open_simulated_test_gui("CameraRoi",AoFixtures.unifiedCameraRoi(), ...
+                "Visible","off","RunRoot",root);
+            cleanupFirst=onCleanup(@()delete(first)); %#ok<NASGU>
+            polygons={[15 15;25 15;25 25;15 25], ...
+                [45 30;55 30;55 40;45 40]};
+            first.setReferenceData(ones(70,90),AoFixtures.unifiedInfo(root),polygons);
+            first.setCellCalibration("cell_002",1.25,"manual");
+            path=fullfile(root,"persistent_fov.mat");
+            first.saveCurrentFov(path);
+            [second,~]=open_simulated_test_gui("CameraRoi",AoFixtures.unifiedCameraRoi(), ...
+                "Visible","off","RunRoot",root);
+            cleanupSecond=onCleanup(@()delete(second)); %#ok<NASGU>
+            second.loadFov(path);
+            second.setPulseProtocol(adaptive_optopatch.generate_single_cell_ramp_protocol( ...
+                [0.75 1.25],"RepeatsPerVoltage",1));
+            second.setPlanParameter("mode","1p_dmd");
+            plan=second.buildCurrentPlan();
+            testCase.verifyEqual(string({plan.fov_state.cells.cell_id}), ...
+                ["cell_001","cell_002"]);
+            testCase.verifyEqual(plan.fov_state.cells(2).selected_blue_voltage_v,1.25);
+            testCase.verifyEqual(plan.fov_state.canonical_roi_polygons,polygons(:));
+        end
+
+        function preservesStableIdsAcrossEditDeleteAddAndReload(testCase)
+            root=tempname; mkdir(root);
+            cleanup=onCleanup(@()AoFixtures.removeFolder(root)); %#ok<NASGU>
+            [app,~]=open_simulated_test_gui("CameraRoi",AoFixtures.unifiedCameraRoi(),"Visible","off","RunRoot",root);
+            appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
+            [~,polygons]=AoFixtures.fovState();
+            app.setReferenceData(ones(70,90),AoFixtures.unifiedInfo(root),polygons);
+            app.setCellCalibration("cell_003",1.1,"manual");
+            firstPath=fullfile(root,"first_fov.mat"); app.saveCurrentFov(firstPath);
+            app.loadFov(firstPath);
+            moved=polygons{3}+[1 0]; app.setCanonicalRoi("cell_003",moved);
+            app.deleteCell("cell_002");
+            newId=app.addCanonicalRoi([40 30;49 30;49 39;40 39]);
+            testCase.verifyEqual(newId,"cell_004");
+            secondPath=fullfile(root,"second_fov.mat"); app.saveCurrentFov(secondPath);
+            loaded=adaptive_optopatch.load_fov_state(secondPath);
+            testCase.verifyEqual(string({loaded.cells.cell_id}), ...
+                ["cell_001","cell_003","cell_004"]);
+            testCase.verifyEqual(loaded.cells(2).selected_blue_voltage_v,1.1);
+            testCase.verifyEqual(loaded.canonical_roi_polygons{2},moved);
+            testCase.verifyEqual(loaded.next_cell_index,5);
+        end
+
+        function buildsFreshUnifiedPlansWithoutValidationInvalidation(testCase)
+            root=tempname; mkdir(root);
+            cleanup=onCleanup(@()AoFixtures.removeFolder(root)); %#ok<NASGU>
+            [app,sim]=open_simulated_test_gui("CameraRoi",AoFixtures.unifiedCameraRoi(), ...
+                "Visible","off","RunRoot",root); %#ok<ASGLU>
+            appCleanup=onCleanup(@()delete(app)); %#ok<NASGU>
+            app.setReferenceData(ones(80,100),AoFixtures.unifiedInfo(root), ...
+                {[40 30;60 30;60 50;40 50]});
+            protocol=adaptive_optopatch.generate_screen_protocol("PulseCount",1,"ModulatorVoltage",1.5, ...
+                "StimulationSource","2p_spiral");
+            app.setPulseProtocol(protocol);
+            twoPhoton=app.buildCurrentPlan();
+            testCase.verifyEqual(unique( ...
+                string(twoPhoton.manifest.trials.stimulation_mode)),"2p_spiral");
+            app.setPlanParameter("mode","1p_dmd");
+            onePhoton=app.buildCurrentPlan();
+            testCase.verifyEqual(unique( ...
+                string(onePhoton.manifest.trials.stimulation_mode)),"2p_spiral", ...
+                "The deprecated global mode must not rewrite event sources.");
+            testCase.verifyEqual(app.PlanState,"EDITABLE");
+            report=app.validateCurrentPlan();
+            testCase.verifyTrue(report.passed);
+            testCase.verifyEqual(app.PlanState,"EDITABLE");
+            changed=adaptive_optopatch.generate_screen_protocol("PulseCount",2);
+            changedPath=fullfile(root,"changed_protocol.mat");
+            adaptive_optopatch.save_protocol(changedPath,changed);
+            app.loadPulseProtocol(changedPath);
+            testCase.verifyEqual(app.PlanState,"EDITABLE");
+            testCase.verifyEqual(app.PulseProtocolPath,string(changedPath));
+        end
     end
 end
 

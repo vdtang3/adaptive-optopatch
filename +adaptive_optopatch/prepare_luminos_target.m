@@ -27,8 +27,11 @@ if trialRow.is_null
     if options.DryRun, return; end
     if result.mode == "1p_dmd"
         dmd = app.getDevice("DMD", "name", options.DmdName);
-        dmd.Target = false(dmd.Dimensions);
-        if options.WriteDmdImmediately, dmd.Write_Static(); end
+        dmd.Target = adaptive_optopatch.blank_dmd_pattern(dmd);
+        if options.WriteDmdImmediately
+            dmd.Write_Static();
+            result = record_static_execution_state(result, dmd);
+        end
     end
     result.configured = true;
     return
@@ -45,6 +48,12 @@ if result.mode == "1p_dmd"
         result.camera_mask,targetBundle.reference_camera,dmd,options.DmdName);
     dmd.setPatterningROI(result.dmd_reference_mask, ...
         "write_when_complete", options.WriteDmdImmediately);
+    if options.WriteDmdImmediately
+        % setPatterningROI returns 1 rather than the mask once it has
+        % written, so the device-space pattern that actually reached
+        % Device_Pattern is read back from Target, not from its return value.
+        result = record_static_execution_state(result, dmd);
+    end
 elseif result.mode == "2p_spiral"
     result.action = "camera_center_to_spiral";
     result.center_xy = t.spiral_center_xy;
@@ -91,6 +100,34 @@ else
         "Unknown stimulation mode: %s", result.mode);
 end
 result.configured = true;
+end
+
+function result = record_static_execution_state(result, dmd)
+% Archive what the device is playing immediately after a static write, and
+% refuse to go on if it positively reports something other than a single
+% static pattern.
+%
+% A successful static write is expected to be self-sufficient:
+% ALP_DMD::Project halts the device, frees whatever sequence was loaded -
+% FLUT playlist included - allocates a one-picture sequence, restores master
+% mode with stepping disabled and starts continuous projection. So no stop
+% or reset is issued here. What is checked is the result rather than the
+% intention, because a static write that threw leaves Target updated in
+% MATLAB with the hardware still playing the previous sequence.
+result.dmd_device_mask_summary= ...
+    adaptive_optopatch.summarize_dmd_device_pattern(dmd);
+result.dmd_state_after_programming= ...
+    adaptive_optopatch.read_dmd_execution_state(dmd);
+state = result.dmd_state_after_programming;
+if state.contradicts_static_mode
+    error("adaptive_optopatch:DmdNotInStaticMode", ...
+        ['The Blue DMD was programmed with a static target but reports ' ...
+         'projection mode "%s" with %s picture(s) in the loaded sequence, ' ...
+         'not a single static pattern. A stale sequence is still loaded, ' ...
+         'so the displayed pattern is not the one just written. Blank the ' ...
+         'DMD and reload before stimulating.'], ...
+        state.projection_mode_name, num2str(state.sequence_pictures));
+end
 end
 
 function tf = is_identity_transform(tform)

@@ -3,7 +3,7 @@ function viewer=inspect_acquisition(experimentDirectory,options)
 arguments
     experimentDirectory (1,1) string = ""
     options.Visible (1,1) string {mustBeMember(options.Visible,["on","off"])} = "on"
-    options.Force (1,1) logical = true
+    options.Force (1,1) logical = false
 end
 INSPECTION_SCHEMA_VERSION=2;
 

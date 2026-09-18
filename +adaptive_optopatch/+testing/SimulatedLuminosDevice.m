@@ -20,7 +20,8 @@ classdef SimulatedLuminosDevice < handle
         frametrigger_source string = "DAQ"
         daqtrig_period_ms double = 1
         maximum_frame_rate_hz double = 1200
-        Dimensions double = [1080 1920]
+        % Luminos device order is [width height]; Target is [rows columns].
+        Dimensions double = [1920 1080]
         Target logical = false(1080,1920)
         tform = []
         refimage = []
@@ -53,6 +54,25 @@ classdef SimulatedLuminosDevice < handle
         slot_patterns cell = cell(0,1)
         playlist double = zeros(0,1)
         playlist_mode string = ""
+        % Modelled ALP playback state, in the units Get_State reports: the
+        % codes are alp.h's (ALP_MASTER 2301, ALP_SLAVE 2302,
+        % ALP_PROJ_ACTIVE 1200, ALP_PROJ_IDLE 1201) and NaN stands for the
+        % -1 a controller returns for an inquiry it will not answer. A fresh
+        % device has nothing loaded, so no mode is claimed until something
+        % is written.
+        projection_mode_code double = NaN
+        projection_step_code double = NaN
+        projection_state_code double = NaN
+        sequence_pictures double = 0
+        % A rig that images the mirrors' "off" light needs the complement of
+        % the wanted pattern, and DMD.Device_Pattern is the only place that
+        % inversion is applied. Modelled so a test can show that Target and
+        % the illuminated field are not the same thing.
+        invert_output logical = false
+        % Models a hypothetical device whose static write does NOT restore
+        % master mode, so the static-state invariant can be shown to fire.
+        % The real ALP_DMD::Project always restores it.
+        StaticWriteSkipsModeReset logical = false
         trigger_channel string = ""
         % DAQ.alias_list, so a simulated rig resolves a terminal written
         % under a rig alias the way the real one does. It was empty, and
@@ -65,6 +85,9 @@ classdef SimulatedLuminosDevice < handle
         % so before the flag most cleanup keys off is ever set - is
         % reachable from a test.
         FailOnStart logical = false
+        FailOnStaticWrite logical = false
+        FailOnStaticWriteNumber double = NaN
+        StaticWriteAttemptCount double = 0
         % How many times Update_Galvos_Explicit has been called. A test
         % asserting that a pure 1P run never commands the galvos has to be
         % able to see the CALL, not the end state: parking them at the
@@ -122,7 +145,16 @@ classdef SimulatedLuminosDevice < handle
 
         function state=Get_State(device)
             state=struct("flut_max_entries",device.flut_max_entries, ...
-                "min_picture_time",round(device.minimum_picture_time_us));
+                "min_picture_time",round(device.minimum_picture_time_us), ...
+                "projection_mode",unavailable_as_minus_one(device.projection_mode_code), ...
+                "projection_step",unavailable_as_minus_one(device.projection_step_code), ...
+                "projection_state",unavailable_as_minus_one(device.projection_state_code), ...
+                "sequence_pictures",device.sequence_pictures);
+        end
+
+        function mask=Device_Pattern(device,mask)
+            mask=mask>.5;
+            if device.invert_output, mask=~mask; end
         end
 
         function state=Get_interlockStatus(device)
@@ -130,7 +162,31 @@ classdef SimulatedLuminosDevice < handle
         end
 
         function Write_Static(device)
+            device.StaticWriteAttemptCount=device.StaticWriteAttemptCount+1;
+            if device.FailOnStaticWrite || ...
+                    device.StaticWriteAttemptCount==device.FailOnStaticWriteNumber
+                % ALP_DMD.Write_Static clears its MATLAB bookkeeping and
+                % then throws in Pattern_Bytes, before Project_Image is
+                % reached, so a failed static write leaves the device
+                % playing whatever it was already playing. The modelled
+                % playback state is deliberately left untouched here.
+                error("adaptive_optopatch:SimulatedDmdStaticWriteFailure", ...
+                    "Requested simulated DMD static-write failure.");
+            end
             device.StaticWriteCount=device.StaticWriteCount+1;
+            % ALP_DMD::Project: DevHalt, free the previous sequence,
+            % SeqAlloc(1,1), master mode with stepping disabled,
+            % ProjStartCont.
+            device.sequence_pictures=1;
+            device.projection_state_code=1200;
+            if ~device.StaticWriteSkipsModeReset
+                device.projection_mode_code=2301;
+                device.projection_step_code=0;
+            end
+        end
+
+        function canvasSize=Pattern_Canvas_Size(device)
+            canvasSize=device.Dimensions([2 1]);
         end
 
         function transformed=setPatterningROI(device,mask,varargin)
@@ -151,6 +207,12 @@ classdef SimulatedLuminosDevice < handle
             if ~isempty(device.pattern_stack)
                 device.Target=device.pattern_stack(:,:,1);
             end
+            % Project_Stack loads every picture as one sequence and leaves
+            % the device in the requested projection mode.
+            device.sequence_pictures=size(device.pattern_stack,3);
+            device.projection_mode_code=mode_code(mode);
+            device.projection_step_code=0;
+            device.projection_state_code=1200;
         end
 
         function tf=Supports_FLUT(device)
@@ -180,6 +242,13 @@ classdef SimulatedLuminosDevice < handle
             if ~isempty(device.playlist)
                 device.Target=device.slot_patterns{device.playlist(1)};
             end
+            % A FLUT playlist addresses the reserved picture pool, so the
+            % loaded sequence still holds one picture per unique mask; the
+            % playlist length is the look-up table, not the sequence.
+            device.sequence_pictures=device.reserved_slot_count;
+            device.projection_mode_code=mode_code(mode);
+            device.projection_step_code=0;
+            device.projection_state_code=1200;
         end
 
         function sync=Resolve_Buffered_Sync(device,varargin) %#ok<INUSD>
@@ -233,4 +302,15 @@ classdef SimulatedLuminosDevice < handle
             volts=[x y];
         end
     end
+end
+
+function code=mode_code(mode)
+% alp.h: ALP_MASTER 2301, ALP_SLAVE 2302.
+if strcmpi(string(mode),"slave"), code=2302; else, code=2301; end
+end
+
+function value=unavailable_as_minus_one(value)
+% A real controller answers -1 for an inquiry it does not implement, and
+% ALP_DMD_State passes that through; NaN is the simulator's stand-in.
+if ~isfinite(value), value=-1; end
 end

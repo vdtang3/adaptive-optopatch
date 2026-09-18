@@ -36,24 +36,36 @@ classdef TestConstrainedRoundRobinProtocol < matlab.unittest.TestCase
 
         function shippedScriptUsesTenMillisecondPulses(testCase)
             protocol=testCase.ScriptProtocol;
-            events=protocol.acquisitions.events;
-            testCase.verifyEqual(events.duration_s,0.010*ones(height(events),1), ...
-                "AbsTol",1e-12);
-            testCase.verifyEqual(protocol.acquisitions.scheduler_metadata.pulse_duration_s, ...
-                0.010,"AbsTol",1e-12);
+            for chunk=reshape(protocol.acquisitions,1,[])
+                events=chunk.events;
+                testCase.verifyEqual(events.duration_s,0.010*ones(height(events),1), ...
+                    "AbsTol",1e-12);
+                testCase.verifyEqual(chunk.scheduler_metadata.pulse_duration_s, ...
+                    0.010,"AbsTol",1e-12);
+            end
         end
 
-        function shippedScriptDefaultsToOneThousandPulsesPerCell(testCase)
-            metadata=testCase.ScriptProtocol.acquisitions.scheduler_metadata;
-            testCase.verifyEqual(metadata.pulses_per_cell,1000);
-            testCase.verifyEqual(metadata.target_count,10);
-            testCase.verifyEqual(metadata.total_event_count,10000);
-            verify_balance(testCase,testCase.ScriptProtocol.acquisitions.events,1000);
+        function shippedScriptDefaultsToTenExplicitHundredPulseChunks(testCase)
+            acquisitions=testCase.ScriptProtocol.acquisitions;
+            testCase.verifyNumElements(acquisitions,10);
+            allEvents=table;
+            for k=1:numel(acquisitions)
+                metadata=acquisitions(k).scheduler_metadata;
+                testCase.verifyEqual(metadata.pulses_per_cell,100);
+                testCase.verifyEqual(metadata.target_count,10);
+                testCase.verifyEqual(metadata.total_event_count,1000);
+                testCase.verifyEqual(metadata.random_seed, ...
+                    testCase.ScriptProtocol.random_seed+k-1);
+                testCase.verifyTrue(acquisitions(k).event_order_realized);
+                verify_balance(testCase,acquisitions(k).events,100);
+                allEvents=[allEvents;acquisitions(k).events]; %#ok<AGROW>
+            end
+            verify_balance(testCase,allEvents,1000);
         end
 
         function shippedScriptHoldsTwentyMillisecondCadence(testCase)
-            events=testCase.ScriptProtocol.acquisitions.events;
-            metadata=testCase.ScriptProtocol.acquisitions.scheduler_metadata;
+            events=testCase.ScriptProtocol.acquisitions(1).events;
+            metadata=testCase.ScriptProtocol.acquisitions(1).scheduler_metadata;
             testCase.verifyEqual(metadata.requested_preferred_global_spacing_s,0.020);
             testCase.verifyEqual(diff(events.onset_s), ...
                 0.020*ones(height(events)-1,1),"AbsTol",1e-9);
@@ -61,29 +73,31 @@ classdef TestConstrainedRoundRobinProtocol < matlab.unittest.TestCase
         end
 
         function shippedScriptEnforcesHundredMillisecondPostPulseRecovery(testCase)
-            events=testCase.ScriptProtocol.acquisitions.events;
-            metadata=testCase.ScriptProtocol.acquisitions.scheduler_metadata;
-            testCase.verifyEqual(metadata.minimum_same_cell_post_pulse_gap_s,0.100);
-            testCase.verifyEqual(metadata.same_cell_minimum_onset_interval_s,0.110, ...
-                "AbsTol",1e-12);
-            verify_post_pulse_recovery(testCase,events,0.100);
+            for chunk=reshape(testCase.ScriptProtocol.acquisitions,1,[])
+                metadata=chunk.scheduler_metadata;
+                testCase.verifyEqual(metadata.minimum_same_cell_post_pulse_gap_s,0.100);
+                testCase.verifyEqual(metadata.same_cell_minimum_onset_interval_s,0.110, ...
+                    "AbsTol",1e-12);
+                verify_post_pulse_recovery(testCase,chunk.events,0.100);
+            end
         end
 
         function shippedScriptMarksEverySourceAsOnePhotonDmd(testCase)
-            events=testCase.ScriptProtocol.acquisitions.events;
-            testCase.verifyTrue(all(events.stimulation_source=="1p_dmd"));
-            testCase.verifyFalse(any(events.is_null));
+            for chunk=reshape(testCase.ScriptProtocol.acquisitions,1,[])
+                testCase.verifyTrue(all(chunk.events.stimulation_source=="1p_dmd"));
+                testCase.verifyFalse(any(chunk.events.is_null));
+            end
         end
 
         function shippedScriptLeavesVoltageUnresolvedForFovCalibration(testCase)
             protocol=testCase.ScriptProtocol;
-            events=protocol.acquisitions.events;
-            testCase.verifyTrue(all(isnan(events.command_voltage_v)));
+            for chunk=reshape(protocol.acquisitions,1,[])
+                testCase.verifyTrue(all(isnan(chunk.events.command_voltage_v)));
+                testCase.verifyFalse(isfield(chunk.parameters,"command_voltage_v"));
+            end
             testCase.verifyTrue(ismember("fov_cell", ...
                 string(protocol.parameter_sources.command_voltage_v)));
             testCase.verifyFalse(isfield(protocol.parameters,"command_voltage_v"));
-            testCase.verifyFalse(isfield(protocol.acquisitions.parameters, ...
-                "command_voltage_v"));
         end
 
         function shippedScriptNormalizesUnderSchemaFour(testCase)
@@ -91,10 +105,43 @@ classdef TestConstrainedRoundRobinProtocol < matlab.unittest.TestCase
             testCase.verifyEqual(string(protocol.schema_version),"4.0.0");
             testCase.verifyEqual(string(protocol.artifact_type),"experiment_definition");
             testCase.verifyEqual(string(protocol.target_policy),"multi_target_continuous");
-            testCase.verifyTrue(protocol.acquisitions.event_order_realized);
-            testCase.verifyEqual(protocol.acquisitions.target_repetitions,1);
+            testCase.verifyTrue(all([protocol.acquisitions.event_order_realized]));
+            testCase.verifyEqual([protocol.acquisitions.target_repetitions],ones(1,10));
             report=adaptive_optopatch.validate_protocol(protocol);
             testCase.verifyTrue(report.passed,strjoin(report.issues,newline));
+        end
+
+        function chunkSeedsAreReproducibleAndIndependentlyRandomized(testCase)
+            ids=compose("cell_%03d",(1:10)');
+            first=adaptive_optopatch.generate_connectivity_chunked_protocol( ...
+                ids,"BaseRandomSeed",4242);
+            second=adaptive_optopatch.generate_connectivity_chunked_protocol( ...
+                ids,"BaseRandomSeed",4242);
+            changed=adaptive_optopatch.generate_connectivity_chunked_protocol( ...
+                ids,"BaseRandomSeed",99);
+            for k=1:10
+                testCase.verifyEqual(first.acquisitions(k).events, ...
+                    second.acquisitions(k).events);
+                testCase.verifyNotEqual(first.acquisitions(k).events.target_cell_id, ...
+                    changed.acquisitions(k).events.target_cell_id);
+            end
+            testCase.verifyNotEqual(first.acquisitions(1).events.target_cell_id, ...
+                first.acquisitions(2).events.target_cell_id);
+        end
+
+        function fifteenHundredPulsesCreateFifteenChunks(testCase)
+            protocol=adaptive_optopatch.generate_connectivity_chunked_protocol( ...
+                compose("cell_%03d",(1:10)'),"TotalPulsesPerCell",1500, ...
+                "BaseRandomSeed",7);
+            testCase.verifyNumElements(protocol.acquisitions,15);
+        end
+
+        function oversizedConnectivityChunkFailsWithActionableCapacityError(testCase)
+            ids=compose("cell_%03d",(1:35)');
+            testCase.verifyError(@() ...
+                adaptive_optopatch.generate_connectivity_chunked_protocol( ...
+                    ids,"PulsesPerCellPerChunk",200), ...
+                "adaptive_optopatch:ConnectivityChunkExceedsFlutCapacity");
         end
 
         % --- 3: the documented higher-SNR variant ---------------------------

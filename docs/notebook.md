@@ -1756,3 +1756,283 @@ They are not deleted here: they still exercise the unrealized-timeline and
 `each_stimulation_enabled_cell` resolution paths, which the three explicit
 protocols no longer cover. Removing them is a separate decision about whether
 those paths are still wanted.
+
+## 2026-09-17 — Large-connectivity DMD correctness and preparation cost
+
+Luminos `Patterning_Device.Dimensions` is `[width height]`, while `Target` is a
+MATLAB image in `[rows columns]`. AO had constructed safety blanks directly
+from `Dimensions`, transposing the 1024×768 Blue DMD canvas. Full-device blanks
+now go through one helper backed by Luminos's canonical
+`Pattern_Canvas_Size()` API; neutralization, post-trial cleanup, null targets,
+and the inactive Blue DMD path share it.
+
+The dominant 3400-event startup cost was `luminos_event_waveform`: every event
+allocated comparisons over the complete 68 s sample vector. It now binary
+searches the actual time vector for the exact half-open `[onset, offset)`
+sample boundaries, then writes only that interval. This preserves sample-edge
+and last-event-wins overlap semantics. On this workstation, the former loop
+took 41.93 s for a 34×100, 200 kHz waveform; the replacement took 0.096 s
+(435×). A complete synthetic preflight measured 2.33 s, including 0.55 s for
+full stimulation accounting, so accounting remains active and uncached.
+
+FLUT execution still uploads each unique transformed bitmap once and programs
+one playlist entry per event. Capacity validation now runs in dry-run
+preflight through the same calculation used by live programming. The canonical
+connectivity generator represents 1000 pulses per cell as ten explicit
+100-pulse chunks. Chunk `k` is independently scheduled with `base_seed+k-1`;
+AO Repeat remains unchanged and should normally be one.
+
+A physically completed acquisition is no longer relabeled failed when its
+post-run DMD blank throws. The checkpoint and `output_data.mat` record
+`completed_cleanup_failed` plus the cleanup error, the batch stops, safety
+cleanup still runs, and resume skips the already acquired data.
+
+## 2026-09-17 — Blue DMD static-target execution state
+
+A single-cell 1P ramp showed broad off-target activation at low mod488
+voltages while every archived AO artifact was correct: camera-space mask,
+cropped-FOV remapping, planning and execution transforms, and a small
+localized Blue DMD `Target`. The run had also begun with
+`Could not neutralize: blue_dmd_pattern`, the transposed-blank bug fixed
+separately. The question was whether a failed blank could leave the device
+in a stale FLUT/slave playback state that a later static write did not
+override — MATLAB believing one thing and the mirrors doing another.
+
+Traced through Luminos: `prepare_luminos_target` calls
+`setPatterningROI(..., write_when_complete=true)`, which sets `Target` and
+calls `Write_Static`. `ALP_DMD.Write_Static` clears its slot/playlist
+bookkeeping and then `DMD_MEX('Project_Image')` reaches
+`ALP_DMD::Project`, which halts the device, frees the loaded sequence
+(dropping FLUT addressing with it, since look-up addressing is a sequence
+property), allocates `SeqAlloc(1,1)`, restores master mode with stepping
+disabled, and starts continuous projection. **A successful static write is
+therefore self-sufficient: stale FLUT/slave state cannot survive it**, and
+no caller-side stop or reset is needed. The failed blank does not explain
+the broad illumination.
+
+There is a real desync window, but only on a *failed* write:
+`setPatterningROI` assigns `Target` before calling `Write_Static`, and
+`Write_Static` clears its bookkeeping before `Pattern_Bytes` — which is
+exactly where the transposed blank threw. So a failed static write leaves
+`Target` updated and the bookkeeping reset while the hardware keeps playing
+the previous sequence. That is a luminos-private ordering issue, noted and
+not changed here; AO's own recovery is the next successful static write.
+
+The better-supported explanation for the symptom is `invert_output`. It is
+applied only in `DMD.Device_Pattern`, on the last step out to the mirrors,
+and is deliberately invisible to `Target`, the previews and everything
+calibration touches. A rig entry with it wrongly set makes the mirrors show
+the complement of a localized mask — a field-wide stimulus — while every
+artifact AO archives stays correct, including a same-day calibration. It is
+already in `Build_Archive`, but AO's `settings_snapshot` is captured before
+programming and nothing surfaced or checked it.
+
+AO now archives, after each static write,
+`dmd_state_after_programming` (`read_dmd_execution_state`: the projection
+and sequence inquiries `ALP_DMD::Get_State` exposes, with -1 and absent
+fields both read as unavailable) and `dmd_device_mask_summary`
+(`summarize_dmd_device_pattern`: `Target` counts alongside
+`mirrors_on_fraction`, obtained from the device's own `Device_Pattern`).
+`mirrors_on_fraction` is the single number that separates a localized
+stimulus from a field-wide one, and would have settled this in minutes.
+
+`flut_enabled` is a private C++ member and is not exposed, so FLUT-active
+cannot be read directly. Master mode plus a one-picture sequence is what
+the API can prove, and it is sufficient: a single-picture master sequence
+cannot be a multi-entry FLUT playlist. Programming a static target now
+fails with `DmdNotInStaticMode` when the device *positively* reports slave
+mode or a multi-picture sequence; unavailable readback is archived as
+`unproven` and never treated as a fault. The FLUT execution path is
+untouched and stays in slave mode with its picture pool, as it must.
+
+## 2026-09-17 — Draft target selection, and the checks a checkbox used to run
+
+Selecting cells in the React tab was slow enough to discourage using it. The
+cause was not one thing but a chain, and each link is worth recording because
+each was individually reasonable.
+
+### What a checkbox actually cost
+
+Every eligibility edit was a round trip. `set_cell_eligibility` reached
+`setCellEligibility`, which called `invalidateCellSummary` — and the cell
+summary is `summarize_soma_geometry`, which rasterises every soma over the
+whole reference image and computes their pairwise overlap. Eligibility lives
+in `CellState` and changes no polygon, so that cache never needed discarding;
+the next `cellRows()` rebuilt the masks anyway, and the reply's own
+`getState()` is that next read. `setCellBlueVoltage`, `setCellCalibration` and
+`applyCellState` had the same mistake.
+
+`getState()` then asked for the same derived answers repeatedly.
+`planStatus`, `planReadiness` and `legalActions` each computed `planStatus`,
+and each of those computed `stalePlanInputs` → `executionInputs`, which
+rebuilds the execution-input struct — polygons, cell decisions, the whole
+protocol definition — and deep-compares it with the prepared plan. That ran
+three times per snapshot. `planSummary`, which walks every manifest trial's
+pulse schedule, ran twice: once for itself and once inside `runProgress`.
+
+In the browser, `useAdaptiveOptopatchSession`'s `waveformKey` included every
+cell's `stimulation_enabled`, so a checkbox re-fetched the waveform preview —
+a manifest rebuild and a sample-vector synthesis, and the most expensive read
+the tab has. And `busy` disabled the whole cell table while any action was in
+flight, so against a single-threaded MATLAB the clicks serialised behind all
+of the above.
+
+### The fix, and the design commitment it revises
+
+The tab was written to hold no session state of its own, and that remains
+right for drawing a soma or loading a protocol: one deliberate act whose
+result the operator waits to see. It is wrong for picking targets, which is a
+dozen clicks in a few seconds with nothing to wait for. `draftConfiguration.ts`
+now holds the cell decisions and the editable plan parameters locally, and
+`Update plan` sends them and then compiles.
+
+The exception is bounded so the original guarantee survives. A draft holds
+only values that DIFFER from the snapshot, so an empty draft means the browser
+and the controller agree exactly, and toggling a box twice leaves nothing to
+send. Nothing is ever run from a draft: `run` is still refused unless a
+prepared plan matches the controller's own inputs, and a draft is not part of
+those. Everything describing the applied plan — the summary, the readiness
+message, the stale-input list — is still rendered from the snapshot and moves
+only when Update plan is pressed.
+
+The cost of the divergence is real and is the reason it is written down: while
+a draft is unsent, the MATLAB planning window's cell table disagrees with the
+browser. The tab says so, with an unapplied-edit count and a discard control,
+rather than hiding it.
+
+### set_cell_eligibility_batch
+
+Flushing a draft one cell at a time would bump the revision once per cell and
+make each request stale for the next, so the whole selection goes as one
+action under one revision. It is applied all-or-nothing: a batch naming a cell
+that does not exist changes nothing, because a half-applied selection is the
+one state an operator can neither see nor undo. It can express nothing a
+sequence of single edits could not, which is asserted directly.
+
+### Counting rasterisations rather than comparing caches
+
+`aDecisionEditDoesNotRerasteriseTheSomaMasks` counts, because it has to. A
+rebuilt cache holds exactly the numbers the discarded one did, and the reply
+to every action reads the state afterwards and so re-warms whatever was thrown
+away — an equality check would have passed either way. `CellSummaryComputations`
+makes "this edit did not rebuild the masks" a checkable property instead of a
+probable one.
+
+### The waveform preview follows the applied plan
+
+Its fetch key is now the prepared run, the loaded protocol and the reference,
+not the editable state. A preview that re-synthesised on every checkbox was
+describing something nobody had asked for yet; it now holds still until the
+draft is applied, and Refresh is there for the operator who wants it sooner.
+
+### Frontend tests exist now
+
+`luminos-private/src/User_Interface/frontend` had no JS test tooling. Vitest,
+jsdom and Testing Library are devDependencies there, `npm test` runs them, and
+the Vite build reads none of it. That is a deliberate exception to keeping AO
+tooling out of shared Luminos: what these tests assert — that editing makes
+zero backend calls and Update plan makes exactly one compile — cannot be
+checked from this repository, because the components are there.
+
+## 2026-09-17 — Two state owners, named: React drafts, MATLAB commits
+
+The previous entry introduced draft target selection and explained it as a
+performance fix. That was the honest reason it was written, but it is not the
+right way to record it, because the shape it produced is an architectural
+decision and needs to be defensible on its own terms. It is this:
+
+> **React owns uncommitted user intent. MATLAB owns committed state and
+> execution truth.**
+
+Three things, and they are named apart in the code so they cannot be confused
+for one another:
+
+- **controllerState** — the authoritative snapshot MATLAB last sent. Committed
+  configuration, prepared plan, audit results, cell identity, QC. React renders
+  it and never writes to it.
+- **draftOverrides** — what the experimenter has changed and not yet committed.
+  Sparse, local, free to modify: no MATLAB call, no compile, no audit, no
+  hardware check, no waveform synthesis.
+- **appliedPlan** — the executable plan MATLAB compiled, archived and audited,
+  derived only from committed state. The only plan Run may use, and it cannot
+  see an override because no override has reached MATLAB.
+
+What is on screen is `controllerState + draftOverrides`, computed by
+`effectiveCells` and `effectivePlanParameters`. It is a view. Nothing stores
+it, and that is what keeps React from becoming a second source of truth.
+
+### Why sparse is load-bearing
+
+An override that equals the committed value is removed rather than recorded.
+That single rule gives everything else: an empty draft means the two agree
+exactly; toggling a checkbox twice leaves nothing to commit; an edit made in
+the MATLAB planning window that happens to agree with the draft silently stops
+being a difference; and the work a commit does is bounded by what actually
+changed rather than by how much clicking happened. A draft that stored absolute
+values instead of differences would have none of those properties and would
+need a conflict-resolution policy, which is the thing worth not having.
+
+### Update plan is the commit boundary, and it is atomic
+
+The previous pass left a real partial-commit window. Flushing a draft sent one
+`set_plan_parameter` per value, then a batch of cell decisions, then
+`update_plan`. Parameter A could commit, B could commit, C could be refused,
+and no compile would ever happen — leaving the controller holding a
+configuration the experimenter never asked for and never saw, and no prepared
+plan describing it. The experimenter pressed one button; MATLAB kept part of
+what it meant.
+
+`apply_plan_draft` replaces that sequence with one action. The controller
+validates the entire delta before mutating anything, applies it, compiles,
+audits, and on any failure restores the commit point it started from —
+`CellState`, `PlanParameters`, the prepared-plan fields, and the revision.
+
+Restoring the **revision** is the part worth explaining. It looks like hiding a
+change and is the opposite: `Revision` means "what `getState()` would return
+has changed", and after a rollback it has not. Keeping it also makes retry
+work, which is the behaviour the model needs — a refused draft is still a valid
+delta against the revision it was built on, so the experimenter can fix it and
+send it again rather than being told their correction is stale for a change the
+controller never kept. `notifyStateChanged` exists so the MATLAB planning
+window, which painted the intermediate state, still gets told to repaint
+without the revision moving.
+
+`set_cell_eligibility_batch`, added one pass ago for the flush, was removed as
+an endpoint: `apply_plan_draft` subsumes its only caller, and two ways to
+commit a selection is one too many. The controller method survives as
+`applyPlanDraft`'s, which is where the all-or-nothing cell validation lives.
+
+`draftConfiguration.ts`, named in the previous entry, is now `planDraft.ts`,
+and its vocabulary changed with it - `DraftOverrides`, `effectiveCells`,
+`planDraftPayload`, `committed*` - so that the three owners above are
+distinguishable at every call site rather than all being called "the draft".
+
+### The residual failure window, stated
+
+Rollback cannot unwrite a file. `saveExecutionBatch` runs only after the audit
+has passed, so a refused plan writes nothing; a write that fails part way
+leaves a run folder that nothing points at, and the next successful Update plan
+allocates the next number rather than reusing it. Closing that would mean
+deleting run artifacts on an error path, which is a worse thing to get wrong
+than leaving an orphaned folder. It is documented in `applyPlanDraft` and left
+open deliberately.
+
+A second, smaller one: another frontend that polls mid-commit can observe an
+intermediate revision that the rollback then withdraws. Its next action is
+refused as stale and it is handed the true state — a refusal, not corruption.
+
+### What Run means, said out loud
+
+The Run panel now has two named states — "Plan up to date" and "Unapplied
+changes (n)" — and the second says explicitly that running would use the
+applied plan, not the ticked checkboxes. Run is deliberately **not** disabled
+by the presence of a draft: Run means "execute what is prepared", and what is
+prepared has not changed. Disabling it would imply the draft had made the
+prepared plan unsafe, which is exactly the confusion this is trying to remove.
+
+The waveform preview is labelled "Applied waveform preview" for the same
+reason. It is synthesised by MATLAB from committed state, so an uncommitted
+checkbox is not in it and could not be. A preview of what an *uncommitted*
+draft would command is deliberately absent: it would mean resolving a protocol
+against state MATLAB does not hold, which is a second resolution path for the
+one question this tab exists to answer honestly.

@@ -114,6 +114,247 @@ classdef TestAdaptiveOptopatchActions < matlab.unittest.TestCase
         end
 
         % ---------------------------------------------------------------
+        % The commit boundary
+        % ---------------------------------------------------------------
+        function aDraftIsCommittedAndCompiledAsOneOperation(testCase)
+            % What a frontend holding uncommitted overrides sends when the
+            % experimenter presses Update plan: the whole delta and the
+            % compile, in one action under one revision.
+            controller = testCase.preparableController();
+            before = controller.Revision;
+
+            response = testCase.act(controller, "apply_plan_draft", struct( ...
+                "cells", {{struct("cell_id", "cell_002", ...
+                    "stimulation_enabled", true)}}, ...
+                "plan_parameters", struct("repeat_batch_count", 3)));
+
+            testCase.verifyTrue(response.ok, response.message);
+            testCase.verifyTrue(any(controller.Calls == "applyPlanDraft"));
+            testCase.verifyTrue(any(controller.Calls == "updatePlan"));
+            testCase.verifyTrue(response.state.cells(2).stimulation_enabled);
+            testCase.verifyEqual( ...
+                response.state.plan_parameters.repeat_batch_count, 3);
+            % Committed AND prepared: the point of doing both here is that
+            % neither can happen without the other.
+            testCase.verifyEqual(response.state.plan_status, "ready");
+            testCase.verifyTrue(response.state.legal_actions.run);
+            testCase.verifyGreaterThan(response.state.revision, before);
+        end
+
+        function anEmptyDraftIsSimplyAPlanUpdate(testCase)
+            % The plan can be stale for reasons that are not a draft - a
+            % soma moved, a protocol reloaded - so committing nothing and
+            % preparing is a legitimate request.
+            controller = testCase.preparableController();
+
+            response = testCase.act(controller, "apply_plan_draft");
+
+            testCase.verifyTrue(response.ok, response.message);
+            testCase.verifyEqual(response.state.plan_status, "ready");
+        end
+
+        function aDraftCommitsNothingWhenOneCellIsUnknown(testCase)
+            controller = testCase.preparableController();
+            before = controller.getState();
+
+            response = testCase.act(controller, "apply_plan_draft", struct( ...
+                "cells", {{ ...
+                    struct("cell_id", "cell_001", "stimulation_enabled", false), ...
+                    struct("cell_id", "cell_404", "stimulation_enabled", false)}}));
+
+            testCase.verifyFalse(response.ok);
+            testCase.verifyEqual(response.identifier, ...
+                "adaptive_optopatch:UnknownCellId");
+            testCase.verifyEqual(response.state, before);
+        end
+
+        function aDraftCommitsNothingWhenOneParameterIsUnknown(testCase)
+            % THE PARTIAL-COMMIT WINDOW THIS CLOSES. Sent as separate
+            % actions, the first parameter would have been kept and the
+            % third refused, leaving the controller holding a configuration
+            % the experimenter never asked for and no plan describing it.
+            controller = testCase.preparableController();
+            before = controller.getState();
+
+            response = testCase.act(controller, "apply_plan_draft", struct( ...
+                "cells", {{struct("cell_id", "cell_002", ...
+                    "stimulation_enabled", true)}}, ...
+                "plan_parameters", struct( ...
+                    "repeat_batch_count", 4, ...
+                    "orange_expansion_pixels", 7, ...
+                    "polish_the_objective", 1)));
+
+            testCase.verifyFalse(response.ok);
+            testCase.verifyEqual(response.identifier, ...
+                "adaptive_optopatch:UnknownPlanParameter");
+            % Not one field of it survived - not the cell decision, not the
+            % two parameters that were perfectly valid, not the revision.
+            testCase.verifyEqual(response.state, before);
+        end
+
+        function aCompileFailureRollsTheWholeCommitBack(testCase)
+            % The hardest case: the delta is valid and is applied, and then
+            % the compile refuses the configuration it produced. Everything
+            % goes back, including the revision, so the frontend's draft is
+            % still a valid delta and can be sent again.
+            controller = testCase.preparableController();
+            before = controller.getState();
+
+            % Deselecting every cell is describable as a draft and not
+            % preparable as a plan: buildPlan has no targets to resolve.
+            response = testCase.act(controller, "apply_plan_draft", struct( ...
+                "cells", {{ ...
+                    struct("cell_id", "cell_001", "stimulation_enabled", false), ...
+                    struct("cell_id", "cell_002", "stimulation_enabled", false)}}));
+
+            testCase.verifyFalse(response.ok);
+            testCase.verifyEqual(response.status, "not_legal");
+            testCase.verifyEqual(response.identifier, ...
+                "adaptive_optopatch:PlanNotReady");
+            testCase.verifyEqual(response.state, before, ...
+                "A refused compile must leave the committed state whole.");
+            % Specifically: the cells are still selected and the plan that
+            % was prepared before is still the one that would run.
+            testCase.verifyTrue(response.state.cells(1).stimulation_enabled);
+            testCase.verifyEqual(response.state.plan_status, "ready");
+            testCase.verifyTrue(response.state.legal_actions.run);
+        end
+
+        function aRolledBackCommitLeavesTheRevisionWhereItWas(testCase)
+            % So that the same draft can be fixed and sent again against the
+            % revision it was built on, rather than being refused as stale
+            % for a change the controller never kept.
+            controller = testCase.preparableController();
+            revision = controller.Revision;
+
+            refused = testCase.act(controller, "apply_plan_draft", struct( ...
+                "cells", {{ ...
+                    struct("cell_id", "cell_001", "stimulation_enabled", false), ...
+                    struct("cell_id", "cell_002", "stimulation_enabled", false)}}));
+            testCase.assertFalse(refused.ok);
+            testCase.verifyEqual(controller.Revision, revision);
+
+            % The corrected draft, at the SAME revision the first one used.
+            retried = adaptive_optopatch.apply_controller_action(controller, ...
+                "apply_plan_draft", struct("cells", ...
+                    {{struct("cell_id", "cell_002", ...
+                        "stimulation_enabled", true)}}), revision);
+
+            testCase.verifyTrue(retried.ok, retried.message);
+            testCase.verifyTrue(retried.state.cells(2).stimulation_enabled);
+        end
+
+        function aDraftBuiltOnAnOlderRevisionIsRefused(testCase)
+            % The draft is a delta against ONE controller revision. Applying
+            % it to a newer one would commit decisions against state the
+            % experimenter never saw.
+            controller = testCase.preparableController();
+            stale = controller.Revision;
+            controller.setStatus("Something else happened.");
+            testCase.assertNotEqual(controller.Revision, stale);
+            before = controller.getState();
+
+            response = adaptive_optopatch.apply_controller_action(controller, ...
+                "apply_plan_draft", struct("cells", ...
+                    {{struct("cell_id", "cell_002", ...
+                        "stimulation_enabled", true)}}), stale);
+
+            testCase.verifyFalse(response.ok);
+            testCase.verifyEqual(response.status, "stale_revision");
+            testCase.verifyEqual(response.state, before);
+        end
+
+        function aCommitCanExpressNothingTheSingleActionsCannot(testCase)
+            % The endpoint exists to make the commit atomic, not to add
+            % authority. The same delta, applied either way, is the same
+            % committed configuration.
+            committed = testCase.preparableController();
+            testCase.act(committed, "apply_plan_draft", struct( ...
+                "cells", {{ ...
+                    struct("cell_id", "cell_001", "recording_enabled", false), ...
+                    struct("cell_id", "cell_002", "stimulation_enabled", true)}}, ...
+                "plan_parameters", struct("repeat_batch_count", 2)));
+
+            sequential = testCase.preparableController();
+            testCase.act(sequential, "set_cell_eligibility", ...
+                struct("cell_id", "cell_001", "recording_enabled", false));
+            testCase.act(sequential, "set_cell_eligibility", ...
+                struct("cell_id", "cell_002", "stimulation_enabled", true));
+            testCase.act(sequential, "set_plan_parameter", ...
+                struct("name", "repeat_batch_count", "value", 2));
+            testCase.act(sequential, "update_plan");
+
+            testCase.verifyEqual(committed.getState().cells, ...
+                sequential.getState().cells);
+            testCase.verifyEqual(committed.getState().plan_parameters, ...
+                sequential.getState().plan_parameters);
+            testCase.verifyEqual(committed.getState().plan_status, ...
+                sequential.getState().plan_status);
+        end
+
+        % ---------------------------------------------------------------
+        % A decision is not geometry
+        % ---------------------------------------------------------------
+        function aDecisionEditDoesNotRerasteriseTheSomaMasks(testCase)
+            % THE REGRESSION THIS GUARDS. setCellEligibility used to
+            % invalidate the cell-summary cache, which holds
+            % summarize_soma_geometry - a pure function of FovGeometry that
+            % rasterises every soma over the whole reference image and
+            % computes their overlap. A checkbox changes no polygon, so
+            % throwing that away meant every cell was rasterised again on
+            % the very next read of the cell table, behind every edit and
+            % on the poll after it.
+            %
+            % Counted rather than compared: the reply to an action carries
+            % the state afterwards, which re-warms whatever was discarded,
+            % and a rebuilt cache holds exactly the numbers the old one did.
+            controller = testCase.loadedController();
+            controller.getState();          % warm the cache
+            testCase.assertEqual(controller.somaRasterisations(), 1, ...
+                "The cache must be warm for this test to mean anything.");
+
+            edits = { ...
+                "set_cell_eligibility", struct("cell_id", "cell_001", ...
+                    "stimulation_enabled", false); ...
+                "set_cell_eligibility", struct("cell_id", "cell_002", ...
+                    "recording_enabled", false); ...
+                "set_cell_blue_voltage", struct("cell_id", "cell_001", ...
+                    "voltage_v", 2.25); ...
+                "apply_plan_draft", struct("cells", {{ ...
+                    struct("cell_id", "cell_001", "stimulation_enabled", true), ...
+                    struct("cell_id", "cell_002", "stimulation_enabled", true)}})};
+
+            for k = 1:size(edits, 1)
+                response = testCase.act(controller, edits{k, 1}, edits{k, 2});
+                testCase.assertTrue(response.ok, response.message);
+            end
+
+            % Three decision edits and a whole commit-and-compile, each
+            % followed by a full state read, and not one soma was rasterised
+            % again - the geometry never moved.
+            testCase.verifyEqual(controller.somaRasterisations(), 1, ...
+                "A decision changes no geometry and must not rebuild the masks.");
+        end
+
+        function ageometryEditStillRerasterisesTheSomaMasks(testCase)
+            % The other half, so the cache cannot be kept when it is wrong.
+            controller = testCase.loadedController();
+            controller.getState();
+            testCase.assertEqual(controller.somaRasterisations(), 1);
+
+            response = testCase.act(controller, "update_soma", struct( ...
+                "cell_id", "cell_001", ...
+                "vertices_xy", [30 30; 46 30; 46 46; 30 46]));
+
+            testCase.assertTrue(response.ok, response.message);
+            testCase.verifyEqual(controller.somaRasterisations(), 2, ...
+                "Moving a soma must rebuild the rasterised masks.");
+            % And the numbers really did follow the polygon.
+            testCase.verifyNotEqual(response.state.cells(1).centroid_xy, ...
+                controller.getState().cells(2).centroid_xy);
+        end
+
+        % ---------------------------------------------------------------
         % F, G, H. Soma geometry
         % ---------------------------------------------------------------
         function aDrawnSomaBecomesACanonicalCell(testCase)
@@ -658,7 +899,8 @@ classdef TestAdaptiveOptopatchActions < matlab.unittest.TestCase
                 "set_cell_blue_voltage", ...
                 "add_soma", "update_soma", "delete_soma", ...
                 "load_protocol_choice", "set_plan_parameter", ...
-                "update_plan", "run", "stop_after_current"];
+                "apply_plan_draft", "update_plan", "run", ...
+                "stop_after_current"];
         end
 
         function probeDuringRun(testCase, controller, probe)
@@ -720,6 +962,16 @@ classdef TestAdaptiveOptopatchActions < matlab.unittest.TestCase
             controller = testCase.loadedControllerWithoutProtocol();
             controller.setProtocol(adaptive_optopatch.generate_screen_protocol( ...
                 "PulseCount", 1, "ModulatorVoltage", 1));
+            controller.Calls = strings(0, 1);
+        end
+
+        function controller = preparableController(testCase)
+            % A loaded session with a plan ALREADY PREPARED, which is what
+            % the commit-boundary tests need: the thing a refused commit has
+            % to leave intact is the applied plan, and there has to be one.
+            controller = testCase.loadedController();
+            testCase.act(controller, "update_plan");
+            testCase.assertEqual(controller.planStatus(), "ready");
             controller.Calls = strings(0, 1);
         end
 

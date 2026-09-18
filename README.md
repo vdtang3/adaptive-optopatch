@@ -106,7 +106,7 @@ the screens.
 | Script | Experiment | Pulse | Per cell |
 |---|---|---|---|
 | `create_single_cell_ramp_protocol.m` | Blue power calibration | 10 ms | ascending voltage blocks |
-| `create_connectivity_round_robin_protocol.m` | Connectivity screen | 10 ms | 1000 single pulses (1500 optional) |
+| `create_connectivity_round_robin_protocol.m` | Connectivity screen | 10 ms | 1000 single pulses in 10 explicit chunks (1500 in 15 optional) |
 | `create_stp_screen_protocol.m` | Short-term plasticity screen | 10 ms | 300 trains of 5 pulses at 20 Hz |
 
 Connectivity and STP are explicit FOV-specific `multi_target_continuous`
@@ -118,11 +118,18 @@ realized cross-target schedule is frozen into the artifact. Both leave
 ```matlab
 % pulse-protocols/create_connectivity_round_robin_protocol.m
 target_cell_ids = compose("cell_%03d", (1:10)');
-pulses_per_cell = 1000;                     % 1500 for the higher-SNR version
+total_pulses_per_cell = 1000;               % 1500 for the higher-SNR version
+pulses_per_cell_per_chunk = 100;            % one FLUT playlist per chunk
 pulse_duration_s = 0.010;
 preferred_global_spacing_s = 0.020;         % global onset-to-onset cadence
 minimum_same_cell_post_pulse_gap_s = 0.100; % dark time after a cell's pulse ends
+base_random_seed = 3001;                    % chunk k uses seed + k - 1
 ```
+
+Each chunk is an explicit independently randomized acquisition. Keep normal AO
+Repeats at 1: Repeat deliberately replays an already-realized schedule. The
+generator rejects a chunk whose event-count playlist exceeds the executable
+4096-entry FLUT capacity and advises reducing `pulses_per_cell_per_chunk`.
 
 ```matlab
 % pulse-protocols/create_stp_screen_protocol.m

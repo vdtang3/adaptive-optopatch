@@ -35,6 +35,7 @@ export const ACTIONS = [
   "delete_soma",
   "load_protocol_choice",
   "set_plan_parameter",
+  "apply_plan_draft",
   "update_plan",
   "run",
   "stop_after_current",
@@ -457,6 +458,8 @@ export class FakeAoSession {
         return this.loadProtocolChoice(payload);
       case "set_plan_parameter":
         return this.setPlanParameter(payload);
+      case "apply_plan_draft":
+        return this.applyPlanDraft(payload);
       case "update_plan":
         return this.updatePlan();
       case "run":
@@ -474,6 +477,70 @@ export class FakeAoSession {
     if (recording_enabled != null) cell.recording_enabled = !!recording_enabled;
     if (stimulation_enabled != null) {
       cell.stimulation_enabled = !!stimulation_enabled;
+    }
+  }
+
+  /* Many cells' decisions at once, the way the controller's
+   * setCellEligibilityBatch applies them.
+   *
+   * ALL OR NOTHING, like the controller: every cell_id is resolved before
+   * anything is written, so a batch naming a cell that does not exist
+   * changes nothing. `this.cell` throws the refusal that does it. */
+  setCellEligibilityBatch(cells) {
+    if (!Array.isArray(cells) || cells.length === 0) {
+      throw this.refuse("'cells' must name at least one cell when it is sent at all.");
+    }
+    const resolved = cells.map((edit) => ({
+      cell: this.cell(edit?.cell_id),
+      edit,
+    }));
+    for (const { cell, edit } of resolved) {
+      if (edit.recording_enabled != null) {
+        cell.recording_enabled = !!edit.recording_enabled;
+      }
+      if (edit.stimulation_enabled != null) {
+        cell.stimulation_enabled = !!edit.stimulation_enabled;
+      }
+    }
+  }
+
+  /* THE COMMIT BOUNDARY, mirroring the controller's applyPlanDraft.
+   *
+   * The browser holds uncommitted edits and this is the one action that
+   * turns them into committed state and a prepared plan. It is one action
+   * because the experimenter pressed Update plan once: either the whole
+   * draft is committed and a plan prepared from it, or nothing moves.
+   *
+   * The rollback is what is being imitated, and it is the part the React
+   * tab is written against - a refused draft has to leave the committed
+   * state, the prepared plan and the revision exactly as they were, so the
+   * draft the browser is still holding remains a valid delta against them
+   * and can be fixed and sent again. What a prepared plan CONTAINS is an
+   * imitation as always; see the README. */
+  applyPlanDraft({ cells, plan_parameters: planParameters } = {}) {
+    const point = {
+      state: clone(this.state),
+      prepared: this.prepared ? clone(this.prepared) : null,
+      progress: this.progress ? clone(this.progress) : null,
+    };
+    try {
+      if (cells != null) this.setCellEligibilityBatch(cells);
+      if (planParameters != null) {
+        if (typeof planParameters !== "object" || Array.isArray(planParameters)) {
+          throw this.refuse(
+            "'plan_parameters' must be a single object of parameter values."
+          );
+        }
+        for (const [name, value] of Object.entries(planParameters)) {
+          this.setPlanParameter({ name, value });
+        }
+      }
+      this.updatePlan();
+    } catch (error) {
+      this.state = point.state;
+      this.prepared = point.prepared;
+      this.progress = point.progress;
+      throw error;
     }
   }
 

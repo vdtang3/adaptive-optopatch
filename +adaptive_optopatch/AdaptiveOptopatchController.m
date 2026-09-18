@@ -72,9 +72,30 @@ classdef AdaptiveOptopatchController < handle
         ProtocolRoot (1,1) string = ""
     end
 
+    properties (SetAccess=private, GetAccess=protected)
+        %CELLSUMMARYCACHE summarize_soma_geometry for the current FovGeometry.
+        %   Rasterises every soma over the whole reference image and computes
+        %   their overlap, so it is the most expensive derived value the
+        %   controller holds and is discarded ONLY when a polygon moves - see
+        %   setCellEligibility for the decisions that deliberately do not
+        %   discard it.
+        %
+        %   Readable by a subclass so that a test double can assert which
+        %   edits keep it. It is not public: nothing outside the class
+        %   hierarchy has any business reading a cache.
+        CellSummaryCache = []
+
+        %CELLSUMMARYCOMPUTATIONS How many times the masks have been rasterised.
+        %   The only way to tell a cache that was KEPT from one that was
+        %   discarded and rebuilt: both produce identical numbers, and the
+        %   reply to every action reads the state afterwards and so re-warms
+        %   whatever was thrown away. Counted rather than timed so the
+        %   property is checkable rather than merely probable.
+        CellSummaryComputations (1,1) double = 0
+    end
+
     properties (Access=private)
         LuminosApp = []
-        CellSummaryCache = []
         %PROTOCOLCHOICECACHE The listing loadProtocolChoice resolves against.
         ProtocolChoiceCache = []
         %SNAPSHOTCHOICECACHE The listing loadSnapshotChoice resolves against.
@@ -120,11 +141,23 @@ classdef AdaptiveOptopatchController < handle
             % The experimenter-facing lifecycle: one word for what may be
             % done next, why, what the prepared plan would do, and how far
             % a run has got. All four are the controller's answers.
-            state.plan_status=controller.planStatus();
-            state.plan_readiness=controller.planReadiness();
-            state.plan_summary=controller.planSummary();
-            state.run_progress=controller.runProgress();
-            state.legal_actions=controller.legalActions();
+            % COMPUTED ONCE AND SHARED. planStatus, planReadiness and
+            % legalActions all answer from the same two derived values -
+            % which groups of execution inputs the prepared plan predates,
+            % and the status that follows from them - and planSummary is
+            % read by both the summary and the progress. Asked separately,
+            % that rebuilt the whole execution-input struct and re-walked
+            % every manifest trial three and two times respectively, on
+            % every poll and behind every action. Nothing about the answers
+            % changes; only how many times they are worked out.
+            stale=controller.stalePlanInputs();
+            status=controller.planStatus(stale);
+            summary=controller.planSummary();
+            state.plan_status=status;
+            state.plan_readiness=controller.planReadiness(status,stale);
+            state.plan_summary=summary;
+            state.run_progress=controller.runProgress(summary);
+            state.legal_actions=controller.legalActions(status);
         end
 
         function value=lifecycle(controller)
@@ -140,7 +173,7 @@ classdef AdaptiveOptopatchController < handle
             end
         end
 
-        function actions=legalActions(controller)
+        function actions=legalActions(controller,status)
             %LEGALACTIONS Which operations the backend will currently accept.
             %   `update_plan` and `run` are the experimenter-facing pair and
             %   are answered by planStatus, which is the authority both the
@@ -153,10 +186,14 @@ classdef AdaptiveOptopatchController < handle
             %   as separate controls. They are internal machinery now: no
             %   action endpoint reaches them, and `update_plan` is the one
             %   name for preparing a plan.
+            arguments
+                controller
+                % Passed in by getState, which has already worked it out.
+                status (1,1) string = controller.planStatus()
+            end
             editing=controller.LifecycleState~="RUNNING";
             hasFov=~isempty(controller.ReferenceImage);
             hasCells=~isempty(controller.FovGeometry.polygons);
-            status=controller.planStatus();
             actions=struct( ...
                 "edit_cells",editing && hasFov, ...
                 "edit_plan_parameters",editing, ...
@@ -299,7 +336,7 @@ classdef AdaptiveOptopatchController < handle
             end
         end
 
-        function value=planStatus(controller)
+        function value=planStatus(controller,stale)
             %PLANSTATUS What the experimenter may do next, in one word.
             %
             %     not_ready        the experiment is not describable yet
@@ -311,22 +348,37 @@ classdef AdaptiveOptopatchController < handle
             %   so a direct endpoint call is refused by the same rule a
             %   button is greyed out by. A frontend renders it; it does not
             %   compute it.
+            arguments
+                controller
+                % A string array of stale input groups, passed in by
+                % getState, which needs the same list for planReadiness and
+                % would otherwise work it out twice. The numeric [] default
+                % is the only numeric value ever seen here and means "not
+                % supplied"; an empty STRING array means "nothing is stale".
+                stale = []
+            end
             if controller.LifecycleState=="RUNNING", value="running"; return; end
             if ~isempty(controller.planBlockingIssues()), value="not_ready"; return; end
             if isempty(controller.ActiveRunPlan) || ...
                     strlength(controller.ActiveRunFolder)==0
                 value="update_required"; return
             end
-            if ~isempty(controller.stalePlanInputs())
+            if isnumeric(stale), stale=controller.stalePlanInputs(); end
+            if ~isempty(stale)
                 value="update_required"; return
             end
             value="ready";
         end
 
-        function report=planReadiness(controller)
+        function report=planReadiness(controller,status,stale)
             %PLANREADINESS planStatus, and why it is what it is.
-            status=controller.planStatus();
-            stale=controller.stalePlanInputs();
+            arguments
+                controller
+                status (1,1) string = ""
+                stale = []
+            end
+            if isnumeric(stale), stale=controller.stalePlanInputs(); end
+            if strlength(status)==0, status=controller.planStatus(stale); end
             report=struct("schema_version","1.0.0","status",status, ...
                 "can_update_plan",status=="update_required" || status=="ready", ...
                 "can_run",status=="ready", ...
@@ -719,7 +771,66 @@ classdef AdaptiveOptopatchController < handle
                 "RecordingEnabled",options.RecordingEnabled, ...
                 "StimulationEnabled",options.StimulationEnabled);
             controller.CellState=fovState;
-            controller.invalidateCellSummary();
+            % The cell summary is NOT invalidated. It caches
+            % summarize_soma_geometry, which is a pure function of
+            % FovGeometry - area, centroid, edge distance and the
+            % cross-cell overlap that decides QC. An eligibility decision
+            % touches CellState and no polygon, so throwing the cache away
+            % here only forced every soma to be rasterised again, over the
+            % whole reference image, on the very next read of the cell
+            % table. That is the expensive work a checkbox used to drag
+            % behind it.
+            controller.bumpRevision();
+        end
+
+        function fovState=setCellEligibilityBatch(controller,edits)
+            %SETCELLELIGIBILITYBATCH Apply many cells' decisions as one change.
+            %   ONE REVISION FOR THE WHOLE BATCH, which is what a committed
+            %   target selection needs: applying a dozen decisions one
+            %   action at a time would bump the revision a dozen times and
+            %   make each one's expected_revision stale for the next.
+            %
+            %   NO ENDPOINT REACHES THIS. It is applyPlanDraft's, and a
+            %   frontend commits a selection by sending a whole draft -
+            %   there is deliberately not a second way to commit one.
+            %
+            %   ALL OR NOTHING. Every edit is validated against the current
+            %   cell record before any of them is kept, so a batch naming a
+            %   cell that does not exist changes nothing at all rather than
+            %   leaving the selection half applied - which is the one state
+            %   an operator could not see and could not undo.
+            %
+            %   Each entry is a struct with a cell_id and whichever of
+            %   RecordingEnabled and StimulationEnabled it means to change;
+            %   an omitted field leaves that decision alone, exactly as the
+            %   single-cell form does.
+            arguments
+                controller
+                edits struct
+            end
+            controller.assertNotRunning("Changing cell eligibility");
+            fovState=controller.currentFovState();
+            for k=1:numel(edits)
+                edit=edits(k);
+                if ~isfield(edit,"cell_id")
+                    error("adaptive_optopatch:CellEligibilityRequired", ...
+                        "Every eligibility edit needs a cell_id.");
+                end
+                recording=batch_flag(edit,"RecordingEnabled");
+                stimulation=batch_flag(edit,"StimulationEnabled");
+                if isempty(recording) && isempty(stimulation)
+                    error("adaptive_optopatch:CellEligibilityRequired", ...
+                        "Specify RecordingEnabled or StimulationEnabled " + ...
+                        "for '%s'.",string(edit.cell_id));
+                end
+                fovState=adaptive_optopatch.update_cell_eligibility( ...
+                    fovState,string(edit.cell_id), ...
+                    "RecordingEnabled",recording, ...
+                    "StimulationEnabled",stimulation);
+            end
+            controller.CellState=fovState;
+            % Decisions only: see setCellEligibility for why the geometry
+            % cache is left alone.
             controller.bumpRevision();
         end
 
@@ -743,7 +854,8 @@ classdef AdaptiveOptopatchController < handle
                 "ObisPowerW",controller.currentObisPowerW(), ...
                 "ReplaceCalibrationSnapshot",replaceSnapshot);
             controller.CellState=fovState;
-            controller.invalidateCellSummary();
+            % A calibration is a decision about a cell, not its geometry:
+            % see setCellEligibility.
             controller.bumpRevision();
         end
 
@@ -775,7 +887,8 @@ classdef AdaptiveOptopatchController < handle
                 "CommandVoltageV",voltage,"Notes",notes, ...
                 "Acquisition",acquisition,"ReplaceCalibrationSnapshot",false);
             controller.CellState=fovState;
-            controller.invalidateCellSummary();
+            % A calibration is a decision about a cell, not its geometry:
+            % see setCellEligibility.
             controller.bumpRevision();
         end
 
@@ -789,7 +902,8 @@ classdef AdaptiveOptopatchController < handle
             end
             controller.assertNotRunning("Applying a calibration decision");
             controller.CellState=fovState;
-            controller.invalidateCellSummary();
+            % A calibration is a decision about a cell, not its geometry:
+            % see setCellEligibility.
             controller.bumpRevision();
         end
 
@@ -799,6 +913,8 @@ classdef AdaptiveOptopatchController < handle
                 controller.CellSummaryCache= ...
                     adaptive_optopatch.summarize_soma_geometry( ...
                     controller.FovGeometry);
+                controller.CellSummaryComputations= ...
+                    controller.CellSummaryComputations+1;
             end
             summary=controller.CellSummaryCache;
         end
@@ -1353,6 +1469,12 @@ classdef AdaptiveOptopatchController < handle
                             plan.targets.parameters.blue_mask_adjustment_pixels);
                         if any(twoRows) || numel(ids)>1 || varies
                             sequencePlan=adaptive_optopatch.build_dmd_sequence_plan(resolved,plan.targets);
+                            % Capacity is a live-device property. Validate it
+                            % during Update Plan, before Run can upload or arm
+                            % anything; prepare_luminos_dmd_sequence remains
+                            % the single authority for the capacity formula.
+                            adaptive_optopatch.prepare_luminos_dmd_sequence( ...
+                                oneHardware.dmd,sequencePlan,"DryRun",true);
                         end
                     end
                     if any(twoRows)
@@ -1500,6 +1622,103 @@ classdef AdaptiveOptopatchController < handle
                 controller.ActiveRunFolder]);
         end
 
+        function paths=applyPlanDraft(controller,draft)
+            %APPLYPLANDRAFT Commit an experimenter's draft and prepare a plan.
+            %   THE COMMIT BOUNDARY. A frontend holds uncommitted edits -
+            %   which cells to stimulate, which plan parameters to use - and
+            %   the controller holds the committed configuration and the
+            %   prepared plan. This is the one operation that moves the
+            %   first into the second, and it is one operation deliberately:
+            %   the experimenter pressed Update plan once, so either the
+            %   whole draft is committed and a plan is prepared from it, or
+            %   nothing about the committed configuration moves at all.
+            %
+            %   WHAT IT REPLACES. Sending the draft as several actions -
+            %   one per plan parameter, then a batch of cell decisions, then
+            %   update_plan - left a window in which the third parameter
+            %   could be refused after the first two were kept and before
+            %   any plan was compiled. The controller would then hold a
+            %   configuration the experimenter never asked for and never
+            %   saw, and no prepared plan describing it.
+            %
+            %   THE ORDER MATTERS:
+            %
+            %     1. validate the whole delta, mutating nothing
+            %     2. apply it
+            %     3. compile, which is buildPlan
+            %     4. audit, which is preflightPlan
+            %     5. archive and adopt
+            %
+            %   Steps 3-5 are updatePlan's, unchanged. Anything that throws
+            %   in any of them restores the committed state this started
+            %   from, revision included, so a refused draft can be fixed and
+            %   sent again against the same revision it was built on.
+            %
+            %   THE ONE THING ROLLBACK CANNOT UNDO is a bundle already
+            %   written to disk. saveExecutionBatch runs only after the
+            %   audit has passed, so a refused plan writes nothing; a write
+            %   that fails part way leaves a folder nothing points at, and
+            %   the next successful Update plan allocates the next number
+            %   rather than reusing it. That is the residual window and it
+            %   is deliberately not closed here - doing so would mean
+            %   deleting run artifacts on an error path, which is a worse
+            %   thing to get wrong.
+            %
+            %   `draft` carries whichever of these it means to change:
+            %     cells            struct array of per-cell decisions, as
+            %                      setCellEligibilityBatch takes them
+            %     plan_parameters  struct of canonical parameter values
+            %   An absent or empty field changes nothing, so a draft that is
+            %   empty in both is simply Update plan on the committed state.
+            arguments
+                controller
+                draft (1,1) struct = struct()
+            end
+            controller.assertNotRunning("Updating the plan");
+
+            % 1. Validate, mutating nothing. Unknown parameter names and
+            %    uncoercible values are refused here rather than being
+            %    silently dropped - setPlanParameters ignores what it does
+            %    not recognise, which is right for restoring a saved bundle
+            %    and wrong for a request from a frontend.
+            parameters=struct();
+            if isfield(draft,"plan_parameters") && ...
+                    isstruct(draft.plan_parameters)
+                incoming=draft.plan_parameters;
+                for field=reshape(string(fieldnames(incoming)),1,[])
+                    name=plan_parameter_name(field);
+                    parameters.(name)=coerce_plan_value(name, ...
+                        incoming.(field));
+                end
+            end
+
+            cells=struct([]);
+            if isfield(draft,"cells") && ~isempty(draft.cells)
+                cells=draft.cells;
+            end
+
+            % 2-5. Apply, compile, audit, adopt - or put everything back.
+            point=controller.captureCommitPoint();
+            try
+                if ~isempty(cells)
+                    % All-or-nothing in its own right: every cell_id is
+                    % resolved before any decision is kept.
+                    controller.setCellEligibilityBatch(cells);
+                end
+                for name=reshape(string(fieldnames(parameters)),1,[])
+                    controller.PlanParameters.(name)=parameters.(name);
+                end
+                if ~isempty(fieldnames(parameters))
+                    controller.markEditableChanged();
+                    controller.bumpRevision();
+                end
+                paths=controller.updatePlan();
+            catch exception
+                controller.restoreCommitPoint(point);
+                rethrow(exception);
+            end
+        end
+
         function assertRunnable(controller)
             %ASSERTRUNNABLE Refuse anything but a prepared, current plan.
             %   The gate, on its own, so that the rule lives in exactly one
@@ -1598,14 +1817,19 @@ classdef AdaptiveOptopatchController < handle
                 summary.total_acquisitions);
         end
 
-        function progress=runProgress(controller)
+        function progress=runProgress(controller,summary)
             %RUNPROGRESS How far one press of Run has got.
             %   Counted in ACQUISITIONS across every repeat, because that
             %   is the unit an operator watches. The repeat loop records
             %   which repeat is in flight; the acquisitions completed
             %   within it come from the batch's own checkpoint, which the
             %   runner writes as it goes.
-            summary=controller.planSummary();
+            arguments
+                controller
+                % Passed in by getState, which already has it.
+                summary = []
+            end
+            if isempty(summary), summary=controller.planSummary(); end
             progress=struct("schema_version","1.0.0","running",false, ...
                 "stop_requested",controller.StopRequested, ...
                 "repeat_index",0, ...
@@ -1810,9 +2034,65 @@ classdef AdaptiveOptopatchController < handle
     methods (Access=private)
         function bumpRevision(controller)
             controller.Revision=controller.Revision+1;
+            controller.notifyStateChanged();
+        end
+
+        function notifyStateChanged(controller)
+            %NOTIFYSTATECHANGED Tell an attached view to redraw, revision as is.
+            %   Separate from bumpRevision because a rolled-back commit has
+            %   to do exactly one of the two: the MATLAB planning window
+            %   must redraw, because it painted the intermediate state, but
+            %   the revision must NOT advance - getState() is byte-for-byte
+            %   what it was before the attempt, and Revision means "what
+            %   getState() would return has changed".
             if isa(controller.StateChangedFcn,"function_handle")
                 controller.StateChangedFcn();
             end
+        end
+
+        function point=captureCommitPoint(controller)
+            %CAPTURECOMMITPOINT Everything applyPlanDraft may change, saved.
+            %   The committed configuration this operation writes, plus the
+            %   prepared-plan fields freezeRun replaces. Deliberately a
+            %   NAMED LIST rather than a copy of the object: the reference
+            %   image, the soma geometry and the loaded protocol are not
+            %   touched by a draft commit, and copying them would make this
+            %   expensive for no benefit.
+            point=struct( ...
+                "CellState",controller.CellState, ...
+                "PlanParameters",controller.PlanParameters, ...
+                "ActiveRunPlan",controller.ActiveRunPlan, ...
+                "ActiveRunFolder",controller.ActiveRunFolder, ...
+                "LastRun",controller.LastRun, ...
+                "RunProgress",controller.RunProgress, ...
+                "EditableStateChanged",controller.EditableStateChanged, ...
+                "LifecycleState",controller.LifecycleState, ...
+                "Status",controller.Status, ...
+                "Revision",controller.Revision);
+        end
+
+        function restoreCommitPoint(controller,point)
+            %RESTORECOMMITPOINT Put the committed state back, revision included.
+            %   The revision goes back too, and that is the point rather
+            %   than an oversight. A caller whose draft was refused must be
+            %   able to fix it and try again; if the failed attempt had
+            %   advanced the revision, the retry would be refused as stale
+            %   for a change the controller never kept. Restoring it is
+            %   also simply correct: Revision means "what getState() would
+            %   return has changed", and after a rollback it has not.
+            controller.CellState=point.CellState;
+            controller.PlanParameters=point.PlanParameters;
+            controller.ActiveRunPlan=point.ActiveRunPlan;
+            controller.ActiveRunFolder=point.ActiveRunFolder;
+            controller.LastRun=point.LastRun;
+            controller.RunProgress=point.RunProgress;
+            controller.EditableStateChanged=point.EditableStateChanged;
+            controller.LifecycleState=point.LifecycleState;
+            controller.Status=point.Status;
+            controller.Revision=point.Revision;
+            % A view that painted the intermediate state has to be told to
+            % paint this one; the revision stays where it was.
+            controller.notifyStateChanged();
         end
 
         function invalidateCellSummary(controller)
@@ -2461,10 +2741,10 @@ function preview=add_1p_channels_to_dense_preview(preview,protocol,targets)
 % Add 1P commands on the exact dense 2P preview timebase.
 pulses=adaptive_optopatch.flatten_pulse_schedule(protocol);
 pulses=pulses(pulses.stimulation_source=="1p_dmd",:);
-t=double(preview.time_s(:)); mod488=zeros(size(t));
+t=double(preview.time_s(:));
+mod488=adaptive_optopatch.luminos_event_waveform(t, ...
+    pulses.onset_s,pulses.offset_s,pulses.command_voltage_v,0)';
 for k=1:height(pulses)
-    active=t>=pulses.onset_s(k) & t<pulses.offset_s(k);
-    mod488(active)=pulses.command_voltage_v(k);
     event=empty_waveform_event();
     event.cell_id=string(pulses.target_cell_id(k));
     event.onset_s=double(pulses.onset_s(k));
@@ -2474,12 +2754,12 @@ for k=1:height(pulses)
     preview.events(end+1,1)=event;
 end
 plan=adaptive_optopatch.build_dmd_sequence_plan(protocol,targets);
-advance=false(size(t)); width=max(3/double(preview.sample_rate_hz),20e-6);
-for onset=reshape(double(plan.dmd_trigger_s),1,[])
-    advance=advance | (t>=onset & t<onset+width);
-end
+width=max(3/double(preview.sample_rate_hz),20e-6);
+triggerOnset=double(plan.dmd_trigger_s(:));
+advance=adaptive_optopatch.luminos_event_waveform(t,triggerOnset, ...
+    triggerOnset+width,ones(size(triggerOnset)),0)';
 preview.channels(end+1)=make_channel("mod488","V",mod488,"analog");
-preview.channels(end+1)=make_channel("Blue DMD advance","logical",double(advance),"digital");
+preview.channels(end+1)=make_channel("Blue DMD advance","logical",advance,"digital");
 end
 
 function parameters=default_plan_parameters()
@@ -2603,6 +2883,17 @@ end
 function value=info_string(info,name)
 value="";
 if isfield(info,name), value=string(info.(name)); end
+end
+
+function value=batch_flag(edit,name)
+%BATCH_FLAG One eligibility decision out of a batched edit, or "unchanged".
+%   Empty means the field was not sent, which update_cell_eligibility reads
+%   as "leave that decision alone" - the same convention the single-cell
+%   form uses, so a batch cannot do anything a sequence of single edits
+%   could not.
+value=[];
+if ~isfield(edit,name) || isempty(edit.(name)), return; end
+value=logical(edit.(name));
 end
 
 function value=fov_number(fovState,name,preferredFallback,currentFallback)

@@ -207,7 +207,7 @@ end
 
 function blank_dmd(app,deviceName)
 device=one_device(app,"DMD",deviceName);
-device.Target=false(device.Dimensions);
+device.Target=adaptive_optopatch.blank_dmd_pattern(device);
 device.Write_Static();
 end
 

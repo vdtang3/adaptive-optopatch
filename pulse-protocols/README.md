@@ -33,15 +33,19 @@ Connectivity (`create_connectivity_round_robin_protocol.m`):
 
 ```matlab
 target_cell_ids = compose("cell_%03d", (1:10)');
-pulses_per_cell = 1000;                     % 1500 for the higher-SNR version
+total_pulses_per_cell = 1000;               % 1500 for the higher-SNR version
+pulses_per_cell_per_chunk = 100;
 pulse_duration_s = 0.010;
 preferred_global_spacing_s = 0.020;
 minimum_same_cell_post_pulse_gap_s = 0.100; % after the pulse ENDS
+base_random_seed = 3001;                    % chunk k uses seed + k - 1
 ```
 
-A cell is revisited no sooner than 110 ms after its previous onset. Ten cells
-at the preferred 20 ms cadence keep the timeline continuously occupied:
-10 000 events, about 200 s.
+A cell is revisited no sooner than 110 ms after its previous onset. The default
+artifact contains ten independently scheduled 100-pulse acquisitions, not one
+10,000-entry FLUT playlist. Keep AO Repeats at 1. Each chunk is checked against
+the 4096-entry executable FLUT capacity; reduce
+`pulses_per_cell_per_chunk` if it is too large.
 
 Short-term plasticity (`create_stp_screen_protocol.m`):
 

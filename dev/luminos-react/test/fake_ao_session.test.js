@@ -60,7 +60,7 @@ test("the allowlist matches the one the MATLAB dispatcher publishes", () => {
     "set_cell_eligibility", "set_cell_blue_voltage",
     "add_soma", "update_soma", "delete_soma",
     "load_protocol_choice", "set_plan_parameter",
-    "update_plan", "run", "stop_after_current",
+    "apply_plan_draft", "update_plan", "run", "stop_after_current",
   ]));
 });
 
@@ -908,4 +908,176 @@ test("a waveform preview gives one value per time point on every channel", () =>
     preview.targets.reduce((total, t) => total + t.event_count, 0),
     preview.events.filter((e) => !e.is_null).length
   );
+});
+
+// ---------------------------------------------------------------------------
+// The commit boundary: what Update plan sends when the tab has been holding
+// uncommitted overrides.
+// ---------------------------------------------------------------------------
+
+test("a draft is committed and compiled as one operation", () => {
+  const session = newSession();
+  const before = session.current().revision;
+
+  const response = act(session, "apply_plan_draft", {
+    cells: [
+      { cell_id: "cell_001", stimulation_enabled: false },
+      { cell_id: "cell_002", stimulation_enabled: true },
+    ],
+    plan_parameters: { repeat_batch_count: 3 },
+  });
+
+  assert.equal(response.ok, true, response.message);
+  // One action, one revision, and a plan prepared from what it committed.
+  assert.equal(response.state.revision, before + 1);
+  assert.equal(response.state.plan_status, "ready");
+  assert.equal(response.state.legal_actions.run, true);
+  const byId = Object.fromEntries(
+    response.state.cells.map((cell) => [cell.cell_id, cell])
+  );
+  assert.equal(byId.cell_001.stimulation_enabled, false);
+  assert.equal(byId.cell_002.stimulation_enabled, true);
+  assert.equal(response.state.plan_parameters.repeat_batch_count, 3);
+});
+
+test("an empty draft is simply a plan update", () => {
+  const session = newSession();
+
+  const response = act(session, "apply_plan_draft", {});
+
+  assert.equal(response.ok, true, response.message);
+  assert.equal(response.state.plan_status, "ready");
+});
+
+test("a commit touches only the decisions it names", () => {
+  const session = newSession();
+  const before = session.current().cells.map((cell) => ({ ...cell }));
+
+  act(session, "apply_plan_draft", {
+    cells: before.map((cell) => ({
+      cell_id: cell.cell_id,
+      stimulation_enabled: true,
+    })),
+  });
+
+  for (const [index, cell] of session.current().cells.entries()) {
+    assert.equal(cell.stimulation_enabled, true, cell.cell_id);
+    assert.equal(cell.recording_enabled, before[index].recording_enabled,
+      `${cell.cell_id} recording must be untouched`);
+    assert.equal(cell.selected_blue_voltage_v,
+      before[index].selected_blue_voltage_v,
+      `${cell.cell_id} Blue V must be untouched`);
+    assert.equal(cell.area_pixels, before[index].area_pixels);
+    assert.equal(cell.qc_status, before[index].qc_status);
+  }
+});
+
+test("a commit naming an unknown cell changes nothing at all", () => {
+  const session = newSession();
+  act(session, "update_plan");
+  const before = session.current();
+
+  const response = act(session, "apply_plan_draft", {
+    cells: [
+      { cell_id: "cell_001", stimulation_enabled: false },
+      { cell_id: "cell_404", stimulation_enabled: false },
+    ],
+  });
+
+  assert.equal(response.ok, false);
+  assert.equal(response.status, "validation_error");
+  assert.deepEqual(response.state, before);
+});
+
+test("an unknown plan parameter rolls the whole commit back", () => {
+  // The partial-commit window this closes: sent as separate actions, the
+  // valid parameter would have been kept and the invalid one refused.
+  const session = newSession();
+  act(session, "update_plan");
+  const before = session.current();
+
+  const response = act(session, "apply_plan_draft", {
+    cells: [{ cell_id: "cell_002", stimulation_enabled: true }],
+    plan_parameters: {
+      repeat_batch_count: 4,
+      polish_the_objective: 1,
+    },
+  });
+
+  assert.equal(response.ok, false);
+  assert.deepEqual(response.state, before);
+  assert.equal(response.state.plan_parameters.repeat_batch_count,
+    before.plan_parameters.repeat_batch_count);
+});
+
+test("a refused compile leaves the applied plan and the revision intact", () => {
+  const session = newSession();
+  act(session, "update_plan");
+  const before = session.current();
+  assert.equal(before.plan_status, "ready");
+
+  // Deselecting every cell is a describable draft and not a preparable plan.
+  const response = act(session, "apply_plan_draft", {
+    cells: before.cells.map((cell) => ({
+      cell_id: cell.cell_id,
+      stimulation_enabled: false,
+    })),
+  });
+
+  assert.equal(response.ok, false);
+  assert.equal(response.identifier, "adaptive_optopatch:PlanNotReady");
+  assert.deepEqual(response.state, before);
+  // The revision did not move, so the draft the browser is still holding
+  // remains a valid delta and can be fixed and sent again.
+  assert.equal(response.state.revision, before.revision);
+  assert.equal(response.state.plan_status, "ready");
+  assert.equal(response.state.legal_actions.run, true);
+});
+
+test("a corrected draft commits at the revision the refused one used", () => {
+  const session = newSession();
+  act(session, "update_plan");
+  const revision = session.current().revision;
+
+  const refused = session.apply("apply_plan_draft", {
+    cells: session.current().cells.map((cell) => ({
+      cell_id: cell.cell_id,
+      stimulation_enabled: false,
+    })),
+  }, revision);
+  assert.equal(refused.ok, false);
+
+  const retried = session.apply("apply_plan_draft", {
+    cells: [{ cell_id: "cell_002", stimulation_enabled: true }],
+  }, revision);
+
+  assert.equal(retried.ok, true, retried.message);
+});
+
+test("a draft built on an older revision is refused", () => {
+  const session = newSession();
+  const stale = session.current().revision;
+  act(session, "set_cell_blue_voltage", { cell_id: "cell_002", voltage_v: 2.25 });
+  const before = session.current();
+  assert.notEqual(before.revision, stale);
+
+  const response = session.apply("apply_plan_draft", {
+    cells: [{ cell_id: "cell_001", stimulation_enabled: false }],
+  }, stale);
+
+  assert.equal(response.ok, false);
+  assert.equal(response.status, "stale_revision");
+  assert.deepEqual(response.state, before);
+});
+
+test("a commit stales nothing it did not change", () => {
+  const session = newSession();
+  act(session, "apply_plan_draft", {
+    cells: [{ cell_id: "cell_001", stimulation_enabled: false }],
+  });
+
+  // Committed AND prepared in one go, so the plan is ready rather than
+  // immediately out of date against the decision that just committed.
+  assert.equal(session.current().plan_status, "ready");
+  assert.deepEqual(session.current().plan_readiness.stale_inputs, []);
 });

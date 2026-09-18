@@ -18,6 +18,32 @@ classdef TestDmdFlutExecution < matlab.unittest.TestCase
     end
 
     methods (Test)
+        function thirtyFourMasksProgramOnceForThirtyFourHundredEvents(testCase)
+            sequence=repmat((1:34)',100,1);
+            [targets,protocol]=fixture(34,sequence,zeros(3400,1));
+            plan=adaptive_optopatch.build_dmd_sequence_plan(protocol,targets);
+            dmd=simulated_dmd(targets.reference_camera);
+            configuration=adaptive_optopatch.prepare_luminos_dmd_sequence( ...
+                dmd,plan,"DryRun",false);
+            testCase.verifyEqual(plan.unique_mask_count,34);
+            testCase.verifyEqual(plan.event_count,3400);
+            testCase.verifyEqual(dmd.slot_write_count,34);
+            testCase.verifyEqual(numel(dmd.playlist),3400);
+            testCase.verifyEqual(configuration.physical_upload_count,34);
+            testCase.verifyEqual(configuration.playlist_entry_count,3400);
+        end
+
+        function dryRunCapacityCheckDoesNotUploadAnything(testCase)
+            [targets,protocol]=fixture(34,repmat((1:34)',121,1),zeros(4114,1));
+            plan=adaptive_optopatch.build_dmd_sequence_plan(protocol,targets);
+            dmd=simulated_dmd(targets.reference_camera);
+            testCase.verifyError(@()adaptive_optopatch.prepare_luminos_dmd_sequence( ...
+                dmd,plan,"DryRun",true), ...
+                "adaptive_optopatch:FlutPlaylistTooLong");
+            testCase.verifyEqual(dmd.slot_write_count,0);
+            testCase.verifyEqual(dmd.reserved_slot_count,0);
+        end
+
         function tenMasksProgramTenUploadsAndOneThousandPlaylistEntries(testCase)
             [targets,protocol]=fixture(10,repmat((1:10)',100,1),zeros(1000,1));
             plan=adaptive_optopatch.build_dmd_sequence_plan(protocol,targets);
@@ -218,7 +244,7 @@ end
 
 function dmd=simulated_dmd(camera)
 dmd=adaptive_optopatch.testing.SimulatedLuminosDevice("DMD","DMD_Blue");
-dmd.Dimensions=camera.image_size;
+dmd.Dimensions=camera.image_size([2 1]);
 dmd.refimage=struct("img",zeros(camera.image_size,"uint16"),"bin",1, ...
     "ref2d",struct("ImageSize",camera.image_size, ...
     "XWorldLimits",[0 camera.image_size(2)], ...

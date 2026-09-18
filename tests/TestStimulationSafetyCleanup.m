@@ -25,6 +25,40 @@ classdef TestStimulationSafetyCleanup < matlab.unittest.TestCase
         % -----------------------------------------------------------------
         % Unified neutralization
         % -----------------------------------------------------------------
+        function blueDmdBlankUsesDeviceCanvasOrientation(testCase)
+            dmd=adaptive_optopatch.testing.SimulatedLuminosDevice("DMD","DMD_Blue");
+            dmd.Dimensions=[1024 768];
+            blank=adaptive_optopatch.blank_dmd_pattern(dmd);
+            testCase.verifySize(blank,[768 1024]);
+            testCase.verifyClass(blank,"logical");
+            testCase.verifyFalse(any(blank,"all"));
+        end
+
+        function neutralizationWritesADeviceSpaceBlank(testCase)
+            app=adaptive_optopatch.testing.make_simulated_luminos();
+            dmd=app.getDevice("DMD","name","DMD_Blue");
+            dmd.Dimensions=[1024 768];
+            dmd.Target=true(768,1024);
+            report=adaptive_optopatch.neutralize_all_stimulation(app, ...
+                "Modality","1p_dmd");
+            testCase.verifyTrue(report.all_succeeded);
+            testCase.verifySize(dmd.Target,[768 1024]);
+            testCase.verifyFalse(any(dmd.Target,"all"));
+        end
+
+        function successfulRunEndsWithADeviceSpaceBlank(testCase)
+            [manifest,targets]=one_photon_manifest();
+            app=simulated_rig(testCase,targets);
+            dmd=app.getDevice("DMD","name","DMD_Blue");
+            dmd.Dimensions=[1024 768];
+            run=adaptive_optopatch.run_1p_manifest( ...
+                manifest,targets,app,"ConfirmLiveOutput",true, ...
+                "ShutterSettleTimeS",0,"OutputDirectory",testCase.OutputRoot);
+            testCase.verifyEqual(run.trials.acquisition_status,"completed");
+            testCase.verifySize(dmd.Target,[768 1024]);
+            testCase.verifyFalse(any(dmd.Target,"all"));
+        end
+
         function neutralizationDrivesEveryOwnedSystemToItsDeclaredValue(testCase)
             app=adaptive_optopatch.testing.make_simulated_luminos();
             oneP=adaptive_optopatch.virtual_upright_1p_profile();
@@ -203,6 +237,39 @@ classdef TestStimulationSafetyCleanup < matlab.unittest.TestCase
             % run never used.
             testCase.verifyEqual(pockels.level,2.5, ...
                 "Failure cleanup wrote the Pockels cell during a pure 1P run.");
+        end
+
+        function completedAcquisitionWithBlankFailureIsNotReacquired(testCase)
+            [manifest,targets]=one_photon_manifest();
+            app=simulated_rig(testCase,targets);
+            dmd=app.getDevice("DMD","name","DMD_Blue");
+            % Initial blank, target write, then post-acquisition blank.
+            dmd.FailOnStaticWriteNumber=3;
+            testCase.verifyError(@()adaptive_optopatch.run_1p_manifest( ...
+                manifest,targets,app,"ConfirmLiveOutput",true, ...
+                "ShutterSettleTimeS",0,"OutputDirectory",testCase.OutputRoot), ...
+                "adaptive_optopatch:PostAcquisitionCleanupFailed");
+            testCase.verifyNumElements(app.AcquisitionHistory,1);
+            checkpoint=load(fullfile(testCase.OutputRoot,"run_checkpoint.mat"),"run");
+            testCase.verifyEqual( ...
+                checkpoint.run.trials.acquisition_status(1), ...
+                "completed_cleanup_failed");
+            testCase.verifyNotEmpty( ...
+                checkpoint.run.trials.cleanup_error_message(1));
+            output=load(fullfile( ...
+                checkpoint.run.trials.experiment_directory(1),"output_data.mat"), ...
+                "adaptive_optopatch_cleanup");
+            testCase.verifyTrue(output.adaptive_optopatch_cleanup.acquisition_completed);
+            testCase.verifyFalse(output.adaptive_optopatch_cleanup.cleanup_completed);
+
+            dmd.FailOnStaticWriteNumber=NaN;
+            resumed=adaptive_optopatch.run_1p_manifest( ...
+                manifest,targets,app,"ConfirmLiveOutput",true, ...
+                "ShutterSettleTimeS",0,"OutputDirectory",testCase.OutputRoot);
+            testCase.verifyNumElements(app.AcquisitionHistory,1, ...
+                "Resume reacquired data that had already completed physically.");
+            testCase.verifyEqual(resumed.trials.acquisition_status(1), ...
+                "completed_cleanup_failed");
         end
 
         function aPreArmFailureNeutralizesEvenThoughNothingWasEverArmed(testCase)

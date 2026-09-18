@@ -15,8 +15,6 @@ configuration=rmfield(plan,"unique_camera_masks");
 configuration.mode="slave";
 configuration.loaded=false;
 configuration.execution_mode="unprogrammed";
-if options.DryRun, return; end
-
 uniqueCount=plan.unique_mask_count;
 useFlut=supports_flut(dmd);
 configuration.supports_flut=useFlut;
@@ -33,19 +31,22 @@ if useFlut
             "The DMD reports FLUT support but no usable FLUT entry capacity.");
     end
     flutMaxEntries=double(state.flut_max_entries);
-    widthMultiplier=1+(uniqueCount>512);
-    % Luminos' tFlutWrite transfer buffer contains 4096 frame numbers. The
-    % controller may advertise less, and 18-bit entries consume two of its
-    % 9-bit positions, so the executable capacity is the smaller limit.
-    playlistCapacity=min(4096,floor(flutMaxEntries/widthMultiplier));
+    playlistCapacity=adaptive_optopatch.calculate_dmd_flut_playlist_capacity( ...
+        flutMaxEntries,uniqueCount);
     if playlistCount>playlistCapacity
         error("adaptive_optopatch:FlutPlaylistTooLong", ...
             "The DMD playlist contains %d entries, but this DMD and "+ ...
             "Luminos can hold only %d FLUT playlist entries for a %d-mask "+ ...
-            "bank. Split the protocol or reduce its event count.", ...
+            "bank. Split the protocol into smaller acquisitions or reduce "+ ...
+            "pulses_per_cell_per_chunk.", ...
             playlistCount,playlistCapacity,uniqueCount);
     end
+    configuration.flut_max_entries=flutMaxEntries;
+    configuration.flut_playlist_capacity=playlistCapacity;
 end
+configuration.physical_upload_count=uniqueCount;
+configuration.playlist_entry_count=playlistCount;
+if options.DryRun, return; end
 
 referenceMask=adaptive_optopatch.remap_camera_mask_to_dmd_reference( ...
     plan.unique_camera_masks(:,:,1),plan.reference_camera,dmd,"DMD_Blue");
@@ -67,10 +68,6 @@ if useFlut
     end
     dmd.Set_Playlist(playlistSlots,'slave');
     configuration.execution_mode="flut_playlist";
-    configuration.flut_max_entries=flutMaxEntries;
-    configuration.flut_playlist_capacity=playlistCapacity;
-    configuration.physical_upload_count=uniqueCount;
-    configuration.playlist_entry_count=playlistCount;
 else
     stack=transformedMasks(:,:,plan.event_slot_indices);
     dmd.pattern_stack=stack;

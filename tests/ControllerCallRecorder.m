@@ -78,6 +78,36 @@ classdef ControllerCallRecorder < adaptive_optopatch.AdaptiveOptopatchController
                 "StimulationEnabled",options.StimulationEnabled);
         end
 
+        function value=cachedCellSummary(recorder)
+            %CACHEDCELLSUMMARY The rasterised soma geometry, or [] if discarded.
+            %   Exposed so a test can assert that an edit which changes no
+            %   polygon does not throw the masks away - which is not visible
+            %   in the state, because recomputing them produces the same
+            %   numbers, only slower.
+            value=recorder.CellSummaryCache;
+        end
+
+        function value=somaRasterisations(recorder)
+            %SOMARASTERISATIONS How many times the soma masks have been built.
+            value=recorder.CellSummaryComputations;
+        end
+
+        function fovState=setCellEligibilityBatch(recorder,edits)
+            recorder.record("setCellEligibilityBatch");
+            fovState=setCellEligibilityBatch@adaptive_optopatch.AdaptiveOptopatchController( ...
+                recorder,edits);
+        end
+
+        function paths=applyPlanDraft(recorder,draft)
+            % Recorded and then really performed, like updatePlan: the whole
+            % point of this operation is what it does to the controller's
+            % state when it succeeds and when it is refused, so a stub
+            % would leave nothing to assert.
+            recorder.record("applyPlanDraft");
+            paths=applyPlanDraft@adaptive_optopatch.AdaptiveOptopatchController( ...
+                recorder,draft);
+        end
+
         function cellId=addSomaPolygon(recorder,verticesXy)
             recorder.record("addSomaPolygon");
             cellId=addSomaPolygon@adaptive_optopatch.AdaptiveOptopatchController( ...

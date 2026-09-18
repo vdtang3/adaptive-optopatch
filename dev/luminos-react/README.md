@@ -72,7 +72,7 @@ Requests it recognises:
 | `app_method get("datafolder")` | a placeholder string |
 | `app_method get_device_availability_js` | `{ devices: [], count: 0, attaching: false }` |
 | `app_method get_adaptive_optopatch_state_js` | the in-memory session state |
-| `app_method adaptive_optopatch_action_js` | the same reply envelope MATLAB produces |
+| `app_method adaptive_optopatch_action_js` | the same reply envelope MATLAB produces, `apply_plan_draft` included |
 | `app_method get_adaptive_optopatch_reference_image_js` | the loaded snapshot's image, binary-framed |
 | `app_method get_adaptive_optopatch_snapshot_choices_js` | the snapshot listing fixture |
 | `app_method get_adaptive_optopatch_reference_choices_js` | the snapshot listing plus whatever has been saved in this session, typed by `kind` |
@@ -98,6 +98,11 @@ mirrors the parts of the contract the frontend is written against:
 - the same staleness rule, and the same exemption for `stop_after_current`
 - the same reply envelope, carrying the state after the action whether it was
   applied or refused
+- the same commit boundary: `apply_plan_draft` applies a whole draft, compiles
+  and prepares, and **rolls all of it back** — committed state, prepared plan
+  and revision — if anything refuses. That rollback is the part the React tab
+  is written against, because a refused commit has to leave the browser's
+  draft a valid delta against an unchanged revision
 - `legal_actions` and `lifecycle` recomputed rather than carried over
 - `fov.source_kind` and `fov.source_path`, so the chooser can mark the loaded
   entry and the tab can say whether cells were restored or drawn
@@ -272,6 +277,13 @@ after the action, a stale request changing nothing, revisions advancing by one,
 no reply carrying a field named `error` (which the browser's bridge reads as a
 thrown exception), and the reference image arriving binary-framed at the size
 the state snapshot announced.
+
+It also covers the commit boundary as the tab reads it: that a draft is
+committed and compiled as one operation under one revision, that an unknown
+cell or an unknown plan parameter rolls the whole thing back rather than
+keeping the valid half, that a refused compile leaves the applied plan and the
+revision exactly where they were, and that a corrected draft therefore commits
+at the same revision the refused one used.
 
 It also covers starting a session from a snapshot: that an empty session offers
 snapshots and has no FOV, that choosing one installs the FOV the real

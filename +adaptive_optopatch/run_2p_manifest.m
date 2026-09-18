@@ -99,7 +99,7 @@ hardware.modulator.level=profile.modulator.dark_v;
 hardware.blue_shutter.State=profile.inactive_one_photon.shutter.closed_state;
 % A low trigger prevents pattern advances; a blank static write also makes
 % the preloaded Blue-DMD state non-stimulating throughout this 2P run.
-hardware.blue_dmd.Target=false(hardware.blue_dmd.Dimensions);
+hardware.blue_dmd.Target=adaptive_optopatch.blank_dmd_pattern(hardware.blue_dmd);
 hardware.blue_dmd.Write_Static();
 trials=manifest.trials; n=height(trials);
 trials=ensure_column(trials,"settings_snapshot",cell(n,1));

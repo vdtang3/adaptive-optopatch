@@ -28,7 +28,13 @@ for k=1:n
         % Trigger each Frame is paced explicitly by the DAQ period. Luminos's
         % calculate_framerate estimate is diagnostic, not a second authority
         % that can override or reject that configured cadence.
-        cameraLimit=read_camera_rate_limit(camera);
+        % daqtrig_period_ms is the authoritative externally-triggered frame
+        % cadence. Camera.calculate_framerate describes exposure/readout and
+        % warns in synchronous-trigger mode that it may not be the actual
+        % rate, so do not call it redundantly from this path. Use a declared
+        % limit when a backend exposes one; otherwise archive NaN.
+        cameraLimit=double(read_member(camera,"maximum_frame_rate_hz",NaN));
+        if ~isscalar(cameraLimit), cameraLimit=NaN; end
         conservativeLimit=NaN;
         count=ceil(durationS*frameRate);
         camera.frames_requested=count;
@@ -65,13 +71,6 @@ for k=1:n
     plan(k).rate_override_used=false;
 end
 
-function rate=read_camera_rate_limit(camera)
-rate=double(read_member(camera,"maximum_frame_rate_hz",NaN));
-if isobject(camera) && ismethod(camera,"calculate_framerate")
-    rate=double(camera.calculate_framerate());
-end
-if ~isscalar(rate), rate=NaN; end
-end
 end
 
 function value=read_member(object,name,defaultValue)

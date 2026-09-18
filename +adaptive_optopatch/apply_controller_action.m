@@ -133,6 +133,23 @@ function names=action_names()
 %         drawn on, at the next unused number - exactly as freeze_run's
 %         output root is. A browser asks for a save; it does not name a file.
 %
+%     apply_plan_draft
+%         THE COMMIT BOUNDARY, and the reason the React tab can let an
+%         experimenter pick targets without a round trip per checkbox. The
+%         browser holds uncommitted edits; this is how they become
+%         committed state and a prepared plan, in ONE action, under ONE
+%         revision check, with the commit rolled back if the compile or the
+%         audit refuses it.
+%
+%         It replaced a sequence - a set_plan_parameter per value, then a
+%         batch of cell decisions, then update_plan - which left a window
+%         where the third parameter could be refused after the first two
+%         had been kept and before any plan existed. The controller would
+%         then hold a configuration the experimenter never asked for.
+%
+%         It can express nothing the individual actions cannot. What it
+%         adds is that the whole draft arrives or none of it does.
+%
 %     set_cell_blue_voltage
 %         the per-cell 488 nm CALIBRATION, which the MATLAB cell table has
 %         always been able to edit through the same controller method. It
@@ -192,6 +209,7 @@ names=[ ...
     "delete_soma"
     "load_protocol_choice"
     "set_plan_parameter"
+    "apply_plan_draft"
     "update_plan"
     "run"
     "stop_after_current"];
@@ -242,6 +260,7 @@ switch action
             "RecordingEnabled",optional_flag(payload,"recording_enabled"), ...
             "StimulationEnabled",optional_flag(payload,"stimulation_enabled"));
 
+
     case "add_soma"
         controller.addSomaPolygon(required_vertices(payload));
 
@@ -258,6 +277,14 @@ switch action
     case "set_plan_parameter"
         controller.setPlanParameter(required_text(payload,"name"), ...
             required_field(payload,"value"));
+
+    case "apply_plan_draft"
+        % One logical commit: the draft's cell decisions and plan
+        % parameters, then compile, then audit. The controller owns
+        % atomicity; this only reshapes the request into the struct it
+        % takes. The revision the draft was built on has already been
+        % checked above, by the same rule every other mutation uses.
+        controller.applyPlanDraft(required_plan_draft(payload));
 
     case "update_plan"
         % Validate, resolve, preflight and archive an immutable execution
@@ -366,6 +393,69 @@ function value=optional_flag(payload,name)
 value=[];
 if ~isfield(payload,name) || isempty(payload.(name)), return; end
 value=logical(payload.(name));
+end
+
+function draft=required_plan_draft(payload)
+%REQUIRED_PLAN_DRAFT The uncommitted edits a frontend is asking to commit.
+%   A draft is SPARSE: it carries only what differs from the committed
+%   state the frontend was looking at, so both fields are optional and a
+%   draft with neither is simply "prepare a plan from what is already
+%   committed".
+%
+%     cells            a list of per-cell decisions, each with a cell_id
+%                      and whichever of recording_enabled and
+%                      stimulation_enabled it means to change
+%     plan_parameters  an object of canonical plan parameter values
+%
+%   Nothing here decides what a value means or whether it is allowed. The
+%   controller validates the whole delta before it applies any of it.
+draft=struct();
+if isfield(payload,"cells") && ~isempty(payload.cells)
+    draft.cells=cell_eligibility_edits(payload.cells);
+end
+if isfield(payload,"plan_parameters") && ~isempty(payload.plan_parameters)
+    value=payload.plan_parameters;
+    if ~isstruct(value) || ~isscalar(value)
+        error("adaptive_optopatch:InvalidActionArgument", ...
+            "'plan_parameters' must be a single object of parameter values.");
+    end
+    draft.plan_parameters=value;
+end
+end
+
+function edits=cell_eligibility_edits(value)
+%CELL_ELIGIBILITY_EDITS Per-cell decisions, as the controller wants them.
+%   jsondecode turns a list of objects with identical fields into a struct
+%   array and a list of one into a scalar struct; a list whose objects have
+%   DIFFERENT fields - the normal case here, because an omitted flag means
+%   "leave that decision alone" - arrives as a cell array of structs
+%   instead. All three are normalised to the struct array the controller
+%   takes, with the field names it uses.
+if iscell(value)
+    entries=value;
+elseif isstruct(value)
+    entries=num2cell(reshape(value,1,[]));
+else
+    error("adaptive_optopatch:InvalidActionArgument", ...
+        "'cells' must be a list of per-cell eligibility edits.");
+end
+if isempty(entries)
+    error("adaptive_optopatch:InvalidActionArgument", ...
+        "'cells' must name at least one cell when it is sent at all.");
+end
+
+edits=repmat(struct("cell_id","","RecordingEnabled",[], ...
+    "StimulationEnabled",[]),1,numel(entries));
+for k=1:numel(entries)
+    entry=entries{k};
+    if ~isstruct(entry) || ~isscalar(entry)
+        error("adaptive_optopatch:InvalidActionArgument", ...
+            "Each entry of 'cells' must be a single object.");
+    end
+    edits(k).cell_id=required_text(entry,"cell_id");
+    edits(k).RecordingEnabled=optional_flag(entry,"recording_enabled");
+    edits(k).StimulationEnabled=optional_flag(entry,"stimulation_enabled");
+end
 end
 
 function vertices=required_vertices(payload)

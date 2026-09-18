@@ -99,6 +99,7 @@ trials=ensure_column(trials,"waveform_summary",cell(n,1));
 trials=ensure_column(trials,"stimulation_accounting",cell(n,1));
 trials=ensure_column(trials,"executed_pulse_schedule",cell(n,1));
 trials=ensure_column(trials,"error_message",repmat("",n,1));
+trials=ensure_column(trials,"cleanup_error_message",repmat("",n,1));
 checkpoint="";
 if strlength(options.OutputDirectory)>0
     if ~isfolder(options.OutputDirectory), mkdir(options.OutputDirectory); end
@@ -153,7 +154,8 @@ cleanup=onCleanup(@()restore_1p_hardware(app,hardware,original,profile, ...
 completedThisCall=0;
 for k=1:n
     status=string(run.trials.acquisition_status(k));
-    if options.Resume && ismember(status,["completed","analyzed"]), continue; end
+    if options.Resume && ismember(status, ...
+            ["completed","completed_cleanup_failed","analyzed"]), continue; end
     try
         row=run.trials(k,:);
         protocol=adaptive_optopatch.normalize_protocol(row.pulse_schedule{1});
@@ -303,8 +305,35 @@ for k=1:n
         run.trials.experiment_directory(k)=experimentDirectory;
         run.trials.acquisition_status(k)="completed";
         run.trials.error_message(k)="";
+        run.trials.cleanup_error_message(k)="";
         completedThisCall=completedThisCall+1;
-        if options.BlankDmdAfterTrial, blank_dmd(); end
+        if options.BlankDmdAfterTrial
+            try
+                blank_dmd();
+            catch cleanupException
+                run.trials.acquisition_status(k)="completed_cleanup_failed";
+                run.trials.cleanup_error_message(k)=string(cleanupException.message);
+                run.cleanup_failed_trial=k;
+                cleanupRecord=struct( ...
+                    "acquisition_completed",true, ...
+                    "cleanup_completed",false, ...
+                    "cleanup_error_identifier",string(cleanupException.identifier), ...
+                    "cleanup_error_message",string(cleanupException.message), ...
+                    "recorded_at",string(datetime("now","TimeZone","local")));
+                adaptive_optopatch_cleanup=cleanupRecord;
+                save(fullfile(experimentDirectory,"output_data.mat"), ...
+                    "adaptive_optopatch_cleanup","-append");
+                save_checkpoint();
+                failure=MException( ...
+                    "adaptive_optopatch:PostAcquisitionCleanupFailed", ...
+                    "Acquisition %d completed and output_data.mat was archived, " + ...
+                     "but post-acquisition DMD blanking failed: %s. The run " + ...
+                     "stopped before the next acquisition.", ...
+                    k,cleanupException.message);
+                failure=addCause(failure,cleanupException);
+                throw(failure)
+            end
+        end
         save_checkpoint();
         if ~isempty(options.StopRequestedFcn) && logical(options.StopRequestedFcn())
             break
@@ -325,9 +354,13 @@ for k=1:n
             hardware.shutter.State=profile.shutter.closed_state;
         catch
         end
-        run.trials.acquisition_status(k)="failed";
-        run.trials.error_message(k)=string(exception.message);
-        run.failed_trial=k;
+        completedData=ismember(string(run.trials.acquisition_status(k)), ...
+            ["completed","completed_cleanup_failed","analyzed"]);
+        if ~completedData
+            run.trials.acquisition_status(k)="failed";
+            run.trials.error_message(k)=string(exception.message);
+            run.failed_trial=k;
+        end
         run.last_error=struct("identifier",string(exception.identifier), ...
             "message",string(exception.message), ...
             "stack",exception.stack);
@@ -432,7 +465,7 @@ save_checkpoint();
     end
 
     function blank_dmd()
-        hardware.dmd.Target=false(hardware.dmd.Dimensions);
+        hardware.dmd.Target=adaptive_optopatch.blank_dmd_pattern(hardware.dmd);
         hardware.dmd.Write_Static();
     end
 
@@ -512,7 +545,7 @@ catch
 end
 try
     if blankDmd
-        hardware.dmd.Target=false(hardware.dmd.Dimensions);
+        hardware.dmd.Target=adaptive_optopatch.blank_dmd_pattern(hardware.dmd);
         hardware.dmd.Write_Static();
     end
 catch

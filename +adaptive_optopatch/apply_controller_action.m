@@ -150,6 +150,16 @@ function names=action_names()
 %         It can express nothing the individual actions cannot. What it
 %         adds is that the whole draft arrives or none of it does.
 %
+%     start_new_fov
+%         THE FOV/SESSION BOUNDARY. One canonical controller operation -
+%         startNewFov - that forgets the current field of view and
+%         everything built on it, and keeps the rig. It is here rather than
+%         expressed as a sequence of clearing actions for the reason
+%         apply_plan_draft is: a sequence would have intermediate states an
+%         experimenter never asked for, and each step would be separately
+%         refusable. A browser asks for a new field of view; the controller
+%         decides what that discards.
+%
 %     set_cell_blue_voltage
 %         the per-cell 488 nm CALIBRATION, which the MATLAB cell table has
 %         always been able to edit through the same controller method. It
@@ -201,6 +211,7 @@ function names=action_names()
 names=[ ...
     "load_reference_choice"
     "load_snapshot_choice"
+    "start_new_fov"
     "save_fov"
     "set_cell_eligibility"
     "set_cell_blue_voltage"
@@ -233,6 +244,13 @@ switch action
         % loadReferenceChoice against that listing - not here, and never
         % by the caller.
         controller.loadReferenceChoice(required_text(payload,"choice_id"));
+
+    case "start_new_fov"
+        % Takes nothing. WHAT a new field of view discards, and what it
+        % keeps, is the controller's decision and is written down in
+        % startNewFov - not negotiable by a payload, and not assembled here
+        % out of smaller clears.
+        controller.startNewFov();
 
     case "save_fov"
         % No path, and no number. The bundle goes beside the snapshot this

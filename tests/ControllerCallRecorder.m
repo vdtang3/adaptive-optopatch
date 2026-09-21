@@ -158,6 +158,15 @@ classdef ControllerCallRecorder < adaptive_optopatch.AdaptiveOptopatchController
                 recorder,outputRoot);
         end
 
+        function startNewFov(recorder)
+            % Recorded and then really performed. What a new field of view
+            % discards is entirely a matter of controller state - no
+            % runner, no disk, no device - so a stub would leave a test
+            % nothing to read afterwards.
+            recorder.record("startNewFov");
+            startNewFov@adaptive_optopatch.AdaptiveOptopatchController(recorder);
+        end
+
         function returnToEditing(recorder)
             recorder.record("returnToEditing");
             returnToEditing@adaptive_optopatch.AdaptiveOptopatchController(recorder);

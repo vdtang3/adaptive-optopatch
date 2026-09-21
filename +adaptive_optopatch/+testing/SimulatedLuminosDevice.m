@@ -209,15 +209,30 @@ classdef SimulatedLuminosDevice < handle
         end
 
         function transformed=setPatterningROI(device,mask,varargin)
+            % The RETURN CONTRACT is Patterning_Device's, and it is not the
+            % obvious one: the warped mask comes back only when the caller
+            % asked for no write. Once it has written, the real method has
+            % already moved the mask into Target and returns the scalar 1.
+            %
+            % Reproduced here because the difference is invisible until it
+            % is archived. This simulator used to return the mask either
+            % way, so a caller that recorded the return value as "what the
+            % device was programmed with" recorded a mask in test and a
+            % scalar true on the rig, and every test agreed with itself.
+            % The programmed pattern is Target; ask for that.
             device.Target=logical(mask);
-            transformed=logical(mask);
             writeNow=false;
             for k=1:2:numel(varargin)
                 if strcmpi(string(varargin{k}),"write_when_complete")
                     writeNow=logical(varargin{k+1});
                 end
             end
-            if writeNow, device.Write_Static(); end
+            if writeNow
+                device.Write_Static();
+                transformed=1;
+            else
+                transformed=logical(mask);
+            end
         end
 
         % ---- Per-camera calibration, mirroring Patterning_Device ---------

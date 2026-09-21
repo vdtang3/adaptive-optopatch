@@ -69,6 +69,7 @@ tiers.core = [ ...
     "TestLuminosSharedController"
     "TestAdaptiveOptopatchReferenceChooser"
     "TestAdaptiveOptopatchReferenceTransport"
+    "TestNewFovLifecycle"
     "TestAdaptiveOptopatchPreviews"
     "TestBlueVoltageCalibration"
     "TestReferenceSnapshotIngest"
@@ -78,13 +79,15 @@ tiers.core = [ ...
     "TestLuminosHardwareResolution"
     "TestCameraFrameCadence"
     % DMD targeting: mask construction, programming, execution state,
-    % ownership across acquisition startup, and calibration identity.
+    % ownership across acquisition startup, calibration identity, and what
+    % the archive records about the pattern that was programmed.
     % These are layered on purpose; see Phase 3 of docs/notebook.md.
     "TestDmdCameraMaskRemapping"
     "TestDmdFlutExecution"
     "TestDmdStaticTargetExecutionState"
     "TestDmdOwnershipAcrossAcquisition"
     "TestDmdCalibrationIdentity"
+    "TestDmdProgrammedMaskProvenance"
     "TestBlueMaskAdjustment"
     "TestBlueMaskEventExecutability"
     "TestBlueDmdAdvisoryPolicy"

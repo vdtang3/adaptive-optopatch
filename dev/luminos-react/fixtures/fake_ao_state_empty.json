@@ -112,6 +112,7 @@
     "load_protocol": true,
     "load_fov": true,
     "save_fov": false,
+    "start_new_fov": true,
     "update_plan": false,
     "run": false,
     "freeze_run": false,

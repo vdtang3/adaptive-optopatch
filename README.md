@@ -298,7 +298,7 @@ editing, and can drive it. One write endpoint and six reads:
 | Endpoint | Direction | What it does |
 | --- | --- | --- |
 | `get_adaptive_optopatch_state_js` | read | `controller.getState()`. Polled about once a second. Carries no image, mask, waveform or manifest. |
-| `get_adaptive_optopatch_reference_image_js` | read | The reference FOV as a flat uint8 column-major list. Fetched only when `fov.reference_revision` changes. |
+| `get_adaptive_optopatch_reference_image_js` | read | The reference FOV as a flat uint8 column-major list. Fetched only when `fov.reference_revision` changes, and the caller **names** the `fov.reference_revision` it believes is loaded: pixels come back only if that is still the one, so a frontend never attributes unverified pixels to a field of view. |
 | `get_adaptive_optopatch_reference_choices_js` | read | `controller.referenceChoices()` — camera snapshots and saved FOVs in one typed listing. Read on demand, never on the poll. |
 | `get_adaptive_optopatch_snapshot_choices_js` | read | `controller.snapshotChoices()` — the snapshot-only listing, still available. Read on demand. |
 | `get_adaptive_optopatch_protocol_choices_js` | read | `controller.protocolChoices()`. Read on demand, never on the poll. |
@@ -311,10 +311,10 @@ Every write goes through `adaptive_optopatch.apply_controller_action`, whose
 
 ```text
 load_reference_choice  load_snapshot_choice  load_protocol_choice
-save_fov
+start_new_fov  save_fov
 set_cell_eligibility  set_cell_blue_voltage
 add_soma  update_soma  delete_soma
-set_plan_parameter
+set_plan_parameter  apply_plan_draft
 update_plan  run  stop_after_current
 ```
 
@@ -379,6 +379,61 @@ regenerated. A FOV saved from `..._FOV001` becomes `..._FOV002`, not
 rather than from whatever file was last loaded. The bundle is the existing
 schema-2 FOV state written by the existing `save_fov_state`; there is no second
 persistence format.
+
+#### New FOV
+
+Historically an experimenter closed Adaptive Optopatch and reopened it between
+fields of view. The useful property of that habit was not that it restarted
+anything — it was that each new field began from a clean **experiment-specific**
+state. A React session keeps one controller alive for hours, so that boundary is
+an operation instead: `start_new_fov`, which reaches
+`controller.startNewFov()` and nothing else.
+
+```text
+FOV A   load reference → draw cells → set Blue V → Update plan → Run
+        New FOV
+FOV B   load reference → draw cells → set Blue V → Update plan → Run
+                                                   (same protocol, still loaded)
+```
+
+**Cleared** — everything whose meaning is "this biological field of view":
+
+```text
+the reference image, its metadata and which chooser entry is loaded
+canonical soma geometry, stable cell ids and the next index
+every per-cell decision, Blue calibration, note and QC record
+the rasterised soma masks
+the prepared plan, and with it the resolved schedule, the target bundle,
+    the preflight result and the batch identity
+the in-memory record of the previous run and its progress
+```
+
+**Kept** — everything whose meaning is "this rig" or "this session": the
+Luminos session and its device bindings, every camera/DMD calibration and the
+calibration identity machinery, the scanner calibration, the run root, the
+snapshot and protocol roots, all editable plan parameters, and the **loaded
+pulse protocol**. A protocol is a reusable experimental definition and names no
+cell; what depends on the cells is its *resolution* against them, which lives in
+the prepared plan and is discarded. So "same protocol, next field" stays one
+step.
+
+**Nothing on disk is touched.** Saved FOV bundles, archived run folders,
+protocol files and calibration artifacts are left exactly as they are — only
+the controller's live association with them is dropped. The field of view that
+was cleared can be loaded again from its bundle.
+
+It is refused while an acquisition is active (`legal_actions.start_new_fov` is
+false and a direct request fails without mutating anything); an acquisition is
+never implicitly stopped to change field, so stop-after-current comes first. A
+plan that is prepared but has not run is deliberately abandoned — it describes
+somata that are no longer under the objective.
+
+Internally it is one of **three callers of one primitive**,
+`clearFovOwnedState`. The other two are `adoptReference`, for a camera
+snapshot, and `setFovState`, for a restored saved FOV. Replacing the field of
+view therefore means the same thing however it happened, and each of the three
+advances `fov.reference_revision` exactly once — which is the token every
+frontend invalidates its FOV-scoped state on.
 
 #### Per-cell Blue V
 
@@ -451,6 +506,40 @@ execute is archived with it rather than re-read.
 
 Read-only operations — the state poll, both previews, either listing, the
 reference image, and Save FOV — leave a ready plan ready.
+
+#### Reference identity: which field of view a frontend is looking at
+
+`fov.reference_revision` is the controller's own answer to *which* reference
+is loaded, not merely to *how many times* one has been. It is advanced by
+`advanceReferenceIdentity`, reached from exactly two places — `adoptReference`
+(a camera snapshot, or a reference installed directly) and `setFovState` (a
+restored Adaptive Optopatch FOV) — and from nowhere else. Drawing, moving or
+deleting a soma, changing a decision, preparing a plan and running one all
+advance `revision` and leave it alone.
+
+That distinction is load-bearing for any frontend that is not in this MATLAB
+process, because **cell IDs are local to a field of view**. `cell_001` is
+whichever soma was drawn first, so every FOV has one and they are different
+neurons. When `reference_revision` moves:
+
+- pixels a frontend is displaying are no longer this reference's, and it must
+  stop treating them as editable — matching image dimensions prove nothing,
+  since two FOVs on the same camera and crop have identical ones;
+- uncommitted per-cell decisions held outside MATLAB are about other neurons
+  and must be discarded rather than re-based;
+- an interaction in progress — a polygon being drawn, a vertex being dragged
+  — is about the previous picture and must be abandoned;
+- the plan parameters `applyFovPlanParameters` restores from a bundle
+  (`stimulation_mode`, `microns_per_pixel`, `spiral_radius_um`,
+  `spiral_density_points_per_volt`, `orange_expansion_pixels`,
+  `blue_mask_adjustment_pixels`) have been restated by the new reference, so
+  uncommitted overrides of them are stale too. The rest are session-level and
+  survive.
+
+`referenceDisplayImageFor(n)` is the enforcement point on this side: it hands
+back pixels only if `n` is still the loaded reference, and empty otherwise, so
+a frontend can never attribute unverified pixels to a field of view. The React
+side of the same contract is in `referenceIdentity.ts` and `planDraft.ts`.
 
 #### Authoritative counts
 
@@ -776,6 +865,7 @@ controller.loadSnapshotChoice("143212pilot_cam-OrcaFusion");
 choices  = controller.protocolChoices();          % what may be loaded, by id
 protocol = controller.loadProtocolChoice("round_robin_seed_3001");
 picture  = controller.referenceDisplayImage();    % uint8, for a view to paint
+picture  = controller.referenceDisplayImageFor(n); % ...only if reference n is still loaded
 ```
 
 `controller.StateChangedFcn` is called with no arguments after every state

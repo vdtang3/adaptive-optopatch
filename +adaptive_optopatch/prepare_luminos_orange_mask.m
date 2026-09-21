@@ -51,9 +51,31 @@ configuration.calibration_identity= ...
 configuration.dmd_reference_mask= ...
     adaptive_optopatch.remap_camera_mask_to_dmd_reference( ...
     configuration.camera_mask,targets.reference_camera,dmd,profile.orange_dmd.name);
-transformed=dmd.setPatterningROI(configuration.dmd_reference_mask, ...
+dmd.setPatterningROI(configuration.dmd_reference_mask, ...
     "write_when_complete",true);
-configuration.device_mask=logical(transformed);
+% device_mask is what ORANGE WAS ACTUALLY PROGRAMMED WITH, read back from the
+% device rather than taken from the call that programmed it.
+%
+% setPatterningROI returns the warped mask only when it is asked NOT to write.
+% With write_when_complete true it puts the mask in Target, calls
+% Write_Static, and returns the scalar 1 - so the return value was being
+% archived as `device_mask = true`, and the one field whose job is to say what
+% Orange received could not say anything at all. Nothing about the
+% illumination was wrong; the provenance of it was missing, which is worse to
+% discover later than a value that is visibly absent.
+%
+% Target is the canonical programmed mask - the same property Blue's
+% summarize_dmd_device_pattern reads, at the same >.5 threshold, so the two
+% devices' provenance means the same thing. Read after the write rather than
+% before it, so a write that threw cannot leave a mask archived as programmed.
+%
+% This is archival state and nothing else. It does NOT check that the pattern
+% survives to the trigger: that is owned_pattern_fingerprint below, together
+% with Luminos's acquisition-time verification, and the two are kept apart on
+% purpose - one says what was sent, the other says what is still there.
+configuration.device_mask=logical(dmd.Target>.5);
+configuration.device_mask_summary= ...
+    adaptive_optopatch.summarize_dmd_device_pattern(dmd);
 configuration.owned_pattern_fingerprint= ...
     adaptive_optopatch.record_owned_dmd_pattern(dmd);
 configuration.loaded=true;

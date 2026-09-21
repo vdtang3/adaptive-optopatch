@@ -27,6 +27,7 @@
 export const ACTIONS = [
   "load_reference_choice",
   "load_snapshot_choice",
+  "start_new_fov",
   "save_fov",
   "set_cell_eligibility",
   "set_cell_blue_voltage",
@@ -450,6 +451,8 @@ export class FakeAoSession {
         return this.loadSnapshotChoice(payload);
       case "load_reference_choice":
         return this.loadReferenceChoice(payload);
+      case "start_new_fov":
+        return this.startNewFov();
       case "save_fov":
         return this.saveFov();
       case "set_cell_blue_voltage":
@@ -614,6 +617,8 @@ export class FakeAoSession {
     };
     this.state.cells = [];
     this.state.soma_polygons = [];
+    // The old FOV's plan goes with the old FOV, however it was replaced.
+    this.clearPreparedPlan();
     this.state.status = [
       `Loaded snapshot: ${load.fov.snapshot_path}`,
       `Camera: ${load.fov.camera_name}, ${load.fov.image_size[1]} × ` +
@@ -663,11 +668,69 @@ export class FakeAoSession {
     this.state.cells = clone(saved.cells);
     this.state.soma_polygons = clone(saved.soma_polygons);
     this.state.plan_parameters = clone(saved.plan_parameters);
+    this.clearPreparedPlan();
     this.state.status = [
       `Loaded persistent FOV ${saved.choice.fov_id} with ` +
         `${saved.cells.length} stable cells.`,
     ];
     this.markEditableChanged();
+  }
+
+  /* Begin a clean field of view, keeping the rig and the protocol.
+   *
+   * Mirrors AdaptiveOptopatchController.startNewFov, including the part
+   * that is easy to get wrong in a stub: the PREPARED PLAN goes with the
+   * field of view it was built from. The loaded protocol, the plan
+   * parameters and every fixture root stay, because none of them is the
+   * previous FOV's property. */
+  startNewFov() {
+    this.state.fov = {
+      ...this.state.fov,
+      loaded: false,
+      fov_id: "",
+      camera_name: "",
+      camera_bin: null,
+      snapshot_path: "",
+      snapshot_directory: "",
+      source_kind: "",
+      source_path: "",
+      image_size: [0, 0],
+      roi_origin_xy: [NaN, NaN],
+      reference_revision: (this.state.fov.reference_revision ?? 0) + 1,
+      cell_count: 0,
+      next_cell_index: 1,
+    };
+    this.state.cells = [];
+    this.state.soma_polygons = [];
+    this.clearPreparedPlan();
+    this.state.status = [
+      "New FOV. The previous reference, cells, per-cell decisions",
+      "and prepared plan were cleared. Rig calibration, the loaded",
+      "protocol and everything already saved are unchanged.",
+    ];
+    this.markCurrentSnapshot();
+  }
+
+  /* Everything a prepared plan is, dropped together.
+   *
+   * Reached from startNewFov and from every FOV replacement, for the same
+   * reason the controller reaches clearFovOwnedState from all three: a
+   * plan whose targets are somata that no longer exist is not a
+   * description of anything this session can still do. */
+  clearPreparedPlan() {
+    this.prepared = null;
+    this.progress = null;
+    this.state.plan_state = "EDITABLE";
+    this.state.editable_state_changed = true;
+    this.state.active_run = {
+      frozen: false,
+      folder: "",
+      batch_id: "",
+      batch_number: null,
+      trial_count: 0,
+      completed_trial_count: 0,
+      batch_complete: false,
+    };
   }
 
   /* Save the current FOV as the next unused numbered bundle.
@@ -1126,6 +1189,9 @@ export class FakeAoSession {
       load_protocol: editing,
       load_fov: editing,
       save_fov: editing && hasFov,
+      // The FOV/session boundary: refused only while a run holds the
+      // session, and legal on an empty one, where it is a no-op.
+      start_new_fov: editing,
       // The authoritative pair, from planStatus and nothing else.
       update_plan: status === "update_required" || status === "ready",
       run: status === "ready",

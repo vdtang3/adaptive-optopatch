@@ -56,8 +56,8 @@ test("the allowlist matches the one the MATLAB dispatcher publishes", () => {
   // Kept in step by hand, and asserted here so that drifting apart is a test
   // failure rather than an action that works in the browser and not on the rig.
   assert.deepEqual(new Set(ACTIONS), new Set([
-    "load_reference_choice", "load_snapshot_choice", "save_fov",
-    "set_cell_eligibility", "set_cell_blue_voltage",
+    "load_reference_choice", "load_snapshot_choice", "start_new_fov",
+    "save_fov", "set_cell_eligibility", "set_cell_blue_voltage",
     "add_soma", "update_soma", "delete_soma",
     "load_protocol_choice", "set_plan_parameter",
     "apply_plan_draft", "update_plan", "run", "stop_after_current",
@@ -404,6 +404,18 @@ const readArrayReply = (socket) =>
     socket.on("data", onData);
   });
 
+/** Read one JSON-framed reply for this event - what an empty result takes. */
+const emptyReply = (socket, event) =>
+  new Promise((resolve) => {
+    const framer = new LineFramer();
+    socket.on("data", (chunk) => {
+      for (const line of framer.push(chunk)) {
+        const reply = JSON.parse(line);
+        if (reply.event === event) resolve(reply.data);
+      }
+    });
+  });
+
 const withSocket = async (fixturePath, body) => {
   const running = startFakeMatlabServer({ port: 0, fixturePath, log: () => {} });
   await new Promise((resolve) => running.server.once("listening", resolve));
@@ -425,7 +437,7 @@ test("the reference image arrives as the flat uint8 list the endpoint returns", 
     socket.write(JSON.stringify({
       type: "app_method",
       method: "get_adaptive_optopatch_reference_image_js",
-      args: [],
+      args: [state.fov.reference_revision],
       return_event: "ev_image",
     }) + "\n");
 
@@ -446,7 +458,7 @@ test("fetching the image repeatedly changes nothing about the session", () =>
       socket.write(JSON.stringify({
         type: "app_method",
         method: "get_adaptive_optopatch_reference_image_js",
-        args: [],
+        args: [before.fov.reference_revision],
         return_event: `ev_image_${attempt}`,
       }) + "\n");
       const { bytes } = await pending;
@@ -458,25 +470,58 @@ test("fetching the image repeatedly changes nothing about the session", () =>
 
 test("there is no image to fetch before a reference is loaded", () =>
   withSocket(EMPTY_FIXTURE, async ({ socket }) => {
-    const answered = new Promise((resolve) => {
-      const framer = new LineFramer();
-      socket.on("data", (chunk) => {
-        for (const line of framer.push(chunk)) {
-          const reply = JSON.parse(line);
-          if (reply.event === "ev_image") resolve(reply.data);
-        }
-      });
-    });
+    const answered = emptyReply(socket, "ev_image");
     socket.write(JSON.stringify({
       type: "app_method",
       method: "get_adaptive_optopatch_reference_image_js",
-      args: [],
+      args: [0],
       return_event: "ev_image",
     }) + "\n");
     // The tag matlabHelpers turns back into null, which is what JS_Server
     // sends for a method that returned an empty MATLAB value.
     assert.deepEqual(await answered, { empty_result: true });
   }));
+
+/* THE IDENTITY CONTRACT, over the wire.
+ *
+ * The frontend names the reference it believes is loaded, and pixels come
+ * back only if that is still the one. Asserted against the stub because the
+ * stub is what the frontend is developed against: if it answered a stale
+ * request with the current picture, the browser would be exercised on a
+ * wire more forgiving than the rig's, and the one bug this contract exists
+ * to prevent would reappear only on the rig. MATLAB's own half is in
+ * tests/TestAdaptiveOptopatchReferenceTransport.m. */
+test("a request naming the wrong reference is answered with nothing", () =>
+  withSocket(LOADED_FIXTURE, async ({ socket }) => {
+    const state = readJson(LOADED_FIXTURE);
+    const answered = emptyReply(socket, "ev_stale");
+    socket.write(JSON.stringify({
+      type: "app_method",
+      method: "get_adaptive_optopatch_reference_image_js",
+      // A reference this session has moved past - not the loaded one.
+      args: [state.fov.reference_revision - 1],
+      return_event: "ev_stale",
+    }) + "\n");
+
+    // Not the current picture relabelled, and not the wrong one: nothing.
+    assert.deepEqual(await answered, { empty_result: true });
+  }));
+
+test("the identity the frontend must send is the one the state announced", () => {
+  // Same-sized fields of view are indistinguishable by their pixels, so the
+  // only thing that can identify one is the number the state carries.
+  const session = newSession(EMPTY_FIXTURE);
+  const choices = session.snapshots();
+
+  const first = session.apply("load_snapshot_choice",
+    { choice_id: choices[0].choice_id }, session.state.revision);
+  const firstReference = first.state.fov.reference_revision;
+  assert.ok(session.referenceImageFor(first.state.fov.fov_id));
+
+  const second = session.apply("load_snapshot_choice",
+    { choice_id: choices[1].choice_id }, session.state.revision);
+  assert.notEqual(second.state.fov.reference_revision, firstReference);
+});
 
 // ---------------------------------------------------------------------------
 // Over the wire
@@ -750,6 +795,91 @@ test("a saved FOV restores cells; its snapshot loads fresh", () => {
     restored.state.cells.find((c) => c.cell_id === "cell_003").recording_enabled,
     false
   );
+});
+
+// ---------------------------------------------------------------------------
+// New FOV
+// ---------------------------------------------------------------------------
+
+test("a new FOV clears the field of view and keeps the protocol", () => {
+  const session = newSession();
+  const before = session.current();
+  assert.equal(before.fov.loaded, true);
+  assert.ok(before.cells.length > 0);
+  assert.equal(before.protocol.loaded, true);
+
+  const response = act(session, "start_new_fov");
+
+  assert.equal(response.ok, true, response.message);
+  assert.equal(response.state.fov.loaded, false);
+  assert.deepEqual(response.state.cells, []);
+  assert.deepEqual(response.state.soma_polygons, []);
+  assert.equal(response.state.fov.source_kind, "");
+  // The reusable half, which is what makes "same protocol, next field" one
+  // step rather than two.
+  assert.equal(response.state.protocol.loaded, true);
+  assert.equal(response.state.protocol.path, before.protocol.path);
+  assert.deepEqual(response.state.plan_parameters, before.plan_parameters);
+});
+
+test("a new FOV advances the reference identity exactly once", () => {
+  const session = newSession();
+  const before = session.current();
+
+  const response = act(session, "start_new_fov");
+
+  assert.equal(
+    response.state.fov.reference_revision,
+    before.fov.reference_revision + 1
+  );
+  assert.equal(response.state.revision, before.revision + 1);
+});
+
+test("a new FOV takes the prepared plan with it", () => {
+  const session = newSession();
+  act(session, "update_plan");
+  assert.equal(session.current().plan_status, "ready");
+
+  const response = act(session, "start_new_fov");
+
+  assert.equal(response.state.active_run.frozen, false);
+  assert.equal(response.state.active_run.folder, "");
+  assert.equal(response.state.plan_readiness.prepared, false);
+  assert.equal(response.state.plan_status, "not_ready");
+  assert.equal(response.state.legal_actions.run, false);
+  assert.equal(response.state.legal_actions.update_plan, false);
+  // Still offered, because starting another new FOV is a no-op rather than
+  // an error.
+  assert.equal(response.state.legal_actions.start_new_fov, true);
+});
+
+test("replacing the reference takes the prepared plan with it too", () => {
+  // The shared-cleanup claim, in the stub: a new FOV and a reference load
+  // must not come to mean different things about the old FOV's plan.
+  const session = newSession();
+  act(session, "update_plan");
+  assert.equal(session.current().plan_status, "ready");
+  const snapshot = session
+    .references()
+    .find((entry) => entry.kind === "snapshot").choice_id;
+
+  const response = act(session, "load_reference_choice", {
+    choice_id: snapshot,
+  });
+
+  assert.equal(response.ok, true, response.message);
+  assert.equal(response.state.active_run.frozen, false);
+  assert.equal(response.state.plan_readiness.prepared, false);
+});
+
+test("a stale new-FOV request changes nothing", () => {
+  const session = newSession();
+  const before = JSON.parse(JSON.stringify(session.current()));
+
+  const response = session.apply("start_new_fov", {}, before.revision - 1);
+
+  assert.equal(response.status, "stale_revision");
+  assert.deepEqual(session.current(), before);
 });
 
 test("a reference id that was never offered reaches nothing", () => {

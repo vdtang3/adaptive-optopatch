@@ -263,10 +263,20 @@ class AoDevSession {
 
   /* What the reference-image endpoint returns: the flat uint8 list for the
    * FOV currently loaded, or null when none is. Read only - calling it never
-   * changes the state, exactly as the real endpoint never does. */
-  referenceImage() {
+   * changes the state, exactly as the real endpoint never does.
+   *
+   * THE CALLER NAMES THE REFERENCE, and it is answered only if that is
+   * still the loaded one. This is the contract
+   * get_adaptive_optopatch_reference_image_js enforces in MATLAB, reproduced
+   * here for the same reason everything else in this stub is: the
+   * development backend has to obey the same contract as the real one, or
+   * the frontend gets exercised against a wire that is more forgiving than
+   * the rig's. A stub that answered a stale request with the current
+   * picture would hide exactly the bug the contract exists to prevent. */
+  referenceImage(expectedReferenceRevision) {
     const fov = this.session.state?.fov;
     if (!fov?.loaded) return null;
+    if (expectedReferenceRevision !== fov.reference_revision) return null;
     return this.session.referenceImageFor(fov.fov_id);
   }
 
@@ -330,8 +340,10 @@ const appMethod = (method, args, session) => {
     // Framed the way JS_Server would frame it for its size - binary for a real
     // FOV, JSON for a small one - so the frontend's decoder is exercised on
     // the path production actually uses.
+    // The identity the caller is asking about is the first argument the
+    // MATLAB function declares after the app handle.
     case AO_IMAGE_METHOD: {
-      const pixels = session.referenceImage();
+      const pixels = session.referenceImage(args?.[0]);
       if (!pixels || pixels.length === 0) return null;
       return pixels.length > SMALL_DATA_SIZE
         ? new NumericArrayReply(pixels, "uint8")

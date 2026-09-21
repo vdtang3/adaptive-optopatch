@@ -2256,3 +2256,288 @@ backend boundary — and the twenty-four pure tests are all model-level. The
 `fake_ao_session` tests stay as they are: their duplication of MATLAB
 behaviour is the point, because the development backend has to obey the same
 contract as the real one.
+
+## 2026-09-18 — Which field of view the browser is looking at
+
+The previous two entries are about what reaches the mirrors and about how the
+tests are organised. This one is about a class of failure one level up, in
+which every value crossing the wire is current and correct and the
+experimenter's intent still ends up attached to the wrong neurons.
+
+Three of them, sharing one cause: **a cell ID means nothing without a field of
+view, and neither does a picture.**
+
+### The stale object was the image
+
+`legal_actions.edit_cells` says whether the controller will accept a geometry
+edit. It stays true across a reference change, because editing cells in the
+new FOV is perfectly legal. The React canvas gated drawing on it alone, and
+the reference image was replaced only when a new one had been fetched and
+decoded — so between the poll that adopted FOV B and the arrival of B's
+picture, the tab displayed A's pixels, in B's state, with the tools live. A
+polygon drawn there carried B's current revision, so nothing refused it.
+
+Ordinary stale-revision checking cannot see this. The revision the action
+carries *is* current. What is stale is the thing the operator was looking at,
+and the browser had no way to say which reference that was, because a flat
+list of uint8 does not say.
+
+The fix has two halves and both are necessary.
+
+**MATLAB attributes the pixels.** The request now names the
+`fov.reference_revision` it is about and `referenceDisplayImageFor` answers
+only if that is still the loaded one; otherwise it returns empty. Identity
+travels on the request rather than the reply because `JS_Server` frames one
+binary array and not a struct containing one — see Luminos's notebook. This is
+what makes two same-sized fields of view distinguishable at all: nothing else
+about the payload differs.
+
+**React derives the displayed image rather than storing it.** `image` is the
+decoded picture only while its stamped identity equals the controller's
+current one, so a snapshot carrying a new `reference_revision` invalidates the
+old picture in the same render that adopts it — not in an effect afterwards,
+and not once a replacement has arrived. There is no frame in which A's pixels
+are on screen under B's state. Geometry editing is then
+`edit_cells && imageStatus === "ready"`, one predicate with one reader, so the
+buttons and the pointer handlers cannot disagree.
+
+A failed or mismatched load is the same state as a pending one as far as
+editing goes: no picture of this reference, nothing editable, and the previous
+FOV is *not* shown. Falling back to the last good image would recreate the bug
+and look like success.
+
+### A gesture belongs to the picture it was started on
+
+A disabled button is not enough once a drag has begun. Both in-flight
+interactions — a polygon being drawn and a vertex being dragged — are now
+stamped with the reference they began under, cancelled by a lifecycle effect
+when the identity changes, and refused at the commit if their stamp is not
+current. Two layers on purpose: the effect handles the ordinary case, the
+guard handles a `pointerup` whose handler runs against a render that has
+already moved on.
+
+### A draft belongs to a FOV, not just to a revision
+
+The same mistake, in the sparse-draft model. React's uncommitted overrides are
+keyed by `cell_id`, and `reconcileDraft` re-based them onto every new
+snapshot. Within one FOV that is exactly right and is the reason editing is
+free. Across FOVs it is not, because cell IDs are local:
+
+    FOV A:  draft stimulation_enabled(cell_001) = true
+    load FOV B, whose own cell_001 is committed false
+    re-base: the override survives, now against B's revision
+    Update plan: B's cell_001 is enabled
+
+The backend does nothing wrong; the browser silently moved a decision between
+two biological cells. So a draft now records `baseReferenceRevision` as well
+as `baseRevision`, and reconciliation has two cases: same FOV and a newer
+revision re-bases as before, a different FOV discards.
+
+**It is driven by the controller's identity, not by the Load button.** The
+reference can be replaced by the MATLAB planning window or by another browser,
+and a poll noticing that has to have exactly the same effect. The clearing
+therefore happens in the reconcile effect, which runs on every snapshot, and
+the Load handler's own cleanup is now merely an earlier copy of it.
+
+### What is *not* cleared, and why
+
+Clearing every draft field on a FOV change would be the easy answer and the
+wrong one. The proven bug is that FOV-dependent decisions transfer between
+biological cells; a scanner velocity limit is not one of those, and throwing
+away a deliberately set session parameter every time the experimenter changes
+field is a second, quieter way of losing intent.
+
+The line is drawn where MATLAB already draws it.
+`applyFovPlanParameters` is the method a saved FOV's load runs, and the six
+parameters it restates from the bundle — stimulation mode, microns per pixel,
+spiral radius and density, Orange expansion, Blue mask adjustment — are
+exactly the ones whose drafts cannot survive the load, because the new
+reference has just stated its own values for them. The other five are
+session-level and their drafts are carried across. The two lists are named in
+both languages and each comment points at the other; nothing enforces the
+correspondence across the boundary.
+
+Per-cell Blue voltage is not in the draft model at all — it is a stored
+calibration written through `set_cell_blue_voltage` immediately, because
+MATLAB validates it and the table has to show the value it accepted. So there
+is nothing for a FOV change to do about it, and a test says so rather than
+leaving the absence to be rediscovered.
+
+### The Orange programmed mask, which was a scalar
+
+Unrelated to the above except in being about provenance rather than about what
+executed. AO archived Orange's `device_mask` as the return value of
+
+    dmd.setPatterningROI(mask, "write_when_complete", true)
+
+and `Patterning_Device` returns the warped mask only when asked *not* to
+write. Once it has written, the mask is in `Target` and the return value is
+the scalar 1. So `device_mask` was `true`: the one field whose job is to say
+what Orange received could say nothing at all.
+
+Nothing about the illumination was affected and nothing reads the field, which
+is why it stood. It is still worth fixing, because a provenance field that
+silently holds a scalar is worse than a missing one — it looks answered. The
+contract is preserved rather than replaced: `device_mask` is the real logical
+device-space mask, read back from `dmd.Target > .5` after the write, which is
+the same property and the same threshold Blue's
+`summarize_dmd_device_pattern` uses. A `device_mask_summary` is recorded
+beside it so the two devices' archives mean the same thing.
+
+Blue never had the bug — `prepare_luminos_target` already discards the return
+value and reads `Target` back — and the comment there says why, which is how
+the Orange call was found.
+
+**Why no test caught it.** `SimulatedLuminosDevice.setPatterningROI` returned
+the mask whether or not it had written, so the simulator and the caller agreed
+with each other and both disagreed with the rig. The simulator now reproduces
+`Patterning_Device`'s actual return contract, and a test pins it. That is the
+general lesson and not a local one: a test double that is more forgiving than
+the device is a test that cannot fail.
+
+### The primitive the Reset feature will reuse
+
+`advanceReferenceIdentity` is now the single place `ReferenceRevision` moves,
+reached from `adoptReference` and `setFovState`. It was two inline increments
+before, which is the same behaviour and a worse statement: the invariant that
+matters is that a reference identity changes exactly when the pixels under the
+somata are replaced, and that is now written down in one place with the
+reasoning next to it.
+
+The planned New FOV / Reset AO Session operation is the third caller. It needs
+"invalidate the current reference" to mean the same thing to every frontend
+that a snapshot load already means, and after this pass it does: React clears
+FOV-scoped drafts, cancels interactions, drops the selection and the overlay,
+and refuses to edit against a picture it has not been given, all driven by
+that one number. What Reset still has to decide is what happens to the applied
+plan and to the committed cells — deliberately not touched here.
+
+## 2026-09-18 — The boundary between one field of view and the next
+
+The previous entry ends by naming `advanceReferenceIdentity` as the primitive
+the Reset feature would reuse, and says what Reset still had to decide: what
+happens to the applied plan and to the committed cells. This entry is that
+decision, and one thing the entry did not anticipate.
+
+### What the operation is for
+
+With the MATLAB-only planning window an experimenter closed Adaptive Optopatch
+and reopened it between fields of view. The useful property of that habit was
+never that it restarted anything — nothing about the rig needed restarting. It
+was that each new field began from a clean **experiment-specific** state. The
+React integration keeps one controller alive for the length of a Luminos
+session, so the habit stopped working and nothing replaced it.
+
+So the operation is `startNewFov`, and its name is the whole of its scope. It
+is not a reset, because a reset is a thing you do to a machine; this is a thing
+you do to an experiment. The button says **New FOV** for the same reason.
+
+### One primitive, three callers
+
+The important part is not the new method. It is that there were already two
+ways to replace a field of view — `adoptReference` for a camera snapshot,
+`setFovState` for a restored bundle — and they were two inline sequences that
+agreed about most things and not about all of them. In particular the prepared
+plan survived a reference change, because `markEditableChanged` keeps a frozen
+plan alive once one has been archived.
+
+That rule is right for what it was written for. An edit made after freezing
+applies to a future run, and the archived plan is still a true description of
+something. Replacing the field of view is not that: the plan's targets are
+somata that are gone, so it is not a description of anything the session can
+still do. It stayed because nothing had ever asked the question in a form where
+the answer mattered — `planStatus` already reported `update_required` once the
+`reference` input group went stale, so Run was refused either way and the only
+visible consequence was that `active_run` went on naming a run belonging to a
+field of view the session no longer had.
+
+`clearFovOwnedState` is now the one place FOV-owned state is dropped and the
+three transitions all go through it. That is what makes "New FOV" and "load
+another reference" impossible to drift apart, which was the real risk: a
+separate React-only reset path would have been a second answer to the same
+question, and the second answer is always the one that stops being maintained.
+
+The list in that method is deliberately written out with a reason per entry
+rather than expressed as "everything except a keep-list". Both forms are the
+same set today; only one of them stays correct when somebody adds a property.
+
+### What survives, and the two decisions that were not obvious
+
+**The loaded protocol survives.** A pulse protocol is a reusable experimental
+definition and names no cell — `validate_protocol` never sees a FOV, and
+`summarize_protocol` is a pure function of the definition. What depends on the
+cells is its *resolution* against them, and every resolved artifact
+(`resolved_protocols`, the target bundle, the manifest, the schedule) lives
+inside the prepared plan and goes with it. Preserving the definition is
+therefore not preserving anything about the old field, and it makes "same
+protocol, next field" one step rather than two. An experimenter running an STP
+screen across eight fields would otherwise reselect the same file eight times,
+which is the kind of friction that ends with the protocol being reselected
+wrongly once.
+
+**Every plan parameter survives**, including the six that
+`applyFovPlanParameters` calls FOV-scoped. That sounds inconsistent with the
+previous entry and is not, because the six are FOV-scoped in a precise sense:
+they are the parameters a saved bundle *restates for itself*, so an uncommitted
+override of one must not survive a load that has just said what its value is. A
+new FOV states nothing — it is the absence of a field of view — so there is
+nothing for a value to countermand, and discarding a deliberately set spiral
+radius or mask adjustment would be the quieter way of losing intent that the
+previous entry warned about. Loading a fresh camera snapshot already keeps all
+eighteen; New FOV is the same transition with no picture at the end of it.
+
+The React draft is a separate matter and is unchanged: `reconcileDraft`
+discards the FOV-scoped half on any reference-identity change, and New FOV
+moves that identity like any other replacement. Committed values persist,
+uncommitted overrides of those six do not. Both halves of that are now tested
+from both sides.
+
+### No hardware is written
+
+Adaptive Optopatch owns a DMD pattern only for the length of a run:
+`run_1p_manifest` claims ownership, blanks Blue in its cleanup and releases the
+claim on success, on error and on Ctrl-C. An idle session is therefore already
+not emitting, and there is nothing for a lifecycle operation that happens
+entirely in MATLAB memory to make safe. Adding a neutralisation write to Reset
+would have been a device command issued for a state change no device
+participated in — and, worse, would have made the idle-state guarantee look
+conditional on somebody remembering to call it.
+
+`TestNewFovLifecycle` asserts this by counting `getDevice` lookups rather than
+by arguing it: after the reset the simulated app's lookup log is empty, so "did
+not write" and "did not even look" are distinguishable. The operator's own
+`pattern_stack`, `auto_write_stack` and both DMDs' `Target` are checked
+unchanged beside it.
+
+### The waveform trace was the second stale object
+
+This one was not in the handoff's list and is the same bug as the stale
+reference image, one panel over.
+
+The reference image is *derived*: it is the decoded picture only while its
+stamped identity equals the controller's current one, so a new
+`reference_revision` invalidates it in the render that adopts it. The waveform
+preview was *stored*. Its fetch is keyed on `fov.reference_revision`, so a
+replacement was always on its way — but until it landed, the trace on screen
+was the previous field of view's commands drawn under the new field's state,
+which is exactly what an empty state must not show.
+
+It is now derived on the same terms, and the request records which field of
+view it was issued about so a reply that lands after the reference has moved is
+dropped rather than attributed. Deliberately keyed on the reference identity
+and **not** on `revision`: dropping the trace whenever anything at all changed
+is what the previous pass removed, because re-synthesising sample vectors
+behind a checkbox was the most expensive thing routine editing did.
+
+The test for it holds the replacement fetch open, because a test that let the
+refetch land would pass with or without the fix.
+
+### Confirmation
+
+Asked only when there is something to lose — a loaded reference or an
+uncommitted draft — and never on an empty session. A confirmation in front of a
+routine step stops being read, and changing field is routine. The second half
+of the message does as much work as the first: an experimenter who believes New
+FOV might cost them a calibration will avoid it and keep restarting Luminos,
+which is the habit the whole operation exists to replace, so the dialog says in
+as many words that the rig and everything already saved are untouched.

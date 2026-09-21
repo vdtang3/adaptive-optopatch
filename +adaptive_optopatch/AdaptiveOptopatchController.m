@@ -181,6 +181,9 @@ classdef AdaptiveOptopatchController < handle
             %   frontend renders these; it never works them out for itself,
             %   and a request that ignores them is refused anyway.
             %
+            %   `start_new_fov` is the FOV/session boundary - see
+            %   startNewFov. It is false only during an acquisition.
+            %
             %   `freeze_run`, `return_to_editing` and `start_new_batch`
             %   remain because the MATLAB planning window still offers them
             %   as separate controls. They are internal machinery now: no
@@ -194,12 +197,19 @@ classdef AdaptiveOptopatchController < handle
             editing=controller.LifecycleState~="RUNNING";
             hasFov=~isempty(controller.ReferenceImage);
             hasCells=~isempty(controller.FovGeometry.polygons);
+            % start_new_fov is legal whenever no acquisition holds the
+            % session, INCLUDING when nothing is loaded: starting a new FOV
+            % from an empty one is a harmless no-op, and making it
+            % conditional would only give a frontend a second rule to get
+            % wrong. False during a run, which is the whole of the guard -
+            % an acquisition is never implicitly stopped to change field.
             actions=struct( ...
                 "edit_cells",editing && hasFov, ...
                 "edit_plan_parameters",editing, ...
                 "load_protocol",editing, ...
                 "load_fov",editing, ...
                 "save_fov",editing && hasFov, ...
+                "start_new_fov",editing, ...
                 "update_plan",status=="update_required" || status=="ready", ...
                 "run",status=="ready", ...
                 "freeze_run",editing && hasFov && hasCells && ...
@@ -401,6 +411,54 @@ classdef AdaptiveOptopatchController < handle
         % ---------------------------------------------------------------
         % Reference FOV
         % ---------------------------------------------------------------
+        function startNewFov(controller)
+            %STARTNEWFOV Begin a clean field of view, keeping the rig as it is.
+            %   THE FOV/SESSION BOUNDARY, as one operation. With the MATLAB
+            %   planning window an experimenter closed Adaptive Optopatch and
+            %   reopened it between fields of view, and the useful property of
+            %   that habit was not that it restarted anything - it was that
+            %   each new field started from a clean EXPERIMENT-SPECIFIC state.
+            %   A React session keeps this controller alive for hours, so that
+            %   boundary has to be something an operator can ask for.
+            %
+            %   WHAT IT MEANS. Everything whose meaning is "this biological
+            %   field of view" is forgotten: the reference and its identity,
+            %   the canonical somata and their stable ids, every per-cell
+            %   decision and calibration, and the prepared plan built from
+            %   them. The complete list, and the reasoning for each entry, is
+            %   clearFovOwnedState - which is the SAME primitive that loading
+            %   a snapshot and restoring a saved FOV go through, so the three
+            %   transitions cannot come to disagree about what a field of view
+            %   owns.
+            %
+            %   WHAT IT DOES NOT TOUCH. Everything that belongs to the rig or
+            %   to the session: the Luminos app and its devices, every DMD and
+            %   camera calibration, the run root, the snapshot and protocol
+            %   roots, the plan parameters, and the LOADED PROTOCOL. A
+            %   protocol is a reusable experimental definition and says
+            %   nothing about any particular cell - what depends on the cells
+            %   is its RESOLUTION against them, which lives in the prepared
+            %   plan and is discarded. Keeping it is what makes "same protocol,
+            %   next field" the one-step operation it should be.
+            %
+            %   NOTHING ON DISK IS TOUCHED. Saved FOV bundles, archived run
+            %   folders, protocol files and calibration artifacts are left
+            %   exactly as they are; only the live in-memory association with
+            %   them is dropped.
+            %
+            %   ONE REVISION, and it is the only externally visible change:
+            %   the clear cannot fail once assertNotRunning has passed, so
+            %   there is no state in which this has half happened.
+            controller.assertNotRunning("Starting a new FOV");
+            controller.clearFovOwnedState();
+            controller.Status=[ ...
+                "New FOV. The previous reference, cells, per-cell decisions";
+                "and prepared plan were cleared. Rig calibration, the loaded";
+                "protocol and everything already saved are unchanged.";
+                "In Luminos, click Snap for Camera 1, then load it here."];
+            controller.bumpRevision();
+        end
+
         function loadSnapshot(controller,snapshotPath)
             %LOADSNAPSHOT Replace the FOV from a Luminos camera snapshot.
             arguments
@@ -618,14 +676,17 @@ classdef AdaptiveOptopatchController < handle
             controller.assertNotRunning("Loading a saved FOV");
             reference=fovState.reference;
             controller.matchSimulatedReferenceCamera(reference.voltage_camera);
+            % The FOV being replaced is forgotten first, through the same
+            % primitive an explicit New FOV uses; what a saved bundle adds
+            % is that it then puts its OWN cells and decisions in place of
+            % the cleared ones. See clearFovOwnedState.
+            controller.clearFovOwnedState();
             controller.ReferenceImage=single(reference.reference_image);
             controller.ReferenceInfo=reference_info_from_model(reference);
-            controller.ReferenceRevision=controller.ReferenceRevision+1;
             % A saved FOV, whether or not it arrived from a file: loadFov
             % adds the path afterwards. Never "snapshot" - the cells and
             % decisions restored here are exactly what a snapshot has none of.
             controller.ReferenceSourceKind="ao_fov";
-            controller.ReferenceSourcePath="";
             polygons=fovState.canonical_roi_polygons;
             if isempty(polygons)
                 polygons=masks_to_polygons(fovState.canonical_roi_masks);
@@ -638,8 +699,6 @@ classdef AdaptiveOptopatchController < handle
                 double(fovState.next_cell_index);
             controller.CellState=fovState;
             controller.applyFovPlanParameters(fovState,reference);
-            controller.invalidateCellSummary();
-            controller.markEditableChanged();
             controller.setStatus(sprintf( ...
                 "Loaded persistent FOV %s with %d stable cells.", ...
                 fovState.fov_id,numel(fovState.cells)));
@@ -668,6 +727,44 @@ classdef AdaptiveOptopatchController < handle
             %   exists and bumps no revision.
             display=adaptive_optopatch.reference_display_image( ...
                 controller.ReferenceImage);
+        end
+
+        function display=referenceDisplayImageFor(controller,expectedReferenceRevision)
+            %REFERENCEDISPLAYIMAGEFOR The picture, only if it is still that one.
+            %   The identity-checked form of referenceDisplayImage, and the
+            %   one a frontend fetching pixels over a wire must use.
+            %
+            %   WHAT THIS PREVENTS. A view reads the state, sees reference
+            %   A, and asks for pixels. Between the two, the reference is
+            %   replaced - by this browser, by another one, or in the MATLAB
+            %   planning window - and the pixels that come back are B's. The
+            %   view has no way to tell: it never asked for anything
+            %   identifiable, so it labels whatever arrived "A", and if A and
+            %   B are the same size nothing downstream can notice. A polygon
+            %   drawn on those pixels is then drawn on the wrong cells.
+            %
+            %   So the caller names the reference it believes is loaded and
+            %   the controller - which owns that identity - decides. A
+            %   mismatch returns EMPTY rather than the current image: the
+            %   view asked a question about A and there is no honest answer
+            %   in B's pixels. It refetches when the next state poll reports
+            %   the new fov.reference_revision.
+            %
+            %   THE IDENTITY IS fov.reference_revision, which is bumped by
+            %   advanceReferenceIdentity and by nothing else - see there for
+            %   why that is the whole of what makes one reference a different
+            %   reference from another.
+            %
+            %   READ ONLY, exactly like referenceDisplayImage.
+            arguments
+                controller
+                expectedReferenceRevision (1,1) double
+            end
+            if expectedReferenceRevision~=controller.ReferenceRevision
+                display=uint8([]);
+                return
+            end
+            display=controller.referenceDisplayImage();
         end
 
         function setSomaPolygons(controller,polygons,options)
@@ -2121,20 +2218,127 @@ classdef AdaptiveOptopatchController < handle
             end
         end
 
-        function adoptReference(controller,image,info)
-            controller.ReferenceImage=image;
-            controller.ReferenceInfo=info;
-            % Cleared rather than left behind: whatever installed this
-            % reference sets it afterwards, and a stale provenance would
-            % have the chooser mark the wrong entry as the loaded one.
+        function clearFovOwnedState(controller)
+            %CLEARFOVOWNEDSTATE Forget everything that belongs to this FOV.
+            %   THE DEFINITION OF FOV-OWNED STATE, in one place, because
+            %   three operations replace the field of view and all three
+            %   must mean the same thing by it:
+            %
+            %     startNewFov      leaves it cleared: no reference at all
+            %     adoptReference   installs a camera snapshot afterwards
+            %     setFovState      installs a saved FOV's cells afterwards
+            %
+            %   Before this existed the first two of those were separate
+            %   inline sequences and the third a longer one, which is how
+            %   the prepared plan came to survive a reference change in one
+            %   path and not the other. What is cleared, and why:
+            %
+            %     the reference       image, metadata and the provenance
+            %                         that says which chooser entry is
+            %                         loaded. The caller sets the last two
+            %                         again if it is installing something.
+            %     the geometry        canonical polygons, stable cell ids
+            %                         and the next index. Vertices are
+            %                         indices into a particular frame.
+            %     the cell state      every per-cell decision, Blue
+            %                         calibration, note and QC record. They
+            %                         are keyed by cell_id, and cell ids are
+            %                         local to a FOV.
+            %     the cached masks    CellSummaryCache, which rasterises
+            %                         those polygons over that image.
+            %     the prepared plan   ActiveRunPlan and ActiveRunFolder, and
+            %                         with them the resolved schedule, the
+            %                         target bundle, the preflight result
+            %                         and the batch identity, all of which
+            %                         name cells that no longer exist.
+            %     the run record      LastRun and RunProgress, which describe
+            %                         acquisitions of the old field.
+            %
+            %   THE PREPARED PLAN IS DISCARDED, unlike after an ordinary
+            %   edit. markEditableChanged deliberately keeps a frozen plan
+            %   alive when one has been archived, because an edit made after
+            %   freezing applies to a FUTURE run and the archived one is
+            %   still a true description of something. Replacing the field
+            %   of view is not that: the plan's targets are somata that are
+            %   gone, so it is not a description of anything this session
+            %   can still do. Nothing is deleted from disk - the archived
+            %   bundle stays exactly where updatePlan wrote it - and what is
+            %   dropped is only the controller's live association with it.
+            %
+            %   Run is refused afterwards either way: planStatus already saw
+            %   the reference group go stale. What clearing adds is that the
+            %   session stops REPORTING a run and a plan belonging to a field
+            %   of view it no longer has.
+            %
+            %   DOES NOT BUMP THE REVISION and does not set a status line:
+            %   each caller does exactly one of each, so a FOV replacement
+            %   is one externally visible transition rather than a cascade.
+            %   Callers guarantee not-RUNNING before reaching here.
+            controller.ReferenceImage=[];
+            controller.ReferenceInfo=struct([]);
             controller.ReferenceSourceKind="";
             controller.ReferenceSourcePath="";
-            controller.ReferenceRevision=controller.ReferenceRevision+1;
+            controller.FovGeometry=adaptive_optopatch.create_fov_geometry();
             controller.CellState=struct([]);
+            controller.invalidateCellSummary();
+            controller.ActiveRunPlan=struct([]);
+            controller.ActiveRunFolder="";
+            controller.LastRun=struct([]);
+            controller.RunProgress=struct([]);
+            controller.LifecycleState="EDITABLE";
+            controller.EditableStateChanged=true;
+            % Last, so that the new identity names the cleared state and
+            % never a half-replaced one.
+            controller.advanceReferenceIdentity();
+        end
+
+        function advanceReferenceIdentity(controller)
+            %ADVANCEREFERENCEIDENTITY Declare that this is a DIFFERENT reference.
+            %   THE ONE PLACE fov.reference_revision moves, and therefore the
+            %   definition of reference identity for everything downstream:
+            %   two states carry the same reference exactly when they carry
+            %   the same reference_revision.
+            %
+            %   Reached from clearFovOwnedState and from nowhere else, so
+            %   the three operations that replace the field of view -
+            %   adoptReference for a camera snapshot, setFovState for a saved
+            %   Adaptive Optopatch FOV, startNewFov for no FOV at all - each
+            %   advance it exactly once. Those are the only ways the pixels
+            %   under the somata are replaced, and each of them replaces the
+            %   cells with them, so every cell_id in the new state names a
+            %   different biological cell from the one it named before - or,
+            %   after startNewFov, no cell at all. That is the fact consumers
+            %   need: a frontend holding
+            %   uncommitted per-cell decisions must discard them, a frontend
+            %   displaying pixels must stop treating them as this reference's,
+            %   and an interaction in progress must be abandoned.
+            %
+            %   It is deliberately NOT bumped by an edit within one FOV -
+            %   drawing, moving or deleting a soma, a decision, a plan
+            %   parameter, or a run. Those advance Revision alone, and a
+            %   frontend re-bases its draft on them rather than discarding it.
+            %
+            %   Monotonic, so an identity is never reused within a session.
+            controller.ReferenceRevision=controller.ReferenceRevision+1;
+        end
+
+        function adoptReference(controller,image,info)
+            %ADOPTREFERENCE Install a camera snapshot as the session's FOV.
+            %   The old field of view is forgotten through the shared
+            %   primitive - see clearFovOwnedState, which is also what an
+            %   explicit New FOV does and is the whole of why the two
+            %   transitions cannot come to mean different things - and the
+            %   new pixels are installed on top of the cleared state.
+            %
+            %   ReferenceSourceKind and ReferenceSourcePath are left empty
+            %   by the clear and set afterwards by whatever installed this
+            %   reference: a stale provenance would have the chooser mark
+            %   the wrong entry as the loaded one.
+            controller.clearFovOwnedState();
+            controller.ReferenceImage=image;
+            controller.ReferenceInfo=info;
             controller.FovGeometry=adaptive_optopatch.create_fov_geometry( ...
                 double(size(image,1:2)));
-            controller.invalidateCellSummary();
-            controller.markEditableChanged();
             controller.bumpRevision();
         end
 
@@ -2147,6 +2351,23 @@ classdef AdaptiveOptopatchController < handle
         end
 
         function applyFovPlanParameters(controller,fovState,reference)
+            %APPLYFOVPLANPARAMETERS Restate the planning values a FOV owns.
+            %   The parameters below belong to a particular field of view -
+            %   a saved bundle records what it was planned with, and
+            %   loading it restates them. Everything else in
+            %   default_plan_parameters is session- or rig-level and is
+            %   left alone: the scanner motion limits, the two override
+            %   permissions, and Repeats.
+            %
+            %   THAT SPLIT IS PART OF THE FRONTEND CONTRACT. A frontend
+            %   holding uncommitted plan-parameter edits has to discard
+            %   exactly the ones named here when the reference changes,
+            %   because the new FOV has just stated its own values for
+            %   them; keeping an override would silently countermand the
+            %   bundle. The React side lists the same names in
+            %   planDraft.ts as FOV_SCOPED_PLAN_PARAMETERS. Nothing
+            %   enforces the correspondence across the language boundary,
+            %   so change the two together.
             parameters=controller.PlanParameters;
             if isfield(fovState,"stimulation_mode") && ...
                     ismember(string(fovState.stimulation_mode),["1p_dmd","2p_spiral"])

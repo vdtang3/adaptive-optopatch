@@ -10,7 +10,8 @@ classdef TestAdaptiveOptopatchReferenceTransport < matlab.unittest.TestCase
     %
     %   The wire itself (JS_Server's binary framing, the relay's decoder) is
     %   Luminos's and is tested there. What is tested here is the shape of
-    %   what is handed to it.
+    %   what is handed to it, and - since a bare pixel list says nothing
+    %   about itself - WHICH REFERENCE a caller is told it belongs to.
 
     methods (Test)
         % ---------------------------------------------------------------
@@ -90,6 +91,108 @@ classdef TestAdaptiveOptopatchReferenceTransport < matlab.unittest.TestCase
             % Element (r,c) is at (c-1)*rows + r. Named here because the
             % browser has to index it by hand.
             testCase.verifyEqual(onTheWire((7 - 1) * rows + 3), image(3, 7));
+        end
+
+        % ---------------------------------------------------------------
+        % Pixels are attributed by the CONTROLLER, not by the caller
+        %
+        % A frontend reads the state, sees reference A and asks for pixels.
+        % The reference is replaced in between - by another browser, or in
+        % the planning window - and B's pixels arrive. Nothing in a list of
+        % uint8 says which reference it is of, so a caller that labelled
+        % them with what it expected would draw somata against the wrong
+        % cells, and two fields of view of the same size make that
+        % undetectable downstream. So the caller NAMES the reference and
+        % the controller decides.
+        % ---------------------------------------------------------------
+        function namingTheLoadedReferenceReturnsItsPicture(testCase)
+            controller = testCase.controllerWithReference();
+            loaded = controller.getState().fov.reference_revision;
+
+            testCase.verifyEqual( ...
+                controller.referenceDisplayImageFor(loaded), ...
+                controller.referenceDisplayImage());
+        end
+
+        function namingAReferenceTheSessionHasMovedPastReturnsNothing(testCase)
+            controller = testCase.controllerWithReference();
+            first = controller.getState().fov.reference_revision;
+
+            testCase.installSecondReference(controller);
+
+            testCase.verifyEmpty(controller.referenceDisplayImageFor(first), ...
+                "A request about the previous reference must not be " + ...
+                "answered with the current picture.");
+            testCase.verifyClass( ...
+                controller.referenceDisplayImageFor(first), "uint8");
+        end
+
+        function twoReferencesOfTheSameSizeAreStillToldApart(testCase)
+            % The race the contract exists for. Same rows, same columns, so
+            % a caller that checked only that the payload reshaped cleanly
+            % would accept either of these as the other.
+            dim = zeros(40, 60, "single");
+            dim(10:20, 10:20) = 100;
+            bright = zeros(40, 60, "single");
+            bright(10:20, 30:40) = 4000;
+            controller = testCase.controllerWithReference(dim);
+            first = controller.getState().fov.reference_revision;
+
+            testCase.installSecondReference(controller, bright);
+            second = controller.getState().fov.reference_revision;
+
+            testCase.verifyNotEqual(second, first);
+            testCase.verifyEmpty(controller.referenceDisplayImageFor(first));
+            testCase.verifyEqual( ...
+                size(controller.referenceDisplayImageFor(second)), [40 60]);
+            % And it really is the second picture, not the first one under
+            % a new number.
+            testCase.verifyNotEqual( ...
+                controller.referenceDisplayImageFor(second), ...
+                uint8(adaptive_optopatch.reference_display_image(dim)));
+        end
+
+        function namingAReferenceIsStillARead(testCase)
+            controller = testCase.controllerWithReference();
+            before = controller.getState();
+
+            controller.referenceDisplayImageFor(before.fov.reference_revision);
+            controller.referenceDisplayImageFor(before.fov.reference_revision + 7);
+
+            testCase.verifyEqual(controller.getState(), before, ...
+                "Asking - or being refused - must not disturb the session.");
+        end
+
+        function editingTheFovDoesNotChangeTheReferenceIdentity(testCase)
+            % The whole basis of the same-FOV/new-FOV distinction a frontend
+            % draws: an edit advances `revision`, and only a replacement
+            % advances `reference_revision`. If an ordinary edit bumped the
+            % reference identity, every soma drawn would invalidate the
+            % picture it was drawn on.
+            controller = testCase.controllerWithReference();
+            before = controller.getState();
+
+            controller.addSomaPolygon([10 10; 30 10; 30 30; 10 30]);
+            after = controller.getState();
+
+            testCase.verifyGreaterThan(after.revision, before.revision);
+            testCase.verifyEqual(after.fov.reference_revision, ...
+                before.fov.reference_revision);
+            % So the picture a frontend already holds is still this FOV's.
+            testCase.verifyEqual( ...
+                controller.referenceDisplayImageFor( ...
+                    before.fov.reference_revision), ...
+                controller.referenceDisplayImage());
+        end
+
+        function replacingTheReferenceAdvancesTheIdentity(testCase)
+            controller = testCase.controllerWithReference();
+            before = controller.getState().fov.reference_revision;
+
+            testCase.installSecondReference(controller);
+
+            testCase.verifyGreaterThan( ...
+                controller.getState().fov.reference_revision, before);
         end
 
         % ---------------------------------------------------------------
@@ -222,6 +325,17 @@ classdef TestAdaptiveOptopatchReferenceTransport < matlab.unittest.TestCase
                     [974 size(image, 2) 984 size(image, 1)]), ...
                 "RunRoot", root);
             testCase.addTeardown(@() delete(controller));
+            controller.setReferenceData(image, reference_info(root, image), {});
+        end
+
+        function installSecondReference(testCase, controller, image)
+            %INSTALLSECONDREFERENCE A different field of view, same session.
+            arguments
+                testCase
+                controller
+                image = single(reshape(8000:-1:1, 80, 100))
+            end
+            root = testCase.temporaryFolder();
             controller.setReferenceData(image, reference_info(root, image), {});
         end
 

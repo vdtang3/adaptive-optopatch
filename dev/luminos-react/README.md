@@ -73,7 +73,7 @@ Requests it recognises:
 | `app_method get_device_availability_js` | `{ devices: [], count: 0, attaching: false }` |
 | `app_method get_adaptive_optopatch_state_js` | the in-memory session state |
 | `app_method adaptive_optopatch_action_js` | the same reply envelope MATLAB produces, `apply_plan_draft` included |
-| `app_method get_adaptive_optopatch_reference_image_js` | the loaded snapshot's image, binary-framed |
+| `app_method get_adaptive_optopatch_reference_image_js` | the loaded snapshot's image, binary-framed — answered only when the caller's `expected_reference_revision` is still the loaded one, exactly as MATLAB does |
 | `app_method get_adaptive_optopatch_snapshot_choices_js` | the snapshot listing fixture |
 | `app_method get_adaptive_optopatch_reference_choices_js` | the snapshot listing plus whatever has been saved in this session, typed by `kind` |
 | `app_method get_adaptive_optopatch_protocol_choices_js` | the protocol listing fixture |

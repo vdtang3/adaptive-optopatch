@@ -71,6 +71,8 @@ tiers.core = [ ...
     "TestAdaptiveOptopatchReferenceTransport"
     "TestNewFovLifecycle"
     "TestAdaptiveOptopatchPreviews"
+    "TestAcquisitionArrayOrientation"
+    "TestConnectivitySchedulerResolution"
     "TestRunProgressObservability"
     "TestSpatialPreviewGeometry"
     "TestCellDecisionDraft"

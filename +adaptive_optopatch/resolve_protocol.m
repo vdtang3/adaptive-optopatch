@@ -26,6 +26,27 @@ end
 resolved=cell(0,1); outputIndex=0;
 for acquisitionIndex=1:numel(definition.acquisitions)
     acquisition=definition.acquisitions(acquisitionIndex);
+    scheduler=adaptive_optopatch.acquisition_scheduler_spec(acquisition);
+    if ~isempty(scheduler)
+        % THE SCHEDULE IS BUILT HERE, against the cells that are actually
+        % Stim-enabled, and nowhere else. The definition says how; this is
+        % the first moment anything knows who. What comes out is an
+        % ordinary resolved acquisition with literal target IDs and finite
+        % onsets, which is what gets frozen into the plan and what the
+        % runner executes literally - the scheduler is never reached again.
+        if definition.target_policy=="each_stimulation_enabled_cell"
+            error("adaptive_optopatch:InvalidAcquisitionScheduler", ...
+                "A scheduler-backed acquisition schedules ACROSS the " + ...
+                "selected cells, so it cannot belong to an " + ...
+                "each_stimulation_enabled_cell protocol, which makes one " + ...
+                "acquisition per cell. Use multi_target_continuous.");
+        end
+        outputIndex=outputIndex+1;
+        resolved{outputIndex,1}=resolve_scheduled_acquisition(definition, ...
+            acquisition,scheduler,fovState,guiDefaults,cellIndices, ...
+            targetIndices,acquisitionIndex,outputIndex);
+        continue
+    end
     if definition.target_policy=="each_stimulation_enabled_cell"
         for selectedIndex=1:numel(cellIndices)
             outputIndex=outputIndex+1;
@@ -83,6 +104,86 @@ events.target_cell_id=repmat(string(fovState.cells(cellIndex).cell_id),n,1);
 events.target_index=repmat(targetIndex,n,1);
 protocol=resolve_values(definition,acquisition,events,fovState,gui, ...
     repmat(cellIndex,n,1),acquisitionIndex,outputIndex);
+end
+
+function protocol=resolve_scheduled_acquisition(definition,acquisition, ...
+        scheduler,fovState,gui,cellIndices,targetIndices,acquisitionIndex, ...
+        outputIndex)
+%RESOLVE_SCHEDULED_ACQUISITION Realize one scheduler-backed chunk.
+%   The definition named no cell. The selected cells are known now, so the
+%   schedule is built now - once - and the literal event table it produces
+%   is what is frozen, archived and executed.
+%
+%   TARGET ORDER IS THE FOV'S OWN. selected_targets walks fovState.cells in
+%   order, so selectedIds is the canonical AO cell order and not the order
+%   anything happened to be clicked in. That is what makes "same definition,
+%   same selection, same schedule" true.
+selectedIds=string({fovState.cells(cellIndices).cell_id})';
+targetCount=numel(selectedIds);
+
+% FLUT CAPACITY, AGAINST THE REAL TARGET COUNT.
+%
+% The generator used to check this when the protocol was written, from the
+% cell IDs it was handed. An FOV-independent definition has none, and the
+% count that matters is how many cells the experimenter actually selected -
+% which is known here and nowhere earlier. Checked at Update plan so a
+% field of view too large for the requested chunk is refused while there is
+% still something to do about it, rather than at Run.
+eventCount=targetCount*scheduler.pulses_per_cell;
+capacity=adaptive_optopatch.calculate_dmd_flut_playlist_capacity( ...
+    scheduler.flut_max_entries,targetCount);
+if eventCount>capacity
+    error("adaptive_optopatch:ConnectivityChunkExceedsFlutCapacity", ...
+        "Acquisition %s schedules %d events for the %d selected cells " + ...
+        "(%d pulses per cell), but the executable DMD FLUT playlist " + ...
+        "capacity for %d targets is %d events.\n" + ...
+        "Reduce pulses_per_cell_per_chunk to at most %d, or select " + ...
+        "fewer cells, and regenerate the protocol.", ...
+        string(acquisition.acquisition_id),eventCount,targetCount, ...
+        scheduler.pulses_per_cell,targetCount,capacity, ...
+        max(1,floor(capacity/max(targetCount,1))));
+end
+
+% THE TEMPLATE EVENT IS THE EVENT TIER, not a pulse. Its command voltage
+% and mask adjustment are broadcast onto every realized pulse, so an
+% event-level override in the definition still outranks the acquisition,
+% the protocol and the per-cell calibration exactly as it does everywhere
+% else - and NaN, the normal case, still falls through to the cell's own
+% selected_blue_voltage_v.
+template=acquisition.events(1,:);
+[events,metadata]=adaptive_optopatch.generate_constrained_round_robin_schedule( ...
+    selectedIds,scheduler.pulses_per_cell,scheduler.pulse_duration_s, ...
+    scheduler.preferred_global_spacing_s, ...
+    scheduler.minimum_same_cell_post_pulse_gap_s, ...
+    double(template.command_voltage_v), ...
+    "PreDelayS",scheduler.pre_delay_s, ...
+    "ConditionId",string(template.condition_id), ...
+    "RandomSeed",scheduler.random_seed);
+events.blue_mask_adjustment_pixels(:)= ...
+    double(template.blue_mask_adjustment_pixels);
+
+% Each realized target back to the FOV cell record and target geometry it
+% names, so the ordinary resolver supplies per-cell voltage and mask.
+positions=zeros(height(events),1);
+for k=1:numel(selectedIds)
+    positions(events.target_cell_id==selectedIds(k))=k;
+end
+cellMap=cellIndices(positions);
+events.target_index=targetIndices(positions);
+
+metadata.scheduler_type=scheduler.type;
+metadata.chunk_index=scheduler.chunk_index;
+metadata.chunk_count=scheduler.chunk_count;
+metadata.selected_target_ids=selectedIds;
+metadata.realized_at_resolution=true;
+metadata.flut=struct("event_count",eventCount, ...
+    "unique_mask_upper_bound",targetCount, ...
+    "playlist_capacity",capacity, ...
+    "max_entries",scheduler.flut_max_entries,"valid",true);
+acquisition.scheduler_metadata=metadata;
+
+protocol=resolve_values(definition,acquisition,events,fovState,gui, ...
+    cellMap,acquisitionIndex,outputIndex);
 end
 
 function protocol=resolve_multi_target(definition,acquisition,fovState,gui, ...
@@ -298,8 +399,8 @@ for acquisitionIndex=1:numel(resolved)
     targets=targets(strlength(targets)>0);
     if numel(targets)>1
         error("adaptive_optopatch:MultipleTwoPhotonTargetsUnsupported", ...
-            ["Pass 3B temporarily supports at most one distinct 2P " ...
-             "target_cell_id per acquisition; acquisition %s contains: %s."], ...
+            "Pass 3B temporarily supports at most one distinct 2P " + ...
+            "target_cell_id per acquisition; acquisition %s contains: %s.", ...
             resolved{acquisitionIndex}.acquisition_id,strjoin(targets,", "));
     end
     onePhoton=find(events.stimulation_source=="1p_dmd");
@@ -309,8 +410,8 @@ for acquisitionIndex=1:numel(resolved)
             events.offset_s(twoPhoton)>events.onset_s(i)+1e-12);
         if ~isempty(overlap)
             error("adaptive_optopatch:OverlappingStimulationSources", ...
-                ["1P pulse %s overlaps 2P pulse %s. Pass 3B supports " ...
-                 "interleaved sources but not simultaneous 1P + 2P stimulation."], ...
+                "1P pulse %s overlaps 2P pulse %s. Pass 3B supports " + ...
+                "interleaved sources but not simultaneous 1P + 2P stimulation.", ...
                 string(events.pulse_id(i)),string(events.pulse_id(overlap(1))));
         end
     end
@@ -353,10 +454,19 @@ if stimulationSource=="2p_spiral" && name=="command_voltage_v"
          '(selected_blue_voltage_v) fallback for the 2P Pockels command.']);
 end
 if name=="command_voltage_v"
+    % NAMES THE CELL. This is reached once per event, and the event knows
+    % which cell it is for - so an experimenter with twelve selected cells
+    % and one uncalibrated does not have to find it by elimination. A
+    % connectivity protocol leaves command_voltage_v NaN on purpose, which
+    % makes "this cell has no Blue calibration" the single most likely way
+    % for Update plan to fail.
     error("adaptive_optopatch:UnresolvedProtocolParameter", ...
-        ['Required command_voltage_v remains unresolved. Set it on the event, ' ...
-        'acquisition, or protocol, or select an explicit per-cell Blue ' ...
-        'calibration for 1P stimulation. The GUI has no voltage fallback.']);
+        ['%s has no Blue voltage, so this 1P pulse cannot be resolved. ' ...
+        'Set a Blue V for it in the cell table and press Update plan, or ' ...
+        'give the protocol an explicit command_voltage_v on the event, ' ...
+        'the acquisition or the protocol. The GUI has no voltage fallback ' ...
+        'and no other cell''s calibration is borrowed.'], ...
+        cell_label(cellRecord));
 end
 error("adaptive_optopatch:UnresolvedProtocolParameter", ...
     "Required parameter %s remains unresolved after event, acquisition, FOV-cell, and GUI resolution.",name);
@@ -442,6 +552,18 @@ for k=1:numel(cells)
     end
     cellIndices(end+1,1)=k; %#ok<AGROW>
     targetIndices(end+1,1)=matches; %#ok<AGROW>
+end
+end
+
+function label=cell_label(cellRecord)
+%CELL_LABEL How to refer to a cell in an operator-facing error.
+label="This cell";
+if isempty(fieldnames(cellRecord)) || ~isfield(cellRecord,"cell_id")
+    return
+end
+identifier=string(cellRecord.cell_id);
+if isscalar(identifier) && strlength(identifier)>0
+    label="Cell "+identifier;
 end
 end
 

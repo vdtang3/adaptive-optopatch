@@ -33,65 +33,79 @@ classdef TestConstrainedRoundRobinProtocol < matlab.unittest.TestCase
 
     methods (Test)
         % --- 1, 2, 4, 5, 10, 11, 13: the shipped experimental design --------
+        %
+        % THE SHIPPED SCRIPT NOW SAVES A DESIGN, NOT A SCHEDULE. It names no
+        % cell, so it cannot contain realized pulses: each chunk stores the
+        % scheduler specification and the seed, and Update plan realizes them
+        % against whichever cells are Stim-enabled. The timing properties
+        % those specifications produce are asserted against REALIZED chunks
+        % in TestConnectivitySchedulerResolution and against the pure
+        % scheduler further down this file.
 
-        function shippedScriptUsesTenMillisecondPulses(testCase)
+        function shippedScriptNamesNoCell(testCase)
+            % The whole point of the change: one saved connectivity
+            % experiment is reusable on every field of view.
             protocol=testCase.ScriptProtocol;
-            for chunk=reshape(protocol.acquisitions,1,[])
-                events=chunk.events;
-                testCase.verifyEqual(events.duration_s,0.010*ones(height(events),1), ...
-                    "AbsTol",1e-12);
-                testCase.verifyEqual(chunk.scheduler_metadata.pulse_duration_s, ...
-                    0.010,"AbsTol",1e-12);
+            for k=1:numel(protocol.acquisitions)
+                columns=string(protocol.acquisitions(k).events.Properties.VariableNames);
+                testCase.verifyFalse(ismember("target_cell_id",columns), ...
+                    "A connectivity definition must carry no FOV cell ID.");
             end
+            testCase.verifyEmpty(regexp(formattedDisplayText(protocol), ...
+                'cell_\d{3}',"once"), ...
+                "No cell id may appear anywhere in the saved definition.");
         end
 
-        function shippedScriptDefaultsToTenExplicitHundredPulseChunks(testCase)
+        function shippedScriptDefaultsToTenHundredPulseChunks(testCase)
             acquisitions=testCase.ScriptProtocol.acquisitions;
             testCase.verifyNumElements(acquisitions,10);
-            allEvents=table;
             for k=1:numel(acquisitions)
-                metadata=acquisitions(k).scheduler_metadata;
-                testCase.verifyEqual(metadata.pulses_per_cell,100);
-                testCase.verifyEqual(metadata.target_count,10);
-                testCase.verifyEqual(metadata.total_event_count,1000);
-                testCase.verifyEqual(metadata.random_seed, ...
+                scheduler=adaptive_optopatch.acquisition_scheduler_spec( ...
+                    acquisitions(k));
+                testCase.verifyEqual(scheduler.type,"constrained_round_robin");
+                testCase.verifyEqual(scheduler.pulses_per_cell,100);
+                testCase.verifyEqual(scheduler.chunk_index,k);
+                testCase.verifyEqual(scheduler.chunk_count,10);
+                % Chunk i uses BaseRandomSeed + i - 1, which is what makes
+                % the chunks independently randomized and the whole set
+                % reproducible from one recorded number.
+                testCase.verifyEqual(scheduler.random_seed, ...
                     testCase.ScriptProtocol.random_seed+k-1);
-                testCase.verifyTrue(acquisitions(k).event_order_realized);
-                verify_balance(testCase,acquisitions(k).events,100);
-                allEvents=[allEvents;acquisitions(k).events]; %#ok<AGROW>
             end
-            verify_balance(testCase,allEvents,1000);
         end
 
-        function shippedScriptHoldsTwentyMillisecondCadence(testCase)
-            events=testCase.ScriptProtocol.acquisitions(1).events;
-            metadata=testCase.ScriptProtocol.acquisitions(1).scheduler_metadata;
-            testCase.verifyEqual(metadata.requested_preferred_global_spacing_s,0.020);
-            testCase.verifyEqual(diff(events.onset_s), ...
-                0.020*ones(height(events)-1,1),"AbsTol",1e-9);
-            testCase.verifyEqual(metadata.idle_gap_count,0);
-        end
-
-        function shippedScriptEnforcesHundredMillisecondPostPulseRecovery(testCase)
-            for chunk=reshape(testCase.ScriptProtocol.acquisitions,1,[])
-                metadata=chunk.scheduler_metadata;
-                testCase.verifyEqual(metadata.minimum_same_cell_post_pulse_gap_s,0.100);
-                testCase.verifyEqual(metadata.same_cell_minimum_onset_interval_s,0.110, ...
+        function shippedScriptStatesTheCanonicalTiming(testCase)
+            for k=1:numel(testCase.ScriptProtocol.acquisitions)
+                acquisition=testCase.ScriptProtocol.acquisitions(k);
+                scheduler=adaptive_optopatch.acquisition_scheduler_spec(acquisition);
+                testCase.verifyEqual(scheduler.pulse_duration_s,0.010,"AbsTol",1e-12);
+                testCase.verifyEqual(scheduler.preferred_global_spacing_s,0.020, ...
                     "AbsTol",1e-12);
-                verify_post_pulse_recovery(testCase,chunk.events,0.100);
+                testCase.verifyEqual(scheduler.minimum_same_cell_post_pulse_gap_s, ...
+                    0.100,"AbsTol",1e-12);
+                testCase.verifyEqual(scheduler.pre_delay_s,0.100,"AbsTol",1e-12);
+                % The template event is not a pulse; it is the event tier of
+                % parameter resolution and carries the pulse duration.
+                testCase.verifyEqual(height(acquisition.events),1);
+                testCase.verifyEqual(acquisition.events.duration_s,0.010, ...
+                    "AbsTol",1e-12);
+                testCase.verifyTrue(isnan(acquisition.events.onset_s), ...
+                    "An unrealized template event has no onset.");
             end
         end
 
         function shippedScriptMarksEverySourceAsOnePhotonDmd(testCase)
-            for chunk=reshape(testCase.ScriptProtocol.acquisitions,1,[])
-                testCase.verifyTrue(all(chunk.events.stimulation_source=="1p_dmd"));
-                testCase.verifyFalse(any(chunk.events.is_null));
+            for k=1:numel(testCase.ScriptProtocol.acquisitions)
+                events=testCase.ScriptProtocol.acquisitions(k).events;
+                testCase.verifyTrue(all(events.stimulation_source=="1p_dmd"));
+                testCase.verifyFalse(any(events.is_null));
             end
         end
 
         function shippedScriptLeavesVoltageUnresolvedForFovCalibration(testCase)
             protocol=testCase.ScriptProtocol;
-            for chunk=reshape(protocol.acquisitions,1,[])
+            for k=1:numel(protocol.acquisitions)
+                chunk=protocol.acquisitions(k);
                 testCase.verifyTrue(all(isnan(chunk.events.command_voltage_v)));
                 testCase.verifyFalse(isfield(chunk.parameters,"command_voltage_v"));
             end
@@ -105,43 +119,44 @@ classdef TestConstrainedRoundRobinProtocol < matlab.unittest.TestCase
             testCase.verifyEqual(string(protocol.schema_version),"4.0.0");
             testCase.verifyEqual(string(protocol.artifact_type),"experiment_definition");
             testCase.verifyEqual(string(protocol.target_policy),"multi_target_continuous");
-            testCase.verifyTrue(all([protocol.acquisitions.event_order_realized]));
-            testCase.verifyEqual([protocol.acquisitions.target_repetitions],ones(1,10));
+            testCase.verifyEqual([protocol.acquisitions.target_repetitions], ...
+                ones(1,10));
             report=adaptive_optopatch.validate_protocol(protocol);
             testCase.verifyTrue(report.passed,strjoin(report.issues,newline));
         end
 
-        function chunkSeedsAreReproducibleAndIndependentlyRandomized(testCase)
-            ids=compose("cell_%03d",(1:10)');
+        function chunkSeedsAreStoredRatherThanRealized(testCase)
+            % Reproducibility now lives in the seed, not in a frozen table.
+            % Two generations of the same design are identical; a different
+            % base seed gives different chunk seeds.
             first=adaptive_optopatch.generate_connectivity_chunked_protocol( ...
-                ids,"BaseRandomSeed",4242);
+                "BaseRandomSeed",4242);
             second=adaptive_optopatch.generate_connectivity_chunked_protocol( ...
-                ids,"BaseRandomSeed",4242);
+                "BaseRandomSeed",4242);
             changed=adaptive_optopatch.generate_connectivity_chunked_protocol( ...
-                ids,"BaseRandomSeed",99);
+                "BaseRandomSeed",99);
             for k=1:10
-                testCase.verifyEqual(first.acquisitions(k).events, ...
-                    second.acquisitions(k).events);
-                testCase.verifyNotEqual(first.acquisitions(k).events.target_cell_id, ...
-                    changed.acquisitions(k).events.target_cell_id);
+                testCase.verifyEqual(first.acquisitions(k).scheduler, ...
+                    second.acquisitions(k).scheduler);
+                testCase.verifyNotEqual(first.acquisitions(k).scheduler.random_seed, ...
+                    changed.acquisitions(k).scheduler.random_seed);
             end
-            testCase.verifyNotEqual(first.acquisitions(1).events.target_cell_id, ...
-                first.acquisitions(2).events.target_cell_id);
+            testCase.verifyNotEqual(first.acquisitions(1).scheduler.random_seed, ...
+                first.acquisitions(2).scheduler.random_seed);
         end
 
         function fifteenHundredPulsesCreateFifteenChunks(testCase)
             protocol=adaptive_optopatch.generate_connectivity_chunked_protocol( ...
-                compose("cell_%03d",(1:10)'),"TotalPulsesPerCell",1500, ...
-                "BaseRandomSeed",7);
+                "TotalPulsesPerCell",1500,"BaseRandomSeed",7);
             testCase.verifyNumElements(protocol.acquisitions,15);
         end
 
-        function oversizedConnectivityChunkFailsWithActionableCapacityError(testCase)
-            ids=compose("cell_%03d",(1:35)');
+        function anIndivisibleChunkSizeIsRefusedAtDesignTime(testCase)
+            % Target-independent validation still belongs to the generator.
             testCase.verifyError(@() ...
                 adaptive_optopatch.generate_connectivity_chunked_protocol( ...
-                    ids,"PulsesPerCellPerChunk",200), ...
-                "adaptive_optopatch:ConnectivityChunkExceedsFlutCapacity");
+                    "TotalPulsesPerCell",1000,"PulsesPerCellPerChunk",300), ...
+                "adaptive_optopatch:ConnectivityChunkSizeNotDivisible");
         end
 
         % --- 3: the documented higher-SNR variant ---------------------------

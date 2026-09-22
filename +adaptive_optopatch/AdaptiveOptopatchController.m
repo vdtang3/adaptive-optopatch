@@ -1472,8 +1472,16 @@ classdef AdaptiveOptopatchController < handle
             end
             parameters=controller.PlanParameters;
             protocol=adaptive_optopatch.normalize_protocol(controller.Protocol);
+            % INDEXED, NOT ITERATED OVER THE ARRAY ITSELF. `for x = array`
+            % walks COLUMNS, so a 1xN acquisition array gives N scalar
+            % iterations and an Nx1 array gives ONE iteration carrying all N
+            % - after which acquisition.events is a comma-separated list and
+            % everything downstream fails somewhere unrelated. Generators are
+            % not required to return a particular orientation, and reshaping
+            % their output to work around this only moves the assumption.
             lightDurations=[];
-            for acquisition=protocol.acquisitions
+            for acquisitionIndex=1:numel(protocol.acquisitions)
+                acquisition=protocol.acquisitions(acquisitionIndex);
                 selected=~acquisition.events.is_null & ...
                     isfinite(acquisition.events.duration_s);
                 lightDurations=[lightDurations; ...
@@ -1531,8 +1539,12 @@ classdef AdaptiveOptopatchController < handle
             value=controller.PlanParameters.pulse_duration_ms;
             if isempty(controller.Protocol), return; end
             protocol=adaptive_optopatch.normalize_protocol(controller.Protocol);
+            % Indexed for the reason buildPlan is: acquisition arrays may
+            % arrive in either orientation and only numel and order mean
+            % anything.
             durations=[];
-            for acquisition=protocol.acquisitions
+            for acquisitionIndex=1:numel(protocol.acquisitions)
+                acquisition=protocol.acquisitions(acquisitionIndex);
                 selected=~acquisition.events.is_null & ...
                     isfinite(acquisition.events.duration_s);
                 durations=[durations;acquisition.events.duration_s(selected)]; %#ok<AGROW>

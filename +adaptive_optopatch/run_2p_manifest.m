@@ -27,6 +27,9 @@ arguments
     options.AllowCalibrationExtrapolation (1,1) logical = false
     options.AllowCameraRateOverride (1,1) logical = false
     options.StopRequestedFcn = []
+    % See run_1p_manifest: one small record per acquisition boundary, so an
+    % observer can follow the run without reading the checkpoint.
+    options.ProgressFcn = []
     options.ScannerCalibration struct = struct([])
     % See run_1p_manifest: report-only for Pass 3A's rollout, violations
     % the code can prove unsafe block regardless.
@@ -245,6 +248,7 @@ for k=1:n
         run.trials.waveform_summary{k}=summary;
         app.acquisition_active=true;
         run.trials.acquisition_status(k)="acquiring"; save_checkpoint();
+        report_progress(k,"acquiring","");
         bins=arrayfun(@(camera)camera.bin,hardware.cameras);
         outputTag=char(string(row.output_tag)+staging.output_tag_suffix);
         if strlength(options.OutputRoot)>0
@@ -274,6 +278,7 @@ for k=1:n
         run.trials.acquisition_status(k)="completed";
         run.trials.error_message(k)="";
         completedThisCall=completedThisCall+1; save_checkpoint();
+        report_progress(k,run.trials.acquisition_status(k),folder);
         if ~isempty(options.StopRequestedFcn) && logical(options.StopRequestedFcn())
             break
         end
@@ -281,7 +286,9 @@ for k=1:n
         hardware.modulator.level=profile.modulator.dark_v;
         run.trials.acquisition_status(k)="failed";
         run.trials.error_message(k)=string(exception.message);
-        save_checkpoint(); rethrow(exception)
+        save_checkpoint();
+        report_progress(k,run.trials.acquisition_status(k),"");
+        rethrow(exception)
     end
 end
 run.finished_at=string(datetime("now","TimeZone","local")); save_checkpoint();
@@ -325,6 +332,35 @@ run.finished_at=string(datetime("now","TimeZone","local")); save_checkpoint();
             floor(pulses.onset_s*frameRate)+1, ...
             'VariableNames',{'pulse_id','onset_s','expected_frame'}));
     end
+    function report_progress(index,status,experimentDirectory)
+        % The 1P runner's report_progress, same record and same rules: small,
+        % and it can never fail the run. See run_1p_manifest for why.
+        if isempty(options.ProgressFcn), return; end
+        try
+            targetCells=strings(0,1);
+            try
+                targetCells=string(run.trials.target_cell_id(index));
+            catch
+            end
+            record=struct( ...
+                "schema_version","1.0.0", ...
+                "trial_index",double(index), ...
+                "trial_id",double(run.trials.trial_id(index)), ...
+                "status",string(status), ...
+                ... % The same set runProgress and batch_is_complete count,
+                ... % so the in-memory answer and the checkpoint-derived one
+                ... % can never differ by one.
+                "completed_in_batch",double(sum(ismember( ...
+                    string(run.trials.acquisition_status), ...
+                    ["completed","analyzed"]))), ...
+                "acquisitions_in_batch",double(height(run.trials)), ...
+                "target_cell_ids",reshape(targetCells,[],1), ...
+                "experiment_directory",string(experimentDirectory));
+            options.ProgressFcn(record);
+        catch
+        end
+    end
+
     function save_checkpoint()
         run.updated_at=string(datetime("now","TimeZone","local"));
         % Rolled up here so a run that threw still archives what its

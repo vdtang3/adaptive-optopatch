@@ -421,8 +421,9 @@ function draft=required_plan_draft(payload)
 %   committed".
 %
 %     cells            a list of per-cell decisions, each with a cell_id
-%                      and whichever of recording_enabled and
-%                      stimulation_enabled it means to change
+%                      and whichever of recording_enabled,
+%                      stimulation_enabled and selected_blue_voltage_v it
+%                      means to change
 %     plan_parameters  an object of canonical plan parameter values
 %
 %   Nothing here decides what a value means or whether it is allowed. The
@@ -449,6 +450,10 @@ function edits=cell_eligibility_edits(value)
 %   "leave that decision alone" - arrives as a cell array of structs
 %   instead. All three are normalised to the struct array the controller
 %   takes, with the field names it uses.
+%
+%   selected_blue_voltage_v travels here with the two flags because the
+%   controller groups all three as one execution input. The controller
+%   validates its range; this only carries it.
 if iscell(value)
     entries=value;
 elseif isstruct(value)
@@ -463,7 +468,7 @@ if isempty(entries)
 end
 
 edits=repmat(struct("cell_id","","RecordingEnabled",[], ...
-    "StimulationEnabled",[]),1,numel(entries));
+    "StimulationEnabled",[],"SelectedBlueVoltageV",[]),1,numel(entries));
 for k=1:numel(entries)
     entry=entries{k};
     if ~isstruct(entry) || ~isscalar(entry)
@@ -473,7 +478,24 @@ for k=1:numel(entries)
     edits(k).cell_id=required_text(entry,"cell_id");
     edits(k).RecordingEnabled=optional_flag(entry,"recording_enabled");
     edits(k).StimulationEnabled=optional_flag(entry,"stimulation_enabled");
+    edits(k).SelectedBlueVoltageV= ...
+        optional_number(entry,"selected_blue_voltage_v");
 end
+end
+
+function value=optional_number(payload,name)
+%OPTIONAL_NUMBER An omitted numeric decision means "leave this one alone".
+%   Shape only. Whether the number is a legal Blue voltage is the
+%   controller's judgement, and it makes it for the whole batch before
+%   applying any of it.
+value=[];
+if ~isfield(payload,name) || isempty(payload.(name)), return; end
+raw=payload.(name);
+if ~isnumeric(raw) || ~isscalar(raw)
+    error("adaptive_optopatch:InvalidActionArgument", ...
+        "'%s' must be a single number.",name);
+end
+value=double(raw);
 end
 
 function vertices=required_vertices(payload)

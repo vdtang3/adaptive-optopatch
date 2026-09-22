@@ -64,12 +64,12 @@ test("the allowlist matches the one the MATLAB dispatcher publishes", () => {
   ]));
 });
 
-test("every reply carries the state after the action, refused or not", () => {
+test("every reply carries the state after the action, refused or not", async () => {
   const session = newSession();
   for (const response of [
     act(session, "set_cell_eligibility", { cell_id: "cell_001", recording_enabled: false }),
     act(session, "not_an_action"),
-    act(session, "run"),
+    await act(session, "run"),
     session.apply("delete_soma", { cell_id: "cell_001" }, 999),
   ]) {
     assert.ok("state" in response, `${response.action} carried no state`);
@@ -340,12 +340,17 @@ test("deselecting Stim changes the authoritative plan once it is updated", () =>
   assert.equal(after.stimulating_cell_count, before - 1);
 });
 
-test("Run executes the whole plan and leaves it reusable", () => {
+/* AWAITED, because Run is the one action that is genuinely long: it does
+ * not answer until the whole batch has executed, exactly as MATLAB's
+ * synchronous app_method does not return until then. A refusal is still
+ * immediate - see the gate in runPreparedPlan - which is why every other
+ * test here is unchanged. */
+test("Run executes the whole plan and leaves it reusable", async () => {
   const session = newSession();
   act(session, "update_plan");
   const total = session.current().plan_summary.total_acquisitions;
 
-  const run = act(session, "run");
+  const run = await act(session, "run");
 
   assert.equal(run.ok, true, run.message);
   assert.equal(run.state.run_progress.completed_acquisitions, total);
@@ -353,7 +358,7 @@ test("Run executes the whole plan and leaves it reusable", () => {
   // Nothing changed, so the plan is still the right one and Run is offered.
   assert.equal(run.state.plan_status, "ready");
   assert.equal(run.state.legal_actions.run, true);
-  assert.equal(act(session, "run").ok, true, "Run may be pressed again");
+  assert.equal((await act(session, "run")).ok, true, "Run may be pressed again");
 });
 
 test("legal_actions is recomputed, not carried over from the fixture", () => {
@@ -1210,4 +1215,156 @@ test("a commit stales nothing it did not change", () => {
   // immediately out of date against the decision that just committed.
   assert.equal(session.current().plan_status, "ready");
   assert.deepEqual(session.current().plan_readiness.stale_inputs, []);
+});
+
+// ---------------------------------------------------------------------------
+// The run lifecycle
+//
+// NONE OF THIS WAS REACHABLE. The stub jumped straight from "ready" to
+// "complete", so plan_state was never "RUNNING" anywhere in the harness:
+// `lifecycle` could not reach running or stopping_after_current,
+// run_progress.running was always false, legal_actions.stop_after_current was
+// always false, and stop_after_current therefore always answered not_legal -
+// for a reason that had nothing to do with the one production gave. Three
+// branches of the session and the whole of the interface's run presentation
+// were dead code, and the suite was green while the rig showed 0 of 10 for a
+// whole batch and the Stop button did nothing.
+// ---------------------------------------------------------------------------
+
+/** A session whose acquisitions take long enough to observe. */
+const runnableSession = (delayMs = 5) => {
+  const session = newSession();
+  session.acquisitionDelayMs = delayMs;
+  act(session, "update_plan");
+  return session;
+};
+
+test("the lifecycle actually enters RUNNING, and leaves it", async () => {
+  const session = runnableSession();
+  const lifecycles = [];
+  session.onProgress = (progress) => lifecycles.push(progress.lifecycle);
+
+  await act(session, "run");
+
+  assert.ok(lifecycles.includes("running"),
+    `never entered running: ${lifecycles.join(", ")}`);
+  assert.equal(session.current().lifecycle, "frozen");
+  assert.equal(session.current().plan_state, "FROZEN");
+});
+
+test("progress is pushed per acquisition, while the run is still outstanding", async () => {
+  const session = runnableSession();
+  const counts = [];
+  session.onProgress = (progress) =>
+    counts.push(progress.completed_acquisitions);
+
+  const pending = act(session, "run");
+  assert.ok(typeof pending.then === "function",
+    "Run must not answer before the batch is over.");
+  await pending;
+
+  const total = session.current().plan_summary.total_acquisitions;
+  assert.ok(counts.length > 2, `too few pushes: ${counts.join(",")}`);
+  assert.equal(counts[0], 0, "The first push is the run starting.");
+  assert.equal(counts[counts.length - 1], total);
+  // The whole point: an intermediate count was observable.
+  assert.ok(counts.some((n) => n > 0 && n < total),
+    `progress never passed through an intermediate value: ${counts.join(",")}`);
+  // And it never went backwards.
+  assert.deepEqual(counts, [...counts].sort((a, b) => a - b));
+});
+
+test("a push carries progress and identity, and nothing else", async () => {
+  const session = runnableSession(0);
+  let last = null;
+  session.onProgress = (progress) => (last = progress);
+
+  await act(session, "run");
+
+  assert.ok(last, "at least one push");
+  // The controller's progressSnapshot, field for field. A full state
+  // snapshot here would put a manifest walk behind every acquisition.
+  assert.deepEqual(Object.keys(last).sort(), [
+    "acquisitions_per_repeat",
+    "completed_acquisitions",
+    "current_acquisition",
+    "current_status",
+    "current_trial_id",
+    "experiment_directory",
+    "lifecycle",
+    "repeat_count",
+    "repeat_index",
+    "revision",
+    "running",
+    "schema_version",
+    "stop_requested",
+    "total_acquisitions",
+  ]);
+  assert.equal("cells" in last, false, "A push is not a state snapshot.");
+});
+
+test("stop_after_current is legal DURING a run and stops the next acquisition", async () => {
+  const session = runnableSession();
+  const total = session.current().plan_summary.total_acquisitions;
+  assert.ok(total > 1, "this test needs more than one acquisition");
+
+  let stopped = false;
+  session.onProgress = (progress) => {
+    if (stopped || progress.completed_acquisitions < 1) return;
+    stopped = true;
+    // The operator presses Stop while the run is still executing. It is
+    // the one action that is legal then, and it carries no revision -
+    // deliberately, because a run moves the revision under the press.
+    const response = session.apply("stop_after_current", {}, null);
+    assert.equal(response.ok, true, response.message);
+    assert.equal(response.status, "applied");
+  };
+
+  const run = await act(session, "run");
+
+  assert.ok(stopped, "the stop was never issued");
+  assert.ok(
+    run.state.run_progress.completed_acquisitions < total,
+    "Stop after current must leave acquisitions unrun."
+  );
+  assert.equal(run.state.run_progress.completed_acquisitions, 1);
+  assert.equal(run.state.lifecycle, "frozen");
+  assert.equal(run.state.stop_after_current_requested, false,
+    "The request is cleared when the run ends.");
+});
+
+test("stopping is reported as stopping_after_current while it is pending", async () => {
+  const session = runnableSession();
+  const lifecycles = [];
+  let asked = false;
+  session.onProgress = (progress) => {
+    lifecycles.push(progress.lifecycle);
+    if (!asked && progress.completed_acquisitions >= 1) {
+      asked = true;
+      session.apply("stop_after_current", {}, null);
+    }
+  };
+
+  await act(session, "run");
+
+  assert.ok(lifecycles.includes("stopping_after_current"),
+    `never reported the pending stop: ${lifecycles.join(", ")}`);
+});
+
+test("everything except stopping is refused while a run holds the session", async () => {
+  const session = runnableSession();
+  const refusals = [];
+  let probed = false;
+  session.onProgress = (progress) => {
+    if (probed || !progress.running) return;
+    probed = true;
+    for (const action of ["run", "update_plan", "set_cell_blue_voltage"]) {
+      refusals.push(session.apply(action, {}, session.state.revision).status);
+    }
+  };
+
+  await act(session, "run");
+
+  assert.ok(probed, "the run was never observed as running");
+  assert.deepEqual(refusals, ["not_legal", "not_legal", "not_legal"]);
 });

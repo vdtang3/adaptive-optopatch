@@ -50,6 +50,14 @@ classdef AdaptiveOptopatchController < handle
         %   Maintained by the repeat loop so progress is the controller's
         %   answer rather than something a view infers from a batch number
         %   that also advances for other reasons. Empty between runs.
+        %
+        %   IT NOW ALSO HOLDS THE WITHIN-BATCH COUNT. The repeat loop still
+        %   sets repeat_index/repeat_count/acquisitions_per_repeat; the
+        %   runner's ProgressFcn fills in completed_in_batch and which
+        %   acquisition is in flight, through applyRunnerProgress. Before
+        %   that, the only record of "4 of 10" was the checkpoint file, so
+        %   answering it meant a load() of a -v7.3 MAT holding every trial's
+        %   settings snapshot - once per poll, three times per getState.
         RunProgress struct = struct([])
     end
 
@@ -58,6 +66,21 @@ classdef AdaptiveOptopatchController < handle
         %   One callback, not an observer framework: the MATLAB GUI uses it
         %   to redraw itself from getState().
         StateChangedFcn = []
+        %PROGRESSCHANGEDFCN Called with one small progress record during a run.
+        %   A SECOND callback rather than a second caller of the first one,
+        %   and that is the whole point. StateChangedFcn is a single property
+        %   that the MATLAB planning window assigns in its constructor, so
+        %   whoever assigns it last owns it - Luminos installing its own would
+        %   silently stop that window refreshing. This is a separate property
+        %   with a separate audience, so the two observers coexist.
+        %
+        %   It is also a different SIZE of answer. StateChangedFcn's audience
+        %   responds by calling getState(), which walks the manifest twice and
+        %   reads the run checkpoint; doing that after every acquisition would
+        %   make watching a run more expensive than running it. What arrives
+        %   here is progressSnapshot() - counts and identity, nothing derived
+        %   from a manifest and nothing read from disk.
+        ProgressChangedFcn = []
         RunRoot (1,1) string = ""
         %SNAPSHOTROOT Folder snapshotChoices() offers camera snapshots from.
         %   Empty means the attached Luminos session's own Snaps folder, which
@@ -137,7 +160,15 @@ classdef AdaptiveOptopatchController < handle
             state.soma_polygons=controller.FovGeometry.polygons;
             state.protocol=controller.protocolState();
             state.plan_parameters=controller.PlanParameters;
-            state.active_run=controller.activeRunSummary();
+            % READ ONCE, SHARED THREE WAYS. activeRunSummary, runProgress
+            % and legalActions->startNewBatchEnabled each used to call
+            % currentBatchTrials for themselves, so a single poll load()ed
+            % the run checkpoint three times - a -v7.3 MAT holding every
+            % trial's settings snapshot, preflight report and executed
+            % schedule, once a second behind every mounted tab. The answer
+            % cannot change within one getState, so it is worked out once.
+            trials=controller.currentBatchTrials();
+            state.active_run=controller.activeRunSummary(trials);
             % The experimenter-facing lifecycle: one word for what may be
             % done next, why, what the prepared plan would do, and how far
             % a run has got. All four are the controller's answers.
@@ -156,8 +187,8 @@ classdef AdaptiveOptopatchController < handle
             state.plan_status=status;
             state.plan_readiness=controller.planReadiness(status,stale);
             state.plan_summary=summary;
-            state.run_progress=controller.runProgress(summary);
-            state.legal_actions=controller.legalActions(status);
+            state.run_progress=controller.runProgress(summary,trials);
+            state.legal_actions=controller.legalActions(status,trials);
         end
 
         function value=lifecycle(controller)
@@ -173,7 +204,7 @@ classdef AdaptiveOptopatchController < handle
             end
         end
 
-        function actions=legalActions(controller,status)
+        function actions=legalActions(controller,status,trials)
             %LEGALACTIONS Which operations the backend will currently accept.
             %   `update_plan` and `run` are the experimenter-facing pair and
             %   are answered by planStatus, which is the authority both the
@@ -193,6 +224,10 @@ classdef AdaptiveOptopatchController < handle
                 controller
                 % Passed in by getState, which has already worked it out.
                 status (1,1) string = controller.planStatus()
+                % Likewise the current batch's trials, so that asking
+                % whether a new batch may be started does not re-read the
+                % checkpoint this poll has already read.
+                trials = []
             end
             editing=controller.LifecycleState~="RUNNING";
             hasFov=~isempty(controller.ReferenceImage);
@@ -217,7 +252,7 @@ classdef AdaptiveOptopatchController < handle
                 "stop_after_current",controller.LifecycleState=="RUNNING" && ...
                     ~controller.StopRequested, ...
                 "return_to_editing",controller.returnToEditingEnabled(), ...
-                "start_new_batch",controller.startNewBatchEnabled(), ...
+                "start_new_batch",controller.startNewBatchEnabled(trials), ...
                 "resume_run",editing);
         end
 
@@ -298,9 +333,13 @@ classdef AdaptiveOptopatchController < handle
                 "blue_mask_adjustment_pixels", ...
                     parameters.blue_mask_adjustment_pixels);
 
-            inputs.run_controls=controller.captureRunControls();
-            % Observed rather than chosen: it is archived for provenance and
-            % must not make a plan look out of date when the laser drifts.
+            % Observed rather than chosen: the laser power is archived for
+            % provenance and must not make a plan look out of date when the
+            % laser drifts, so it is excluded here. Asked NOT to be measured
+            % rather than measured and then discarded - this runs on every
+            % poll and every action, and the measurement is a device query.
+            inputs.run_controls=controller.captureRunControls( ...
+                "IncludeObservedPower",false);
             inputs.run_controls=rmfield(inputs.run_controls, ...
                 "active_obis_power_w");
         end
@@ -863,8 +902,10 @@ classdef AdaptiveOptopatchController < handle
                     "Specify RecordingEnabled or StimulationEnabled.");
             end
             controller.assertNotRunning("Changing cell eligibility");
+            % cellDecisionState, not currentFovState: a checkbox must not
+            % rasterise somata or archive the rig. See cellDecisionState.
             fovState=adaptive_optopatch.update_cell_eligibility( ...
-                controller.currentFovState(),cellId, ...
+                controller.cellDecisionState(),cellId, ...
                 "RecordingEnabled",options.RecordingEnabled, ...
                 "StimulationEnabled",options.StimulationEnabled);
             controller.CellState=fovState;
@@ -898,32 +939,79 @@ classdef AdaptiveOptopatchController < handle
             %   an operator could not see and could not undo.
             %
             %   Each entry is a struct with a cell_id and whichever of
-            %   RecordingEnabled and StimulationEnabled it means to change;
-            %   an omitted field leaves that decision alone, exactly as the
-            %   single-cell form does.
+            %   RecordingEnabled, StimulationEnabled and SelectedBlueVoltageV
+            %   it means to change; an omitted field leaves that decision
+            %   alone, exactly as the single-cell forms do.
+            %
+            %   THE BLUE VOLTAGE TRAVELS WITH THE TWO FLAGS because the
+            %   controller already treats the three as one group: all three
+            %   are in executionInputs.cell_decisions, and a stale plan
+            %   reports them under one label. They were committed differently
+            %   only on the frontend, where the voltage went straight to the
+            %   backend per edit while the flags waited for Update plan.
+            %
+            %   It is stored the way setCellBlueVoltage stores it - through
+            %   update_cell_calibration, carrying the existing notes and
+            %   acquisition forward and NOT replacing the calibration
+            %   snapshot - so committing a draft records a value without
+            %   claiming it was measured.
             arguments
                 controller
                 edits struct
             end
             controller.assertNotRunning("Changing cell eligibility");
-            fovState=controller.currentFovState();
+            fovState=controller.cellDecisionState();
+            known=strings(1,0);
+            if ~isempty(fovState.cells)
+                known=string({fovState.cells.cell_id});
+            end
+
+            % VALIDATED IN FULL BEFORE ANYTHING IS APPLIED. An out-of-range
+            % voltage in the last entry must not leave the first three
+            % committed - applyPlanDraft would roll the commit back, but the
+            % cheaper and clearer guarantee is not to start.
             for k=1:numel(edits)
                 edit=edits(k);
                 if ~isfield(edit,"cell_id")
                     error("adaptive_optopatch:CellEligibilityRequired", ...
                         "Every eligibility edit needs a cell_id.");
                 end
+                cellId=string(edit.cell_id);
+                if ~any(known==cellId)
+                    error("adaptive_optopatch:UnknownCellId", ...
+                        "Unknown cell ID: %s",cellId);
+                end
                 recording=batch_flag(edit,"RecordingEnabled");
                 stimulation=batch_flag(edit,"StimulationEnabled");
-                if isempty(recording) && isempty(stimulation)
+                voltage=batch_value(edit,"SelectedBlueVoltageV");
+                if isempty(recording) && isempty(stimulation) && isempty(voltage)
                     error("adaptive_optopatch:CellEligibilityRequired", ...
-                        "Specify RecordingEnabled or StimulationEnabled " + ...
-                        "for '%s'.",string(edit.cell_id));
+                        "Specify RecordingEnabled, StimulationEnabled or " + ...
+                        "SelectedBlueVoltageV for '%s'.",cellId);
                 end
-                fovState=adaptive_optopatch.update_cell_eligibility( ...
-                    fovState,string(edit.cell_id), ...
-                    "RecordingEnabled",recording, ...
-                    "StimulationEnabled",stimulation);
+                if ~isempty(voltage)
+                    % Throws on anything outside (0,5]; the same authority
+                    % the single-cell action uses.
+                    validate_blue_voltage(voltage);
+                end
+            end
+
+            for k=1:numel(edits)
+                edit=edits(k);
+                cellId=string(edit.cell_id);
+                recording=batch_flag(edit,"RecordingEnabled");
+                stimulation=batch_flag(edit,"StimulationEnabled");
+                voltage=batch_value(edit,"SelectedBlueVoltageV");
+                if ~isempty(recording) || ~isempty(stimulation)
+                    fovState=adaptive_optopatch.update_cell_eligibility( ...
+                        fovState,cellId, ...
+                        "RecordingEnabled",recording, ...
+                        "StimulationEnabled",stimulation);
+                end
+                if ~isempty(voltage)
+                    fovState=apply_blue_voltage(fovState,cellId, ...
+                        validate_blue_voltage(voltage));
+                end
             end
             controller.CellState=fovState;
             % Decisions only: see setCellEligibility for why the geometry
@@ -939,6 +1027,12 @@ classdef AdaptiveOptopatchController < handle
                 notes (1,1) string = ""
             end
             controller.assertNotRunning("Changing a cell calibration");
+            % Deliberately the FULL state, unlike setCellBlueVoltage. This
+            % writes a calibration SNAPSHOT - the rasterised mask, the pulse
+            % duration and the OBIS power the value was measured at - so the
+            % spatial artifacts are what it is recording, not overhead. It is
+            % also not an interactive edit: no action endpoint reaches it, and
+            % it runs once at the end of a Blue ramp review.
             fovState=controller.currentFovState();
             ids=string({fovState.cells.cell_id}); index=find(ids==cellId,1);
             replaceSnapshot=true;
@@ -967,22 +1061,19 @@ classdef AdaptiveOptopatchController < handle
             end
             controller.assertNotRunning("Changing a cell calibration");
             voltage=validate_blue_voltage(voltage);
-            fovState=controller.currentFovState();
-            ids=string({fovState.cells.cell_id}); index=find(ids==cellId,1);
-            if isempty(index)
+            % A stored voltage is a decision about a cell, so it takes the
+            % decision path. ReplaceCalibrationSnapshot is false below, which
+            % is what makes that safe: a snapshot would need the rasterised
+            % mask this state deliberately does not carry.
+            fovState=controller.cellDecisionState();
+            ids=string({fovState.cells.cell_id});
+            if ~any(ids==cellId)
                 error("adaptive_optopatch:UnknownCellId", ...
                     "Unknown cell ID: %s",cellId);
             end
-            notes=""; acquisition="";
-            if isfield(fovState.cells,"calibration_notes")
-                notes=string(fovState.cells(index).calibration_notes);
-            end
-            if isfield(fovState.cells,"calibration_acquisition")
-                acquisition=string(fovState.cells(index).calibration_acquisition);
-            end
-            fovState=adaptive_optopatch.update_cell_calibration(fovState,cellId, ...
-                "CommandVoltageV",voltage,"Notes",notes, ...
-                "Acquisition",acquisition,"ReplaceCalibrationSnapshot",false);
+            % Shared with the draft commit, so the two ways of storing a
+            % voltage cannot disagree about its provenance.
+            fovState=apply_blue_voltage(fovState,cellId,voltage);
             controller.CellState=fovState;
             % A calibration is a decision about a cell, not its geometry:
             % see setCellEligibility.
@@ -1148,6 +1239,19 @@ classdef AdaptiveOptopatchController < handle
             arguments
                 controller
                 options.PulseDurationMs (1,1) double {mustBePositive} = 5
+                % Spatial plan parameters to use INSTEAD of the committed
+                % ones, for a read-only caller. Empty means the committed
+                % ones, which is what every writing caller passes.
+                %
+                % It exists so that a preview can draw the numbers the
+                % operator can currently see in the spatial controls, which
+                % may be an uncommitted draft. Showing a draft value in the
+                % box while drawing the committed geometry beside it and
+                % calling it "current" is the one thing that surface must
+                % not do. NOTHING IS COMMITTED: the override is applied to a
+                % local copy and the controller's PlanParameters are not
+                % touched.
+                options.Parameters struct = struct([])
             end
             geometry=controller.FovGeometry;
             if isempty(controller.ReferenceImage) || isempty(geometry.polygons)
@@ -1155,6 +1259,11 @@ classdef AdaptiveOptopatchController < handle
                     "Load an image and draw at least one soma ROI.");
             end
             parameters=controller.PlanParameters;
+            if ~isempty(options.Parameters)
+                for name=reshape(string(fieldnames(options.Parameters)),1,[])
+                    parameters.(name)=options.Parameters.(name);
+                end
+            end
             masks=controller.somaMasks();
             fovId=string(matlab.lang.makeValidName( ...
                 char(controller.ReferenceInfo.snapshot_name)));
@@ -1202,6 +1311,82 @@ classdef AdaptiveOptopatchController < handle
                 "ScannerSampleRateHz",scannerSampleRate, ...
                 "OrangeExpansionPixels",parameters.orange_expansion_pixels, ...
                 "BlueMaskAdjustmentPixels",parameters.blue_mask_adjustment_pixels);
+        end
+
+        function fovState=cellDecisionState(controller)
+            %CELLDECISIONSTATE The per-cell decision record, and nothing else.
+            %   currentFovState() WITHOUT the spatial artifacts, for the
+            %   mutators that change a decision about a cell rather than its
+            %   geometry.
+            %
+            %   WHY IT EXISTS. currentFovState builds a whole FOV: it
+            %   rasterises every soma with poly2mask over the full reference
+            %   image, constructs the reference model, archives every Luminos
+            %   device through snapshot_luminos_settings, reads the live
+            %   scanner calibration, and builds the complete Blue/Orange/2P
+            %   target bundle - which it then throws away, because only
+            %   `reference` is kept. Every Record tick, every Stim tick and
+            %   every per-cell Blue voltage paid for all of it. On a rig that
+            %   is device traffic behind a keystroke.
+            %
+            %   None of that work can change what a decision edit produces. A
+            %   decision is recorded against a cell_id, and the only thing
+            %   these mutators need to be current about is WHICH CELLS EXIST
+            %   - which is FovGeometry.cell_ids, already in memory.
+            %
+            %   WHAT IT RETURNS is shaped like the part of a FOV state that
+            %   its consumers actually read. merge_reference_cell_state and
+            %   cell_state_for_id both take `.cells` and the seven decision
+            %   fields and nothing more, so CellState may hold this in place
+            %   of a full bundle. Saving a FOV still builds the complete
+            %   artifact, at save time, from currentFovState.
+            %
+            %   IT IS ALSO SIDE-EFFECT FREE, which currentFovState is not:
+            %   buildSpatialArtifacts reassigns ScannerWarning, so editing a
+            %   voltage could change the scanner warning the tab displays.
+            ids=reshape(string(controller.FovGeometry.cell_ids),1,[]);
+            defaults=struct("cell_id","", ...
+                "recording_enabled",true,"stimulation_enabled",true, ...
+                "selected_blue_voltage_v",NaN, ...
+                "calibration_notes","","calibration_acquisition","", ...
+                "blue_calibration",struct([]), ...
+                "blue_calibration_history",struct([]));
+            carried=["recording_enabled","stimulation_enabled", ...
+                "selected_blue_voltage_v","calibration_notes", ...
+                "calibration_acquisition","blue_calibration", ...
+                "blue_calibration_history"];
+
+            previous=controller.CellState;
+            previousIds=strings(1,0);
+            if ~isempty(previous) && isfield(previous,"cells") && ...
+                    ~isempty(previous.cells)
+                previousIds=string({previous.cells.cell_id});
+            end
+
+            if isempty(ids)
+                cells=repmat(defaults,1,0);
+            else
+                cells=repmat(defaults,1,numel(ids));
+            end
+            for k=1:numel(ids)
+                cells(k).cell_id=ids(k);
+                % A cell the controller has not seen before keeps the
+                % defaults; one it has keeps every decision already recorded
+                % about it, including calibration provenance and history.
+                index=find(previousIds==ids(k),1);
+                if isempty(index), continue; end
+                for name=carried
+                    if isfield(previous.cells,name)
+                        cells(k).(name)=previous.cells(index).(name);
+                    end
+                end
+            end
+
+            fovState=struct("schema_version","2.0.0","cells",cells);
+            % update_cell_eligibility and update_cell_calibration mirror the
+            % edited cells back onto reference.cells, so the field has to be
+            % here for them to write through.
+            fovState.reference=struct("cells",cells);
         end
 
         function fovState=currentFovState(controller)
@@ -1355,7 +1540,7 @@ classdef AdaptiveOptopatchController < handle
             if ~isempty(durations), value=1000*durations(1); end
         end
 
-        function preview=spatialPreview(controller,mode)
+        function preview=spatialPreview(controller,mode,options)
             %SPATIALPREVIEW Canonical targeting geometry, as outlines to draw.
             %   The same preview the MATLAB planning window draws with
             %   "Preview targets", in the same coordinates, computed by the
@@ -1380,10 +1565,42 @@ classdef AdaptiveOptopatchController < handle
             %   buildSpatialArtifacts refreshes and which is restored here
             %   and reported in the payload instead, so that asking for a
             %   preview cannot change what the state poll says.
+            %
+            %   IT ANSWERS "WHAT GEOMETRY EXISTS FOR THIS FIELD OF VIEW",
+            %   NOT "WHAT WILL RUN". Those are different questions and this
+            %   used to answer the second one while being asked the first.
+            %
+            %   It called resolvedProtocolsForPreview(), which is buildPlan()
+            %   - the whole execution planner - and then drew only the cells
+            %   the resolved acquisitions addressed. resolve_protocol selects
+            %   targets with `if ~stimulation_enabled, continue`, so
+            %   unticking Stim on a cell made its Blue mask VANISH from the
+            %   picture an operator aims with, and loading a protocol removed
+            %   geometry that had been visible a moment earlier. With no
+            %   protocol loaded it already drew every cell, which is the
+            %   behaviour that was correct all along.
+            %
+            %   So there is no protocol resolution here at all now. The
+            %   inputs are the reference, the soma polygons and the spatial
+            %   settings, and the output is every drawn ROI's geometry. It
+            %   cannot raise NoAcceptedTargets, and it answers normally with
+            %   a protocol loaded, with none loaded, and with no cell
+            %   Stim-enabled.
+            %
+            %   WHAT WILL RUN is answered by waveformPreview and by
+            %   plan_summary, which are derived from the PREPARED plan and
+            %   say so.
+            %
+            %   Each outline still CARRIES its cell's decisions, so a view
+            %   can show which cells are selected without geometry being the
+            %   thing that disappears.
             arguments
                 controller
                 mode (1,1) string ...
                     {mustBeMember(mode,["1p_dmd","2p_spiral"])}
+                % Uncommitted spatial values to draw with. See
+                % buildSpatialArtifacts; nothing is committed.
+                options.SpatialOverrides struct = struct([])
             end
             preview=struct("schema_version","1.0.0","mode",mode, ...
                 "available",false,"message","","source","", ...
@@ -1405,25 +1622,28 @@ classdef AdaptiveOptopatchController < handle
             warningBefore=controller.ScannerWarning;
             restore=onCleanup(@()set_scanner_warning(controller,warningBefore));
             [~,targets]=controller.buildSpatialArtifacts( ...
-                "PulseDurationMs",controller.currentPulseDurationMs());
+                "PulseDurationMs",controller.currentPulseDurationMs(), ...
+                "Parameters",spatial_overrides(options.SpatialOverrides));
+            % NO ResolvedProtocols. See the note above: this is the FOV's
+            % geometry, and the protocol has no say in which cells have any.
             canonical=adaptive_optopatch.build_target_preview(targets,mode, ...
-                "ResolvedProtocols",controller.resolvedProtocolsForPreview(), ...
                 "ScannerTransform",targets.scanner_transform, ...
                 "ScannerSampleRateHz",targets.parameters.scanner_sample_rate_hz);
             preview.available=true;
-            preview.source=string(canonical.source);
+            preview.source="fov_geometry";
             preview.scanner_warning=controller.ScannerWarning;
+            decisions=target_decisions(targets);
             for k=1:numel(canonical.orange)
                 preview.orange(end+1,1)=mask_outline( ...
                     canonical.orange(k).mask,canonical.orange(k).cell_id, ...
                     "expansion_pixels", ...
-                    canonical.orange(k).expansion_pixels);
+                    canonical.orange(k).expansion_pixels,decisions);
             end
             for k=1:numel(canonical.blue)
                 preview.blue(end+1,1)=mask_outline( ...
                     canonical.blue(k).mask,canonical.blue(k).cell_id, ...
                     "adjustment_pixels", ...
-                    canonical.blue(k).adjustment_pixels);
+                    canonical.blue(k).adjustment_pixels,decisions);
             end
             for k=1:numel(canonical.spiral)
                 preview.spiral(end+1,1)= ...
@@ -1914,17 +2134,22 @@ classdef AdaptiveOptopatchController < handle
                 summary.total_acquisitions);
         end
 
-        function progress=runProgress(controller,summary)
+        function progress=runProgress(controller,summary,trials)
             %RUNPROGRESS How far one press of Run has got.
             %   Counted in ACQUISITIONS across every repeat, because that
             %   is the unit an operator watches. The repeat loop records
             %   which repeat is in flight; the acquisitions completed
-            %   within it come from the batch's own checkpoint, which the
-            %   runner writes as it goes.
+            %   within it come from the runner's own per-acquisition
+            %   reports, and from the batch checkpoint only when this
+            %   session did not run the batch itself (a resume).
             arguments
                 controller
                 % Passed in by getState, which already has it.
                 summary = []
+                % Likewise: the current batch's trials, when the caller has
+                % already read them. Only the resume fallback below uses it,
+                % so it is usually not read at all.
+                trials = []
             end
             if isempty(summary), summary=controller.planSummary(); end
             progress=struct("schema_version","1.0.0","running",false, ...
@@ -1933,7 +2158,11 @@ classdef AdaptiveOptopatchController < handle
                 "repeat_count",summary.repeats, ...
                 "acquisitions_per_repeat",summary.acquisitions_per_repeat, ...
                 "completed_acquisitions",0, ...
-                "total_acquisitions",summary.total_acquisitions);
+                "total_acquisitions",summary.total_acquisitions, ...
+                "current_acquisition",0, ...
+                "current_trial_id",NaN, ...
+                "current_status","", ...
+                "experiment_directory","");
             if isempty(controller.RunProgress), return; end
             progress.running=controller.LifecycleState=="RUNNING";
             progress.repeat_index=double(controller.RunProgress.repeat_index);
@@ -1944,14 +2173,41 @@ classdef AdaptiveOptopatchController < handle
                 progress.acquisitions_per_repeat*progress.repeat_count;
             completedBefore=(progress.repeat_index-1)* ...
                 progress.acquisitions_per_repeat;
-            trials=controller.currentBatchTrials();
-            inBatch=0;
-            if ~isempty(trials) && height(trials)>0
-                inBatch=sum(ismember(string(trials.acquisition_status), ...
-                    ["completed","analyzed"]));
+            progress.current_acquisition= ...
+                run_progress_field(controller.RunProgress,"current_acquisition",0);
+            progress.current_trial_id= ...
+                run_progress_field(controller.RunProgress,"current_trial_id",NaN);
+            progress.current_status= ...
+                string(run_progress_field(controller.RunProgress,"current_status",""));
+            progress.experiment_directory= ...
+                string(run_progress_field(controller.RunProgress,"experiment_directory",""));
+            % THE IN-MEMORY COUNT FIRST, the checkpoint only when there is no
+            % in-memory count to have. The runner reports each acquisition as
+            % it finishes (see its ProgressFcn), so during and after a run
+            % this is already known and reading the file would only confirm
+            % it. A resumed run is the case that has a checkpoint and no
+            % in-memory history, and that is exactly when the fallback is
+            % correct rather than merely cheaper.
+            if isfield(controller.RunProgress,"completed_in_batch")
+                inBatch=double(controller.RunProgress.completed_in_batch);
+            else
+                if isempty(trials), trials=controller.currentBatchTrials(); end
+                inBatch=completed_in_trials(trials);
             end
             progress.completed_acquisitions=min( ...
                 max(completedBefore,0)+inBatch,progress.total_acquisitions);
+        end
+
+        function progress=progressSnapshot(controller)
+            %PROGRESSSNAPSHOT The small run-observability payload, on its own.
+            %   What ProgressChangedFcn hands its observer, and what a
+            %   frontend renders while a Run request is still outstanding.
+            %   Deliberately runProgress() plus the lifecycle word and
+            %   nothing else: no cells, no plan summary, no manifest walk, no
+            %   disk. See ProgressChangedFcn.
+            progress=controller.runProgress();
+            progress.lifecycle=controller.lifecycle();
+            progress.revision=controller.Revision;
         end
 
         function paths=startNewRun(controller,outputRoot)
@@ -2016,14 +2272,20 @@ classdef AdaptiveOptopatchController < handle
                 "Previous completed batch preserved at:";sourceFolder]);
         end
 
-        function value=startNewBatchEnabled(controller)
+        function value=startNewBatchEnabled(controller,trials)
+            arguments
+                controller
+                % Passed in by legalActions when getState has already read them.
+                trials = []
+            end
             value=false;
             if isempty(controller.ActiveRunPlan) || ...
                     strlength(controller.ActiveRunFolder)==0 || ...
                     controller.LifecycleState=="RUNNING"
                 return
             end
-            value=batch_is_complete(controller.currentBatchTrials());
+            if isempty(trials), trials=controller.currentBatchTrials(); end
+            value=batch_is_complete(trials);
         end
 
         function returnToEditing(controller)
@@ -2092,6 +2354,11 @@ classdef AdaptiveOptopatchController < handle
             %STOPAFTERCURRENT Ask the active runner to stop after this trial.
             controller.StopRequested=true;
             controller.bumpRevision();
+            % Acknowledged on the progress channel, because the operator
+            % pressed this DURING a run and the reply to their action is
+            % queued behind it. This is what turns the button into
+            % "Stop requested" rather than leaving it looking unpressed.
+            controller.notifyProgressChanged();
         end
 
         function trials=currentBatchTrials(controller)
@@ -2145,6 +2412,65 @@ classdef AdaptiveOptopatchController < handle
             if isa(controller.StateChangedFcn,"function_handle")
                 controller.StateChangedFcn();
             end
+        end
+
+        function notifyProgressChanged(controller)
+            %NOTIFYPROGRESSCHANGED Tell a progress observer where the run is.
+            %   Separate from notifyStateChanged, and never called instead of
+            %   it: the two have different audiences and carry different
+            %   amounts. See ProgressChangedFcn.
+            %
+            %   A broken observer must not abort an acquisition, so this
+            %   cannot throw into the runner that called it.
+            if ~isa(controller.ProgressChangedFcn,"function_handle"), return; end
+            try
+                controller.ProgressChangedFcn(controller.progressSnapshot());
+            catch observerError
+                warning("adaptive_optopatch:ProgressObserverFailed", ...
+                    "An Adaptive Optopatch progress observer failed and was " + ...
+                    "ignored: %s",observerError.message);
+            end
+        end
+
+        function applyRunnerProgress(controller,record)
+            %APPLYRUNNERPROGRESS Adopt one acquisition boundary from the runner.
+            %   The runner's ProgressFcn lands here. It updates the in-memory
+            %   RunProgress and tells the progress observer - and does NOT
+            %   bump the revision.
+            %
+            %   NOT A REVISION BUMP, deliberately. Revision means "what
+            %   getState() would return has changed", and a frontend uses it
+            %   to decide whether to re-base its uncommitted draft. Advancing
+            %   it once per acquisition would make every draft in every
+            %   browser look stale for the length of a run, and would make
+            %   the operator's own stop_after_current arrive against a
+            %   revision that had moved since they pressed it. Progress is
+            %   observability, not committed experiment state; it travels on
+            %   its own channel.
+            arguments
+                controller
+                record (1,1) struct
+            end
+            if isempty(controller.RunProgress), return; end
+            progress=controller.RunProgress;
+            if isfield(record,"completed_in_batch")
+                progress.completed_in_batch=double(record.completed_in_batch);
+            end
+            if isfield(record,"trial_index")
+                progress.current_acquisition=double(record.trial_index);
+            end
+            if isfield(record,"trial_id")
+                progress.current_trial_id=double(record.trial_id);
+            end
+            if isfield(record,"status")
+                progress.current_status=string(record.status);
+            end
+            if isfield(record,"experiment_directory") && ...
+                    strlength(string(record.experiment_directory))>0
+                progress.experiment_directory=string(record.experiment_directory);
+            end
+            controller.RunProgress=progress;
+            controller.notifyProgressChanged();
         end
 
         function point=captureCommitPoint(controller)
@@ -2450,9 +2776,24 @@ classdef AdaptiveOptopatchController < handle
             end
         end
 
-        function value=captureRunControls(controller)
+        function value=captureRunControls(controller,options)
+            %CAPTURERUNCONTROLS The run settings a plan is frozen with.
+            %   IncludeObservedPower is false for the staleness comparison.
+            %   active_obis_power_w is a live device read, and
+            %   executionInputs removed it from the struct on the very next
+            %   line anyway - so a frontend poll was querying the 488 laser
+            %   once a second to produce a number nothing then looked at.
+            %   The archived session snapshot still records it.
+            arguments
+                controller
+                options.IncludeObservedPower (1,1) logical = true
+            end
             parameters=controller.PlanParameters;
-            value=struct("active_obis_power_w",controller.currentObisPowerW(), ...
+            observedPower=NaN;
+            if options.IncludeObservedPower
+                observedPower=controller.currentObisPowerW();
+            end
+            value=struct("active_obis_power_w",observedPower, ...
                 "repeat_batch_count",parameters.repeat_batch_count, ...
                 "maximum_velocity_v_per_s",parameters.maximum_velocity_v_per_s, ...
                 "maximum_acceleration_v_per_s2",parameters.maximum_acceleration_v_per_s2, ...
@@ -2502,9 +2843,20 @@ classdef AdaptiveOptopatchController < handle
             controller.enterRunningState();
             cleanup=onCleanup(@()controller.finishRunning()); %#ok<NASGU>
             for batch=1:batchCount
+                % completed_in_batch starts at zero for each repeat and is
+                % advanced by applyRunnerProgress as the runner reports. It
+                % is seeded HERE rather than left absent so that runProgress
+                % does not fall back to the previous repeat's checkpoint
+                % during the gap before the first acquisition of this one.
                 controller.RunProgress=struct("repeat_index",batch, ...
                     "repeat_count",batchCount, ...
-                    "acquisitions_per_repeat",perRepeat);
+                    "acquisitions_per_repeat",perRepeat, ...
+                    "completed_in_batch",0, ...
+                    "current_acquisition",0, ...
+                    "current_trial_id",NaN, ...
+                    "current_status","", ...
+                    "experiment_directory","");
+                controller.notifyProgressChanged();
                 controller.setStatus(sprintf("Running repeat %d of %d", ...
                     batch,batchCount));
                 run=controller.executePlan(0,"ManageRunState",false);
@@ -2567,6 +2919,7 @@ classdef AdaptiveOptopatchController < handle
                 "AllowCalibrationExtrapolation",frozenControls.allow_calibration_extrapolation, ...
                 "AllowCameraRateOverride",frozenControls.allow_camera_rate_override, ...
                 "StopRequestedFcn",@()controller.StopRequested, ...
+                "ProgressFcn",@(record)controller.applyRunnerProgress(record), ...
                 "ScannerCalibration",scanner);
             controller.LastRun=run;
             controller.setStatus("Run stopped normally. Frozen plan: "+ ...
@@ -2577,6 +2930,12 @@ classdef AdaptiveOptopatchController < handle
             controller.LifecycleState="RUNNING";
             controller.StopRequested=false;
             controller.bumpRevision();
+            % The browser cannot see this through getState until the Run
+            % request returns, which is the whole length of the batch, so
+            % the lifecycle change is announced on the progress channel as
+            % well. Without it the tab would keep showing the pre-run
+            % "ready" snapshot while the rig was already acquiring.
+            controller.notifyProgressChanged();
         end
 
         function finishRunning(controller)
@@ -2585,6 +2944,7 @@ classdef AdaptiveOptopatchController < handle
                 controller.LifecycleState="FROZEN";
             end
             controller.bumpRevision();
+            controller.notifyProgressChanged();
         end
 
         function summary=fovSummary(controller)
@@ -2656,7 +3016,12 @@ classdef AdaptiveOptopatchController < handle
             end
         end
 
-        function summary=activeRunSummary(controller)
+        function summary=activeRunSummary(controller,trials)
+            arguments
+                controller
+                % Passed in by getState, which has already read them.
+                trials = []
+            end
             summary=struct("frozen",false,"folder",controller.ActiveRunFolder, ...
                 "batch_id","","batch_number",NaN,"trial_count",0, ...
                 "completed_trial_count",0,"batch_complete",false);
@@ -2664,7 +3029,7 @@ classdef AdaptiveOptopatchController < handle
                     strlength(controller.ActiveRunFolder)==0
                 return
             end
-            trials=controller.currentBatchTrials();
+            if isempty(trials), trials=controller.currentBatchTrials(); end
             identity=batch_identity(controller.ActiveRunPlan, ...
                 controller.ActiveRunFolder);
             summary.frozen=true;
@@ -2775,8 +3140,19 @@ end
 % Spatial preview
 % -----------------------------------------------------------------------
 
-function outline=mask_outline(mask,cellId,parameterName,parameterValue)
+function outline=mask_outline(mask,cellId,parameterName,parameterValue,decisions)
 %MASK_OUTLINE One canonical mask, as the boundaries the GUI plots.
+%   `decisions` is the map target_decisions built, so every outline says
+%   whether its cell is Record- and Stim-enabled. The flags travel WITH the
+%   geometry rather than deciding whether there is any: a view can grey a
+%   deselected cell, and the operator can still see where it is.
+arguments
+    mask
+    cellId
+    parameterName
+    parameterValue
+    decisions struct = struct([])
+end
 %   bwboundaries of exactly the mask build_target_preview produced, in
 %   [row column] which is [y x] in snapshot-intrinsic pixels - the same
 %   conversion the MATLAB axes do when they plot p(:,2) against p(:,1).
@@ -2793,6 +3169,55 @@ outline.cell_id=string(cellId);
 outline.rings=rings;
 outline.pixel_count=sum(logical(mask),"all");
 outline.(parameterName)=double(parameterValue);
+if ~isempty(decisions)
+    index=find(string({decisions.cell_id})==outline.cell_id,1);
+    if ~isempty(index)
+        outline.recording_enabled=logical(decisions(index).recording_enabled);
+        outline.stimulation_enabled=logical(decisions(index).stimulation_enabled);
+    end
+end
+end
+
+function decisions=target_decisions(targets)
+%TARGET_DECISIONS Each target cell's Record/Stim flags, for the outlines.
+%   Read off the bundle, which records them per target, so the preview
+%   reports the same decisions the execution path reads rather than a second
+%   opinion about them.
+decisions=struct([]);
+if ~isfield(targets,"targets") || isempty(targets.targets), return; end
+for k=1:numel(targets.targets)
+    decisions(k).cell_id=string(targets.targets(k).cell_id);
+    decisions(k).recording_enabled= ...
+        logical(target_flag(targets.targets(k),"recording_enabled"));
+    decisions(k).stimulation_enabled= ...
+        logical(target_flag(targets.targets(k),"stimulation_enabled"));
+end
+end
+
+function value=target_flag(target,name)
+value=true;
+if isfield(target,name) && ~isempty(target.(name))
+    value=logical(target.(name));
+end
+end
+
+function parameters=spatial_overrides(requested)
+%SPATIAL_OVERRIDES The uncommitted spatial values a preview may draw with.
+%   ONLY THE FIVE that describe geometry, and each one coerced by the same
+%   rule setPlanParameter uses. A read-only preview is not a way to set a
+%   parameter the write path would have refused, and it is not a way to
+%   reach a parameter that is not spatial at all.
+parameters=struct([]);
+if isempty(requested), return; end
+allowed=["microns_per_pixel","spiral_radius_um", ...
+    "spiral_density_points_per_volt","orange_expansion_pixels", ...
+    "blue_mask_adjustment_pixels"];
+value=struct();
+for name=reshape(string(fieldnames(requested)),1,[])
+    if ~any(allowed==name), continue; end
+    value.(name)=coerce_plan_value(name,requested.(name));
+end
+if ~isempty(fieldnames(value)), parameters=value; end
 end
 
 function outline=empty_outline()
@@ -2800,7 +3225,11 @@ function outline=empty_outline()
 % read as one struct element per cell entry, and {} would produce an empty
 % struct array instead of a struct with an empty cell in it.
 outline=struct("cell_id","","pixel_count",0, ...
-    "adjustment_pixels",NaN,"expansion_pixels",NaN);
+    "adjustment_pixels",NaN,"expansion_pixels",NaN, ...
+    ... % The cell's own decisions, carried WITH its geometry. A view that
+    ... % wants to distinguish a selected cell styles it; it does not have
+    ... % to ask for a different preview, and nothing disappears.
+    "recording_enabled",true,"stimulation_enabled",true);
 outline.rings={};
 end
 
@@ -3106,6 +3535,35 @@ value="";
 if isfield(info,name), value=string(info.(name)); end
 end
 
+function fovState=apply_blue_voltage(fovState,cellId,voltage)
+%APPLY_BLUE_VOLTAGE Store a per-cell Blue voltage, preserving its provenance.
+%   Exactly what setCellBlueVoltage does to one cell, factored out so the
+%   single-cell action and the draft commit cannot drift apart about what a
+%   stored voltage carries with it: the existing notes and acquisition are
+%   read forward, and the calibration snapshot is NOT replaced, because a
+%   typed-in number was not measured.
+notes=""; acquisition="";
+ids=string({fovState.cells.cell_id}); index=find(ids==cellId,1);
+if ~isempty(index)
+    if isfield(fovState.cells,"calibration_notes")
+        notes=string(fovState.cells(index).calibration_notes);
+    end
+    if isfield(fovState.cells,"calibration_acquisition")
+        acquisition=string(fovState.cells(index).calibration_acquisition);
+    end
+end
+fovState=adaptive_optopatch.update_cell_calibration(fovState,cellId, ...
+    "CommandVoltageV",voltage,"Notes",notes, ...
+    "Acquisition",acquisition,"ReplaceCalibrationSnapshot",false);
+end
+
+function value=batch_value(edit,name)
+%BATCH_VALUE An optional numeric field of one batch edit, or [] for absent.
+value=[];
+if ~isfield(edit,name) || isempty(edit.(name)), return; end
+value=edit.(name);
+end
+
 function value=batch_flag(edit,name)
 %BATCH_FLAG One eligibility decision out of a batched edit, or "unchanged".
 %   Empty means the field was not sent, which update_cell_eligibility reads
@@ -3359,19 +3817,39 @@ defaults=struct( ...
 end
 
 function path=batch_checkpoint_path(folder,trials)
+%BATCH_CHECKPOINT_PATH Where the runner that executes these trials checkpoints.
+%   Routed by manifest_execution_route, which is the same decision
+%   run_mixed_manifest makes when it picks a runner. Deriving it here a second
+%   way is what made progress read 0/N forever for any manifest containing a
+%   null control or a mix of modalities; see that function for the whole story.
 path="";
 if strlength(folder)==0 || isempty(trials), return; end
-mode=unique(string(trials.stimulation_mode));
-if isscalar(mode) && mode=="1p_dmd"
-    path=fullfile(folder,"run_checkpoint.mat");
-elseif isscalar(mode) && mode=="2p_spiral"
-    path=fullfile(folder,"run_2p_checkpoint.mat");
-end
+route=adaptive_optopatch.manifest_execution_route(trials);
+if strlength(route.checkpoint_file)==0, return; end
+path=fullfile(folder,route.checkpoint_file);
 end
 
 function value=batch_is_complete(trials)
 value=~isempty(trials) && all(ismember( ...
     string(trials.acquisition_status),["completed","analyzed"]));
+end
+
+function value=completed_in_trials(trials)
+%COMPLETED_IN_TRIALS How many acquisitions of this batch are done, from a table.
+value=0;
+if isempty(trials) || height(trials)==0, return; end
+value=sum(ismember(string(trials.acquisition_status),["completed","analyzed"]));
+end
+
+function value=run_progress_field(progress,name,default)
+%RUN_PROGRESS_FIELD One optional field of RunProgress, or a default.
+%   The repeat loop creates RunProgress before the runner has reported
+%   anything, so the per-acquisition half of it is absent until the first
+%   report lands. Absent means "not known yet", not zero-as-a-measurement.
+value=default;
+if isfield(progress,name) && ~isempty(progress.(name))
+    value=progress.(name);
+end
 end
 
 function save_frozen_protocol_archive(path,protocols,trialIds)

@@ -280,8 +280,8 @@ class AoDevSession {
     return this.session.referenceImageFor(fov.fov_id);
   }
 
-  apply(action, payload, expectedRevision) {
-    const response = this.session.apply(action, payload, expectedRevision);
+  async apply(action, payload, expectedRevision) {
+    const response = await this.session.apply(action, payload, expectedRevision);
     this.log(
       `  action ${action} -> ${response.status} (revision ${response.revision})`
     );
@@ -442,8 +442,21 @@ export const startFakeMatlabServer = ({
     socket.write(encodeReply(returnEvent, payload));
   };
 
-  const handleRequest = (request, socket) => {
-    const payload = replyFor(request, session);
+  const handleRequest = async (request, socket) => {
+    /* AWAITED, because `run` does not answer until the batch is over.
+     *
+     * That is production's shape, not a liberty: MATLAB executes a run
+     * inside one synchronous app_method and the reply to it is written when
+     * the run returns. What a caller sees meanwhile is the progress channel
+     * below, which is the unsolicited event
+     * JS_Server.notifyAdaptiveOptopatchProgress writes.
+     *
+     * Other requests ARE serviced while a run is outstanding, and that is
+     * production's shape too - JS_Request_Queue drains nested requests when
+     * a long operation yields, which is what makes Stop after current
+     * deliverable to a run in progress. It was not, and the flag guarding
+     * request ordering was why. */
+    const payload = await replyFor(request, session);
 
     if (payload === undefined) {
       // Not recognised. Answered anyway, and loudly: a request left unanswered
@@ -465,7 +478,7 @@ export const startFakeMatlabServer = ({
     );
   };
 
-  const handleLine = (line, socket) => {
+  const handleLine = async (line, socket) => {
     let message;
     try {
       message = JSON.parse(line);
@@ -482,11 +495,15 @@ export const startFakeMatlabServer = ({
     if (message && message.type === "batch") {
       const requests = Array.isArray(message.requests) ? message.requests : [];
       log(`batch of ${requests.length}`);
-      for (const request of requests) handleRequest(request, socket);
+      // AWAITED IN TURN, so a batch is still handled in arrival order now
+      // that handleRequest can be long. JS_Request_Queue keeps the same
+      // property on the real side, and for the same reason: two stage
+      // moves must not swap.
+      for (const request of requests) await handleRequest(request, socket);
       return;
     }
 
-    handleRequest(message, socket);
+    await handleRequest(message, socket);
   };
 
   // Tracked so shutdown can hang up on them. server.close() only stops
@@ -494,6 +511,23 @@ export const startFakeMatlabServer = ({
   // relay holds its connection open and reconnects for as long as it runs. Left
   // to itself, Ctrl-C therefore stopped listening and then sat there.
   const open = new Set();
+
+  /* The unsolicited progress channel.
+   *
+   * JS_Server.notifyAdaptiveOptopatchProgress writes an event with no
+   * return_event to whoever is connected, and the relay forwards it to every
+   * browser. This is the only way progress can reach a frontend during a
+   * run, because the reply to `run` does not come until the batch is over
+   * and a poll issued meanwhile is answered no sooner.
+   *
+   * Broadcast rather than addressed, exactly as the real one is: an
+   * unsolicited event has no client to be a reply to. */
+  session.onProgress = (progress) => {
+    const frame = encodeReply("adaptive_optopatch_progress", progress);
+    for (const socket of open) {
+      if (!socket.destroyed) socket.write(frame);
+    }
+  };
 
   const server = net.createServer((socket) => {
     log(`relay connected from ${socket.remoteAddress}`);

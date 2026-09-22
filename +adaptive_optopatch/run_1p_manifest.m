@@ -16,6 +16,11 @@ arguments
     options.ShutterSettleTimeS (1,1) double {mustBeNonnegative} = 0.05
     options.TimeoutMarginS (1,1) double {mustBePositive} = 30
     options.StopRequestedFcn = []
+    % Called with one small progress record at each acquisition boundary, so
+    % that an observer can follow the run without reading the checkpoint file
+    % this also writes. Deliberately a plain function handle and deliberately
+    % small: see report_progress below for what it carries and why.
+    options.ProgressFcn = []
     options.AllowMixedSources (1,1) logical = false
     options.ScannerCalibration struct = struct([])
     options.MaximumVelocityVPerS (1,1) double {mustBePositive} = 1000
@@ -301,6 +306,7 @@ for k=1:n
         app.acquisition_active=true;
         run.trials.acquisition_status(k)="acquiring";
         save_checkpoint();
+        report_progress(k,"acquiring","");
         bins=arrayfun(@(camera)camera.bin,hardware.cameras);
         if strlength(options.OutputRoot)>0
             adaptive_optopatch.execute_waveform_camera_sync(app,bins, ...
@@ -356,6 +362,7 @@ for k=1:n
             end
         end
         save_checkpoint();
+        report_progress(k,run.trials.acquisition_status(k),experimentDirectory);
         if ~isempty(options.StopRequestedFcn) && logical(options.StopRequestedFcn())
             break
         end
@@ -386,6 +393,7 @@ for k=1:n
             "message",string(exception.message), ...
             "stack",exception.stack);
         save_checkpoint();
+        report_progress(k,run.trials.acquisition_status(k),"");
         rethrow(exception)
     end
 end
@@ -472,6 +480,46 @@ save_checkpoint();
         realized=pulses;
         realized.expected_camera_frame=frameMap.expected_frame;
         realized.expected_camera_frame_rate_hz=frameMap.expected_frame_rate_hz;
+    end
+
+    function report_progress(index,status,experimentDirectory)
+        % One small record per acquisition boundary, for an observer that
+        % wants to know where the run has got to.
+        %
+        % SMALL ON PURPOSE. The checkpoint beside it already holds the whole
+        % truth - every trial's settings snapshot, preflight report, target
+        % configuration and executed schedule - and reading that file is what
+        % the controller used to have to do to answer "4 of 10". This carries
+        % the counts and the identity and nothing else, so an observer can be
+        % called after every acquisition without the run paying for it.
+        %
+        % NEVER FAILS THE RUN. An observer is a bystander; a broken one must
+        % not abort an acquisition that has already happened, and must not
+        % mask the exception the catch block is on its way to rethrowing.
+        if isempty(options.ProgressFcn), return; end
+        try
+            targetCells=strings(0,1);
+            try
+                targetCells=string(run.trials.target_cell_id(index));
+            catch
+            end
+            record=struct( ...
+                "schema_version","1.0.0", ...
+                "trial_index",double(index), ...
+                "trial_id",double(run.trials.trial_id(index)), ...
+                "status",string(status), ...
+                ... % The same set runProgress and batch_is_complete count,
+                ... % so the in-memory answer and the checkpoint-derived one
+                ... % can never differ by one.
+                "completed_in_batch",double(sum(ismember( ...
+                    string(run.trials.acquisition_status), ...
+                    ["completed","analyzed"]))), ...
+                "acquisitions_in_batch",double(height(run.trials)), ...
+                "target_cell_ids",reshape(targetCells,[],1), ...
+                "experiment_directory",string(experimentDirectory));
+            options.ProgressFcn(record);
+        catch
+        end
     end
 
     function save_checkpoint()

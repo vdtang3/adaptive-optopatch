@@ -421,16 +421,34 @@ export class FakeAoSession {
       }
     }
 
-    try {
-      this.run(action, payload ?? {});
-    } catch (error) {
-      return this.envelope(action, false, error.status ?? "validation_error",
+    /* ASYNCHRONOUS ONLY WHERE THE ACTION IS.
+     *
+     * `run` executes every acquisition of the batch before it answers,
+     * because that is what MATLAB does: a run is one synchronous
+     * app_method and the reply to it is written when the run returns.
+     * Every other action still settles in the same tick and still returns
+     * its envelope directly, so nothing that was synchronous became
+     * asynchronous. A caller that awaits either is correct; `await` on a
+     * plain value is a no-op. */
+    const applied = () => {
+      this.state.revision += 1;
+      this.refreshDerivedState();
+      return this.envelope(action, true, "applied", expectedRevision, "");
+    };
+    const refused = (error) =>
+      this.envelope(action, false, error.status ?? "validation_error",
         expectedRevision, error.message, error.identifier ?? "");
-    }
 
-    this.state.revision += 1;
-    this.refreshDerivedState();
-    return this.envelope(action, true, "applied", expectedRevision, "");
+    let outcome;
+    try {
+      outcome = this.run(action, payload ?? {});
+    } catch (error) {
+      return refused(error);
+    }
+    if (outcome && typeof outcome.then === "function") {
+      return outcome.then(applied, refused);
+    }
+    return applied();
   }
 
   // -----------------------------------------------------------------------
@@ -438,6 +456,8 @@ export class FakeAoSession {
   // -----------------------------------------------------------------------
 
   run(action, payload) {
+    // Returns a promise for `run`; undefined for everything else, which
+    // `await` in apply() treats identically.
     switch (action) {
       case "set_cell_eligibility":
         return this.setCellEligibility(payload);
@@ -469,6 +489,13 @@ export class FakeAoSession {
         return this.runPreparedPlan();
       case "stop_after_current":
         this.state.stop_after_current_requested = true;
+        /* ACKNOWLEDGED ON THE PROGRESS CHANNEL, as the controller's
+         * stopAfterCurrent does. The operator pressed this DURING a run,
+         * so the reply to their action is queued behind the acquisition
+         * that is still executing - this is what turns the button into
+         * "Stop requested" rather than leaving it looking unpressed. */
+        this.refreshDerivedState();
+        this.emitProgress();
         return undefined;
       default:
         throw this.refuse(`'${action}' is allowlisted but not implemented.`);
@@ -1106,11 +1133,36 @@ export class FakeAoSession {
    *
    * The GATE is the real one - a plan that is absent, stale, unpreparable
    * or already running is refused here, not only hidden in the interface.
-   * The acquisition is not: it finishes instantly, because the interface's
-   * job is to show progress and protect the plan-changing controls, and a
-   * stub that blocked for the length of a real run would only make that
-   * harder to look at. */
+   *
+   * THE RUN IS NOW A LIFECYCLE, NOT AN INSTANT. It used to jump straight to
+   * complete, which meant plan_state never became "RUNNING" anywhere in
+   * this harness: `lifecycle` could not reach running or
+   * stopping_after_current, run_progress.running was always false,
+   * legal_actions.stop_after_current was always false, and
+   * stop_after_current therefore always answered not_legal. Three branches
+   * of this file and the whole of the interface's run presentation were
+   * unreachable, so the suite was green while the rig showed 0 of 10 for a
+   * whole batch and the Stop button did nothing.
+   *
+   * It does NOT pretend production is more concurrent than it is. MATLAB
+   * executes a run inside one synchronous app_method and does not return
+   * until the batch is over, and that is exactly what this does: the reply
+   * to `run` is sent when the run finishes. What it adds is the interval -
+   * each acquisition is reported through onProgress as it completes, which
+   * is the unsolicited channel JS_Server.notifyAdaptiveOptopatchProgress
+   * provides and the only way progress can reach a browser while the run
+   * request is still outstanding.
+   *
+   * Returns a promise so that a caller can hold the run open. With no
+   * acquisitionDelayMs it still settles in one tick, which is what the
+   * tests that are not about the run itself want. */
   runPreparedPlan() {
+    /* THE GATE IS SYNCHRONOUS, the execution is not, and that split is
+     * deliberate. A refusal is immediate on the rig too - assertRunnable
+     * throws before anything is started - so an `async` function here would
+     * have turned every refusal into a rejected promise and made "refused"
+     * indistinguishable in shape from "ran". Callers that only ever see
+     * refusals stay synchronous, as they were. */
     const status = this.planStatus();
     if (status !== "ready") {
       throw this.notLegal(
@@ -1122,6 +1174,11 @@ export class FakeAoSession {
           : "adaptive_optopatch:PlanUpdateRequired"
       );
     }
+    return this.executePreparedPlan();
+  }
+
+  /** The batch itself, once the gate has let it through. */
+  async executePreparedPlan() {
     const summary = this.planSummary();
     // A completed plan is still a valid plan: with nothing changed, Run
     // means run it again, into a sibling folder.
@@ -1136,21 +1193,111 @@ export class FakeAoSession {
         batch_complete: false,
       };
     }
-    this.state.active_run.completed_trial_count =
-      this.state.active_run.trial_count;
-    this.state.active_run.batch_complete = true;
+
+    const perRepeat = summary.acquisitions_per_repeat;
+    const total = summary.total_acquisitions;
+
+    // enterRunningState: the lifecycle moves BEFORE the first acquisition,
+    // and the browser learns about it on the progress channel because its
+    // poll will not be answered until the run returns.
+    this.state.plan_state = "RUNNING";
     this.state.stop_after_current_requested = false;
+    this.state.active_run.completed_trial_count = 0;
+    this.state.active_run.batch_complete = false;
     this.progress = {
-      repeat_index: summary.repeats,
+      repeat_index: 1,
       repeat_count: summary.repeats,
-      acquisitions_per_repeat: summary.acquisitions_per_repeat,
-      completed_acquisitions: summary.total_acquisitions,
-      total_acquisitions: summary.total_acquisitions,
+      acquisitions_per_repeat: perRepeat,
+      completed_acquisitions: 0,
+      total_acquisitions: total,
+      current_acquisition: 0,
+      current_trial_id: null,
+      current_status: "",
+      experiment_directory: "",
     };
+    this.bumpRevision();
+    this.emitProgress();
+
+    let completed = 0;
+    let stopped = false;
+    for (let repeat = 1; repeat <= summary.repeats && !stopped; repeat += 1) {
+      this.progress.repeat_index = repeat;
+      for (let index = 1; index <= perRepeat; index += 1) {
+        await this.acquisitionDelay();
+        this.progress.current_acquisition = index;
+        this.progress.current_trial_id = index;
+        this.progress.current_status = "acquiring";
+        this.emitProgress();
+
+        await this.acquisitionDelay();
+        completed += 1;
+        this.progress.completed_acquisitions = completed;
+        this.progress.current_status = "completed";
+        this.state.active_run.completed_trial_count = Math.min(
+          completed,
+          this.state.active_run.trial_count
+        );
+        this.emitProgress();
+
+        // Checked BETWEEN acquisitions, never during one: there is no
+        // mid-acquisition abort, here or on the rig.
+        if (this.state.stop_after_current_requested) {
+          stopped = true;
+          break;
+        }
+      }
+    }
+
+    // finishRunning.
+    this.state.plan_state = "FROZEN";
+    this.state.stop_after_current_requested = false;
+    this.state.active_run.batch_complete = completed >= total;
     this.state.status = [
-      `Ran ${summary.total_acquisitions} acquisitions ` +
-        `(development stub - no hardware).`,
+      stopped
+        ? `Stopped after ${completed} of ${total} acquisitions ` +
+          `(development stub - no hardware).`
+        : `Ran ${completed} acquisitions (development stub - no hardware).`,
     ];
+    this.bumpRevision();
+    this.emitProgress();
+  }
+
+  /* One revision forward, with the derived state brought up to date.
+   *
+   * The same two steps apply() takes after an action, factored out because
+   * the run lifecycle moves the revision twice on its own - once entering
+   * RUNNING and once leaving it - and both have to leave legal_actions
+   * describing the state that is now true. */
+  bumpRevision() {
+    this.state.revision += 1;
+    this.refreshDerivedState();
+  }
+
+  /* How long one acquisition takes in the harness.
+   *
+   * Zero by default, so every test that is not about the run itself still
+   * settles in a tick. A test that wants to observe the interval sets
+   * acquisitionDelayMs and gets a run it can interleave with. */
+  acquisitionDelay() {
+    const delay = Number(this.acquisitionDelayMs) || 0;
+    if (delay <= 0) return Promise.resolve();
+    return new Promise((resolve) => setTimeout(resolve, delay));
+  }
+
+  /* One progress record, to whoever is watching.
+   *
+   * The controller's progressSnapshot: run progress plus the lifecycle word
+   * and the revision, and NOTHING else. Pushing a whole state snapshot after
+   * every acquisition is exactly what the real one does not do. */
+  emitProgress() {
+    if (typeof this.onProgress !== "function") return;
+    this.refreshDerivedState();
+    this.onProgress({
+      schema_version: "1.0.0",
+      ...this.runProgress(),
+      lifecycle: this.state.lifecycle,
+      revision: this.state.revision,
+    });
   }
 
   // -----------------------------------------------------------------------

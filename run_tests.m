@@ -71,6 +71,9 @@ tiers.core = [ ...
     "TestAdaptiveOptopatchReferenceTransport"
     "TestNewFovLifecycle"
     "TestAdaptiveOptopatchPreviews"
+    "TestRunProgressObservability"
+    "TestSpatialPreviewGeometry"
+    "TestCellDecisionDraft"
     "TestBlueVoltageCalibration"
     "TestReferenceSnapshotIngest"
     % Protocol semantics, cheap and depended on by everything below

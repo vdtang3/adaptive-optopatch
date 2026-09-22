@@ -119,18 +119,34 @@ classdef TestAdaptiveOptopatchPreviews < matlab.unittest.TestCase
                 spiral.radius_pixels*1.01);
         end
 
-        function theSpatialPreviewFollowsTheResolvedProtocolWhenThereIsOne(testCase)
+        function theSpatialPreviewDescribesTheFovWhateverProtocolIsLoaded(testCase)
+            %   THIS USED TO ASSERT THE OPPOSITE, and the opposite was the
+            %   defect. The preview reported "bundle_default" with no
+            %   protocol and "resolved_plan" with one, and the difference
+            %   between those two was not a label: it was which CELLS had
+            %   any geometry at all. The resolved branch drew only the cells
+            %   the acquisitions addressed, and resolve_protocol selects
+            %   them with `if ~stimulation_enabled, continue` - so loading a
+            %   protocol, or unticking Stim, erased a soma's Blue mask from
+            %   the picture the operator aims with.
+            %
+            %   The preview answers "what geometry exists for this field of
+            %   view". What would execute is the waveform preview's question
+            %   and the plan summary's, and both say so.
             controller=testCase.loadedController();
-            testCase.verifyEqual( ...
-                controller.spatialPreview("1p_dmd").source,"bundle_default");
+            before=controller.spatialPreview("1p_dmd");
+            testCase.verifyEqual(before.source,"fov_geometry");
 
             controller.setProtocol(adaptive_optopatch.generate_screen_protocol( ...
                 "PulseCount",2,"ModulatorVoltage",1.2));
             controller.setPlanParameter("mode","1p_dmd");
+            after=controller.spatialPreview("1p_dmd");
 
+            testCase.verifyEqual(after.source,"fov_geometry");
             testCase.verifyEqual( ...
-                controller.spatialPreview("1p_dmd").source,"resolved_plan", ...
-                "With a protocol loaded the preview shows what would execute.");
+                sort(arrayfun(@(o)string(o.cell_id),after.blue)), ...
+                sort(arrayfun(@(o)string(o.cell_id),before.blue)), ...
+                "Loading a protocol must not change which cells have geometry.");
         end
 
         function aSessionWithNothingToShowSaysSoRatherThanFailing(testCase)

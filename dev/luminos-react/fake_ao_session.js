@@ -513,9 +513,17 @@ export class FakeAoSession {
   /* Many cells' decisions at once, the way the controller's
    * setCellEligibilityBatch applies them.
    *
-   * ALL OR NOTHING, like the controller: every cell_id is resolved before
-   * anything is written, so a batch naming a cell that does not exist
-   * changes nothing. `this.cell` throws the refusal that does it. */
+   * THREE DECISIONS, NOT TWO. recording_enabled, stimulation_enabled and
+   * selected_blue_voltage_v are one group in the controller - all three are
+   * cell_decisions a prepared plan is built from - so all three commit
+   * here. The Blue voltage was missing, which meant a drafted voltage
+   * silently did nothing in the harness and committed on a rig: the harness
+   * would have shown the Update-plan path working while the value it was
+   * supposed to carry was dropped.
+   *
+   * ALL OR NOTHING, like the controller: every cell_id is resolved and
+   * every value validated before anything is written, so a batch naming a
+   * missing cell or an out-of-range voltage changes nothing at all. */
   setCellEligibilityBatch(cells) {
     if (!Array.isArray(cells) || cells.length === 0) {
       throw this.refuse("'cells' must name at least one cell when it is sent at all.");
@@ -524,6 +532,22 @@ export class FakeAoSession {
       cell: this.cell(edit?.cell_id),
       edit,
     }));
+    for (const { edit } of resolved) {
+      const recording = edit.recording_enabled != null;
+      const stimulation = edit.stimulation_enabled != null;
+      const voltage = edit.selected_blue_voltage_v != null;
+      // The controller refuses an entry that asks for nothing, and its
+      // batch is all-or-nothing - so one such entry rejects the WHOLE
+      // draft on a rig. Accepting it here reported success for a commit
+      // that would not have happened.
+      if (!recording && !stimulation && !voltage) {
+        throw this.refuse(
+          "Specify RecordingEnabled, StimulationEnabled or " +
+            `SelectedBlueVoltageV for '${edit.cell_id}'.`
+        );
+      }
+      if (voltage) this.assertBlueVoltage(edit.selected_blue_voltage_v);
+    }
     for (const { cell, edit } of resolved) {
       if (edit.recording_enabled != null) {
         cell.recording_enabled = !!edit.recording_enabled;
@@ -531,7 +555,20 @@ export class FakeAoSession {
       if (edit.stimulation_enabled != null) {
         cell.stimulation_enabled = !!edit.stimulation_enabled;
       }
+      if (edit.selected_blue_voltage_v != null) {
+        cell.selected_blue_voltage_v =
+          this.assertBlueVoltage(edit.selected_blue_voltage_v);
+      }
     }
+  }
+
+  /** The controller's validate_blue_voltage: same range, same message. */
+  assertBlueVoltage(voltage) {
+    const value = Number(voltage);
+    if (!Number.isFinite(value) || value <= 0 || value > 5) {
+      throw this.refuse("Blue V (1P) must be a finite number in (0,5] V.");
+    }
+    return value;
   }
 
   /* THE COMMIT BOUNDARY, mirroring the controller's applyPlanDraft.
@@ -801,7 +838,7 @@ export class FakeAoSession {
       camera_bin: this.state.fov.camera_bin,
       image_size: this.state.fov.image_size,
       roi_origin_xy: this.state.fov.roi_origin_xy,
-      roi_size_xy: this.state.fov.roi_origin_xy,
+      roi_size_xy: this.state.fov.image_size,
       source_snapshot: this.state.fov.snapshot_path,
       timestamp: new Date().toISOString().slice(0, 19).replace("T", " "),
       group_index: null,
@@ -841,11 +878,9 @@ export class FakeAoSession {
    * this override a protocol that names a command voltage. */
   setCellBlueVoltage({ cell_id, voltage_v }) {
     const cell = this.cell(cell_id);
-    const voltage = Number(voltage_v);
-    if (!Number.isFinite(voltage) || voltage <= 0 || voltage > 5) {
-      throw this.refuse("Blue V (1P) must be a finite number in (0,5] V.");
-    }
-    cell.selected_blue_voltage_v = voltage;
+    // Shared with the draft commit, so the direct action and the drafted
+    // one cannot disagree about what a legal voltage is.
+    cell.selected_blue_voltage_v = this.assertBlueVoltage(voltage_v);
   }
 
   loadProtocolChoice({ choice_id }) {

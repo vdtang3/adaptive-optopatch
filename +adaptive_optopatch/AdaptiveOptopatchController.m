@@ -1479,16 +1479,12 @@ classdef AdaptiveOptopatchController < handle
             % everything downstream fails somewhere unrelated. Generators are
             % not required to return a particular orientation, and reshaping
             % their output to work around this only moves the assumption.
-            lightDurations=[];
-            for acquisitionIndex=1:numel(protocol.acquisitions)
-                acquisition=protocol.acquisitions(acquisitionIndex);
-                selected=~acquisition.events.is_null & ...
-                    isfinite(acquisition.events.duration_s);
-                lightDurations=[lightDurations; ...
-                    acquisition.events.duration_s(selected)]; %#ok<AGROW>
-            end
-            if isempty(lightDurations), representativePulseMs=5;
-            else, representativePulseMs=1000*min(lightDurations); end
+            % The shortest light event, which is what every spiral must be
+            % able to complete inside. Shared with currentPulseDurationMs
+            % so the bundle a preview is drawn from and the bundle the plan
+            % executes are built at the same duration.
+            representativePulseMs= ...
+                adaptive_optopatch.representative_pulse_duration_ms(protocol,5);
             [~,targets]=controller.buildSpatialArtifacts( ...
                 "PulseDurationMs",representativePulseMs);
             fovState=controller.currentFovState();
@@ -1536,20 +1532,16 @@ classdef AdaptiveOptopatchController < handle
 
         function value=currentPulseDurationMs(controller)
             %CURRENTPULSEDURATIONMS Representative pulse duration for previews.
+            %   THE SAME RULE buildPlan SIZES ITS BUNDLE BY. It used to be
+            %   the first event's duration while buildPlan used the
+            %   shortest, so with a non-uniform protocol an operator aimed
+            %   with spiral geometry built at one duration and ran geometry
+            %   built at another.
             value=controller.PlanParameters.pulse_duration_ms;
             if isempty(controller.Protocol), return; end
             protocol=adaptive_optopatch.normalize_protocol(controller.Protocol);
-            % Indexed for the reason buildPlan is: acquisition arrays may
-            % arrive in either orientation and only numel and order mean
-            % anything.
-            durations=[];
-            for acquisitionIndex=1:numel(protocol.acquisitions)
-                acquisition=protocol.acquisitions(acquisitionIndex);
-                selected=~acquisition.events.is_null & ...
-                    isfinite(acquisition.events.duration_s);
-                durations=[durations;acquisition.events.duration_s(selected)]; %#ok<AGROW>
-            end
-            if ~isempty(durations), value=1000*durations(1); end
+            value=adaptive_optopatch.representative_pulse_duration_ms( ...
+                protocol,value);
         end
 
         function preview=spatialPreview(controller,mode,options)

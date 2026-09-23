@@ -1368,3 +1368,98 @@ test("everything except stopping is refused while a run holds the session", asyn
   assert.ok(probed, "the run was never observed as running");
   assert.deepEqual(refusals, ["not_legal", "not_legal", "not_legal"]);
 });
+
+// ---------------------------------------------------------------------------
+// The third cell decision
+//
+// recording_enabled, stimulation_enabled and selected_blue_voltage_v are ONE
+// group in the controller - all three are cell_decisions a prepared plan is
+// built from, and all three commit together through apply_plan_draft. The
+// harness modelled only the two flags, so a drafted Blue voltage silently did
+// nothing here and committed on a rig: the dev path appeared to work while
+// dropping the value it was supposed to carry.
+// ---------------------------------------------------------------------------
+
+test("a drafted Blue voltage commits with the eligibility flags", () => {
+  const session = newSession();
+  const response = act(session, "apply_plan_draft", {
+    cells: [
+      { cell_id: "cell_001", selected_blue_voltage_v: 2.5 },
+      { cell_id: "cell_002", recording_enabled: false },
+    ],
+  });
+
+  assert.equal(response.ok, true, response.message);
+  const cells = response.state.cells;
+  assert.equal(
+    cells.find((c) => c.cell_id === "cell_001").selected_blue_voltage_v,
+    2.5
+  );
+  assert.equal(cells.find((c) => c.cell_id === "cell_002").recording_enabled, false);
+});
+
+test("an out-of-range drafted voltage rolls the whole draft back", () => {
+  // The controller validates the entire delta before applying any of it, so
+  // one bad entry rejects the batch rather than leaving it half applied.
+  const session = newSession();
+  const before = session.current();
+  const response = act(session, "apply_plan_draft", {
+    cells: [
+      { cell_id: "cell_001", selected_blue_voltage_v: 2.5 },
+      { cell_id: "cell_002", recording_enabled: false },
+      { cell_id: "cell_003", selected_blue_voltage_v: 9 },
+    ],
+  });
+
+  assert.equal(response.ok, false);
+  assert.equal(response.status, "validation_error");
+  assert.match(response.message, /\(0,5\] V/);
+  assert.equal(response.state.revision, before.revision);
+  const cells = response.state.cells;
+  assert.equal(
+    cells.find((c) => c.cell_id === "cell_001").selected_blue_voltage_v,
+    before.cells.find((c) => c.cell_id === "cell_001").selected_blue_voltage_v,
+    "A refused draft commits none of its valid entries either."
+  );
+  assert.equal(cells.find((c) => c.cell_id === "cell_002").recording_enabled, true);
+});
+
+test("a draft entry that asks for nothing is refused, as MATLAB refuses it", () => {
+  // MATLAB's batch is all-or-nothing, so accepting this reported success for
+  // a commit that would not have happened on a rig.
+  const session = newSession();
+  const response = act(session, "apply_plan_draft", {
+    cells: [{ cell_id: "cell_001" }],
+  });
+
+  assert.equal(response.ok, false);
+  assert.equal(response.status, "validation_error");
+  assert.match(response.message, /SelectedBlueVoltageV/);
+});
+
+test("the direct action and the drafted one share one voltage rule", () => {
+  const session = newSession();
+  const direct = act(session, "set_cell_blue_voltage", {
+    cell_id: "cell_001",
+    voltage_v: 9,
+  });
+  const drafted = act(session, "apply_plan_draft", {
+    cells: [{ cell_id: "cell_001", selected_blue_voltage_v: 9 }],
+  });
+  assert.equal(direct.ok, false);
+  assert.equal(drafted.ok, false);
+  assert.equal(direct.message, drafted.message);
+});
+
+test("a saved FOV records its ROI size rather than its origin twice", () => {
+  // A copy-paste defect in the harness only: roi_size_xy was assigned
+  // roi_origin_xy, so anything rendering a saved FOV's extent showed the
+  // wrong numbers in dev and the right ones on a rig.
+  const session = newSession();
+  act(session, "save_fov");
+  const choice = session.savedFovs[session.savedFovs.length - 1].choice;
+  assert.deepEqual(choice.image_size, session.state.fov.image_size);
+  assert.deepEqual(choice.roi_size_xy, session.state.fov.image_size);
+  assert.deepEqual(choice.roi_origin_xy, session.state.fov.roi_origin_xy);
+  assert.notDeepEqual(choice.roi_size_xy, choice.roi_origin_xy);
+});

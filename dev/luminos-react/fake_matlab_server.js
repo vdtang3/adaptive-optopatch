@@ -14,6 +14,36 @@
  * "succeeded and produced nothing" tag and logged as UNHANDLED, so a gap shows
  * up as a missing value in the interface rather than as a hang.
  *
+ * WHAT IT DOES AND DOES NOT MODEL
+ * The rule is that the fake must never be MORE PERMISSIVE than production -
+ * a harness that accepts what a rig refuses reports success for a commit
+ * that would not have happened. So the externally observable STATE MACHINE
+ * is mirrored: the RUNNING lifecycle and its per-acquisition progress push,
+ * Stop after current between acquisitions, the revision and stale-revision
+ * rules, all-or-nothing draft commits across all three cell decisions, the
+ * reference-image identity contract, and the reply envelope.
+ *
+ * Four things are DELIBERATELY not modelled, and no test here should be read
+ * as evidence of parity in them:
+ *
+ *   TIMING AND COST      disk latency, MATLAB single-threadedness, the cost
+ *                        of resolving a protocol. `run` is awaited so it
+ *                        answers only when the batch is over, which is the
+ *                        SHAPE production has, but the durations are not
+ *                        real and nothing here is slow.
+ *   HARDWARE             no devices, no DMD, no scanner calibration. Every
+ *                        device query answers "not on this rig".
+ *   GEOMETRY AND QC      areas and centroids are shoelace/vertex-mean, not
+ *                        the rasterised measurements summarize_soma_geometry
+ *                        makes. The numbers move plausibly and never match.
+ *   SCHEDULER-BACKED     connectivity definitions are realized at Update
+ *   PROTOCOLS            plan by resolve_protocol against the selected
+ *                        cells. Nothing here resolves one, so the fixtures
+ *                        are explicit schema-4 protocols only. A
+ *                        scheduler-backed protocol cannot be loaded against
+ *                        this server, rather than being loaded and
+ *                        mis-summarized.
+ *
  * WHERE IT LIVES
  * In THIS repository, not in luminos-private. Luminos is shared by the whole
  * lab, and a fake MATLAB endpoint serving Adaptive Optopatch fixtures is

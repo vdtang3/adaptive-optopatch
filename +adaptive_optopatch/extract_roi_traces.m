@@ -59,34 +59,27 @@ elseif options.BackgroundMode=="null_roi"
     if ~any(nullMask,"all"), error("adaptive_optopatch:EmptyNullRoi","Null ROI is empty."); end
 end
 
-rawTraces=nan(nFrames,nCells);
-backgroundTraces=zeros(nFrames,nCells);
-shifts=zeros(nFrames,2);
-registrationPeak=nan(nFrames,1);
-frameSum=zeros(nRows,nColumns);
-template=double(reference.reference_image);
+if options.BackgroundMode=="local_annulus"
+    backgroundMasks=annulusMasks;
+elseif options.BackgroundMode=="null_roi"
+    backgroundMasks=nullMask;
+else
+    backgroundMasks=false(nRows,nColumns,0);
+end
 fid=fopen(moviePath,"r","ieee-le");
 if fid<0, error("adaptive_optopatch:MovieOpenFailed","Could not open %s",moviePath); end
 cleanup=onCleanup(@()fclose(fid));
 if bitDepth==8, precision="*uint8"; else, precision="*uint16"; end
-for f=1:nFrames
-    raw=fread(fid,nRows*nColumns,precision);
-    if numel(raw)~=nRows*nColumns, break; end
-    frame=double(permute(reshape(raw,nColumns,nRows),[2 1]));
-    frameSum=frameSum+frame;
-    if options.MotionCorrection=="integer_translation"
-        [dy,dx,peak]=estimate_shift(frame,template,options.MaximumShiftPixels);
-        shifts(f,:)=[dy dx]; registrationPeak(f)=peak;
-        frame=shift_with_nan(frame,-dy,-dx);
-    end
-    for c=1:nCells
-        rawTraces(f,c)=mean(frame(reference.roi_masks(:,:,c)),"omitnan");
-        if options.BackgroundMode=="local_annulus"
-            backgroundTraces(f,c)=mean(frame(annulusMasks(:,:,c)),"omitnan");
-        elseif options.BackgroundMode=="null_roi"
-            backgroundTraces(f,c)=mean(frame(nullMask),"omitnan");
-        end
-    end
+shifts=zeros(nFrames,2);
+registrationPeak=nan(nFrames,1);
+if options.MotionCorrection=="none"
+    [rawTraces,backgroundTraces,frameSum]=extract_in_chunks(fid,precision, ...
+        nRows,nColumns,nFrames,bytesPerPixel,reference.roi_masks, ...
+        backgroundMasks,options.BackgroundMode);
+else
+    [rawTraces,backgroundTraces,frameSum,shifts,registrationPeak]= ...
+        extract_frame_by_frame(fid,precision,nRows,nColumns,nFrames, ...
+        reference,backgroundMasks,options);
 end
 corrected=rawTraces-backgroundTraces;
 if options.PhotobleachCorrection=="linear"
@@ -115,6 +108,85 @@ result=struct("schema_version","0.2.0","experiment_directory",experimentDirector
     "background_mode",options.BackgroundMode, ...
     "motion_correction",options.MotionCorrection, ...
     "photobleach_correction",options.PhotobleachCorrection);
+end
+
+function [rawTraces,backgroundTraces,frameSum]=extract_in_chunks(fid, ...
+        precision,nRows,nColumns,nFrames,bytesPerPixel,roiMasks, ...
+        backgroundMasks,backgroundMode)
+%EXTRACT_IN_CHUNKS All ROI means for a block of frames in one sparse product.
+%   Every ROI mean is its pixel sum divided by its pixel count. Camera counts
+%   are integers, so those sums are exact in double and the result equals
+%   mean(frame(mask)) bit for bit, while the cost no longer grows with one
+%   pass over the frame per ROI.
+CHUNK_BYTES=128e6;   % raw movie bytes held in memory at once
+MAX_CHUNK_FRAMES=500;
+nPixels=nRows*nColumns;
+nCells=size(roiMasks,3);
+% Luminos writes each frame row-major. Transposing the masks once lets the
+% raw samples be used in file order instead of permuting every frame.
+masks=cat(3,roiMasks,backgroundMasks);
+indicator=reshape(permute(masks,[2 1 3]),nPixels,[]);
+usedPixels=find(any(indicator,2));
+indicator=sparse(double(indicator(usedPixels,:)));
+pixelCounts=full(sum(indicator,1));
+
+chunkFrames=max(1,min(MAX_CHUNK_FRAMES, ...
+    floor(CHUNK_BYTES/(nPixels*bytesPerPixel))));
+maskSums=nan(nFrames,size(indicator,2));
+pixelSum=zeros(nPixels,1);
+for first=1:chunkFrames:nFrames
+    requested=min(chunkFrames,nFrames-first+1);
+    raw=fread(fid,requested*nPixels,precision);
+    complete=floor(numel(raw)/nPixels);
+    raw=reshape(raw(1:complete*nPixels),nPixels,complete);
+    % Only pixels inside some mask are converted to double.
+    maskSums(first:first+complete-1,:)= ...
+        full(double(raw(usedPixels,:))'*indicator);
+    pixelSum=pixelSum+sum(raw,2,"double");
+    if complete<requested, break; end
+end
+maskMeans=maskSums./pixelCounts;
+rawTraces=maskMeans(:,1:nCells);
+if backgroundMode=="local_annulus"
+    backgroundTraces=maskMeans(:,nCells+1:end);
+elseif backgroundMode=="null_roi"
+    backgroundTraces=repmat(maskMeans(:,nCells+1),1,nCells);
+else
+    backgroundTraces=zeros(nFrames,nCells);
+end
+frameSum=reshape(pixelSum,nColumns,nRows)';
+end
+
+function [rawTraces,backgroundTraces,frameSum,shifts,registrationPeak]= ...
+        extract_frame_by_frame(fid,precision,nRows,nColumns,nFrames, ...
+        reference,backgroundMasks,options)
+%EXTRACT_FRAME_BY_FRAME Motion-corrected extraction, one registered frame at a time.
+%   Registration shifts each frame by its own offset and pads with NaN, so
+%   the fixed pixel-to-ROI product used by EXTRACT_IN_CHUNKS does not apply.
+nCells=size(reference.roi_masks,3);
+rawTraces=nan(nFrames,nCells);
+backgroundTraces=zeros(nFrames,nCells);
+shifts=zeros(nFrames,2);
+registrationPeak=nan(nFrames,1);
+frameSum=zeros(nRows,nColumns);
+template=double(reference.reference_image);
+for f=1:nFrames
+    raw=fread(fid,nRows*nColumns,precision);
+    if numel(raw)~=nRows*nColumns, break; end
+    frame=double(permute(reshape(raw,nColumns,nRows),[2 1]));
+    frameSum=frameSum+frame;
+    [dy,dx,peak]=estimate_shift(frame,template,options.MaximumShiftPixels);
+    shifts(f,:)=[dy dx]; registrationPeak(f)=peak;
+    frame=shift_with_nan(frame,-dy,-dx);
+    for c=1:nCells
+        rawTraces(f,c)=mean(frame(reference.roi_masks(:,:,c)),"omitnan");
+        if options.BackgroundMode=="local_annulus"
+            backgroundTraces(f,c)=mean(frame(backgroundMasks(:,:,c)),"omitnan");
+        elseif options.BackgroundMode=="null_roi"
+            backgroundTraces(f,c)=mean(frame(backgroundMasks),"omitnan");
+        end
+    end
+end
 end
 
 function rate=derive_frame_rate(camera)

@@ -222,6 +222,21 @@ executed `adaptive_optopatch_record.pulse_schedule`: mod488 for 1P or Pockels
 for 2P. For staged 2P this deliberately uses the executed schedule rather than
 the separate untouched frozen schedule.
 
+To analyze many completed acquisitions unattended, so that later
+`inspect_acquisition` calls open instantly from each folder's
+`inspection_analysis.mat`, pass their exact directories:
+
+```matlab
+summary = batch_inspect_acquisitions(["path/to/experiment_1"; "path/to/experiment_2"]);
+```
+
+Sessions with a valid cache are reported as `cached` and skipped (`Force=true`
+re-analyzes them); a failing session is reported as `failed` and the batch
+continues (`ContinueOnError=false` stops instead). No figures are built unless
+`GenerateFigures=true`. For a single acquisition,
+`inspect_acquisition(path, "GenerateFigure", false)` does the same analysis-only
+pass; `"Visible","off"` by contrast still builds and exports the figure.
+
 New acquisition records store the reference link as a platform-independent
 `Snaps/<run-folder>/reference_model.mat` path relative to the recording/date
 folder. The viewer also repairs legacy absolute Windows or Linux links by

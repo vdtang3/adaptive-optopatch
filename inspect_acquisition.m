@@ -1,9 +1,19 @@
 function viewer=inspect_acquisition(experimentDirectory,options)
 %INSPECT_ACQUISITION Show raw canonical-ROI traces and executed stimulation.
+%   inspect_acquisition(path) analyzes the acquisition, or reuses its cached
+%   inspection_analysis.mat, then shows the quick-look figure and saves
+%   inspection.png beside it.
+%
+%   inspect_acquisition(path,"GenerateFigure",false) only analyzes and
+%   caches. No figure is built and no PNG is written, so a later interactive
+%   call opens from the cache. Figure fields of the result are then empty.
+%   "Visible","off" is different: it still builds and exports the figure,
+%   just without showing it.
 arguments
     experimentDirectory (1,1) string = ""
     options.Visible (1,1) string {mustBeMember(options.Visible,["on","off"])} = "on"
     options.Force (1,1) logical = false
+    options.GenerateFigure (1,1) logical = true
 end
 INSPECTION_SCHEMA_VERSION=2;
 
@@ -30,10 +40,17 @@ if ~cacheHit
         INSPECTION_SCHEMA_VERSION);
     save(cachePath,"inspection","-v7.3");
 end
-[figureHandle,traceLines,roiLines,axesHandles]=build_figure( ...
-    inspection.reference,inspection.traces,inspection.cell_ids, ...
-    inspection.stimulation,options.Visible);
-exportapp(figureHandle,pngPath);
+if options.GenerateFigure
+    [figureHandle,traceLines,roiLines,axesHandles]=build_figure( ...
+        inspection.reference,inspection.traces,inspection.cell_ids, ...
+        inspection.stimulation,options.Visible);
+    exportapp(figureHandle,pngPath);
+else
+    figureHandle=gobjects(0); traceLines=gobjects(0,1); roiLines=gobjects(0,1);
+    axesHandles=struct("trace",gobjects(0),"stimulation",gobjects(0), ...
+        "reference",gobjects(0));
+    pngPath="";
+end
 
 viewer=struct( ...
     "schema_version","1.0.0", ...
@@ -171,11 +188,14 @@ fig=uifigure("Name","Adaptive Optopatch acquisition quick look", ...
     "Position",[100 100 1200 760],"Visible",visible);
 layout=uigridlayout(fig,[1 2]);
 layout.ColumnWidth={"3x","2x"}; layout.Padding=[8 8 8 8];
-plotLayout=uigridlayout(layout,[2 1]);
-plotLayout.Layout.Row=1; plotLayout.Layout.Column=1;
-plotLayout.RowHeight={"3x","1x"}; plotLayout.Padding=[0 0 0 0];
+% One tiledlayout column, not a nested grid of uiaxes: each uiaxes sizes its
+% own tick-label margin, so equal XLim still put equal times at different
+% screen x. Tiles in a column share one data-region left and right edge.
+plotPanel=uipanel(layout,"BorderType","none");
+plotPanel.Layout.Row=1; plotPanel.Layout.Column=1;
+plotLayout=tiledlayout(plotPanel,4,1,"TileSpacing","compact","Padding","tight");
 
-traceAxes=uiaxes(plotLayout); traceAxes.Layout.Row=1; traceAxes.Layout.Column=1;
+traceAxes=nexttile(plotLayout,[3 1]);
 traceAxes.Tag="AdaptiveOptopatchTraceAxes";
 displayPercent=-100*traces.dff;
 spans=max(displayPercent,[],1,"omitnan")-min(displayPercent,[],1,"omitnan");
@@ -212,10 +232,10 @@ for k=1:nCells
         "HitTest","off");
 end
 
-stimAxes=uiaxes(plotLayout); stimAxes.Layout.Row=2; stimAxes.Layout.Column=1;
-stimAxes.Tag="AdaptiveOptopatchStimulationAxes";
+stimAxes=nexttile(plotLayout,[1 1]);
 plot(stimAxes,command.time_s,command.command_v, ...
     "Color",[0.75 0.75 0.75],"LineWidth",0.8);
+stimAxes.Tag="AdaptiveOptopatchStimulationAxes"; % after plot, which resets Axes tags
 hold(stimAxes,"on");
 labelled=false(nCells,1);
 for k=1:height(command.events)
@@ -231,8 +251,9 @@ for k=1:height(command.events)
     pulse.Tag="AdaptiveOptopatchStimulusPulse";
     if ~isempty(cellIndex) && ~labelled(cellIndex)
         text(stimAxes,(onset+offset)/2,amplitude,cellIds(cellIndex), ...
-            "Color",pulseColor,"FontSize",8,"FontWeight","bold", ...
-            "HorizontalAlignment","center","VerticalAlignment","bottom", ...
+            "Color",pulseColor,"FontUnits","pixels","FontSize",8, ... % uiaxes size
+            "FontWeight","bold","HorizontalAlignment","center", ...
+            "VerticalAlignment","bottom", ...
             "HitTest","off","Tag","AdaptiveOptopatchStimulusLabel");
         labelled(cellIndex)=true;
     end

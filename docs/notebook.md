@@ -2541,3 +2541,60 @@ of the message does as much work as the first: an experimenter who believes New
 FOV might cost them a calibration will avoid it and keep restarting Luminos,
 which is the habit the whole operation exists to replace, so the dialog says in
 as many words that the rig and everything already saved are untouched.
+
+## 2026-09-27 — Inspection can be precomputed, and ROI extraction is one product per chunk
+
+`inspect_acquisition` gained `GenerateFigure=false`, and
+`batch_inspect_acquisitions` runs it over an explicit list of acquisition
+folders so a day's recordings can be analyzed unattended and then reviewed
+interactively from `inspection_analysis.mat`. Figure generation and figure
+visibility stay separate options on purpose: `Visible="off"` still builds and
+exports the figure (tests and headless PNG export rely on that), while
+`GenerateFigure=false` skips `uifigure`, plotting and `exportapp` entirely.
+Nothing about the analysis or the cache schema changed, so a cache written
+headlessly is the same cache an interactive call would have written. The batch
+runs sessions sequentially, does not search directories, and records a
+per-session failure instead of stopping unless `ContinueOnError=false`.
+
+The no-motion path of `extract_roi_traces` used to take `mean(frame(mask))`
+once per ROI per frame, so every added ROI was another pass over the movie.
+It now builds a sparse pixel-by-mask indicator once (ROIs plus any annulus or
+null background masks, in the file's row-major pixel order so frames need no
+permutation) and multiplies each chunk of up to 500 frames (at most ~128 MB of
+raw samples) by it. The indicator is 0/1 rather than normalized by ROI size,
+and the sums are divided by pixel counts afterwards. That choice is what makes
+the new path agree with the old one exactly: camera counts are integers, so
+pixel sums are exact in double regardless of summation order, and sum/count
+is precisely what `mean` computed. Normalized weights would have introduced a
+rounding per pixel. Only pixels inside some mask are converted to double.
+
+The motion-corrected path (`integer_translation`) is unchanged and still
+frame-by-frame, because each frame is shifted by its own offset with NaN
+padding, which a fixed pixel-to-ROI product cannot express. With
+`MaximumShiftPixels=0` it is an unregistered frame-wise extraction, which
+`TestRoiTraceExtraction` uses as the oracle for the background modes;
+`tests/frame_wise_roi_traces.m` keeps the original loop as the oracle for the
+plain path and as the baseline for `TestRoiTraceExtractionPerformance`. On a
+128 x 256 x 1500 uint16 movie the old loop went from 0.27 s at 1 ROI to 3.0 s
+at 50; the chunked path stayed at 0.1-0.2 s, near the cost of reading the file.
+
+## 2026-09-27 — Inspection traces and stimulation share one time axis on screen
+
+The trace and stimulation plots in `inspect_acquisition` had equal, linked
+`XLim` but did not put equal times at equal screen x: each was a separate
+`uiaxes` in a nested `uigridlayout`, and each reserved its own left margin for
+Y tick labels. Long cell IDs on the trace axis pushed its data region about
+87 px to the right of the stimulation axis's. The two are now tiles of one
+`tiledlayout` column (inside a borderless `uipanel` in the left grid cell),
+which gives every tile the same data-region left and right edges; no resize
+callback is needed, and alignment holds through resizing, zoom/pan and
+`exportapp`. Padding is `"tight"` so the trace data region stays where it was.
+
+Two traps are worth remembering. For `UIAxes`, `Position` (and so
+`getpixelposition`) is the *outer* box including tick labels, so a test
+comparing it passes on the misaligned figure; `InnerPosition` is the data
+region, and `TestInspectAcquisition` compares that, plus the screen x of a
+known time. And `uiaxes` measure fonts in pixels while `axes` use points, so
+the stimulation pulse labels now say `FontUnits="pixels"` to keep their size.
+Tiled `axes` also clear `Tag` on a first `plot` with `hold off`, so the
+stimulation tag is set after it.

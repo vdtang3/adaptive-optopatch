@@ -127,6 +127,7 @@ tiers.extended = [ ...
     "TestTwoPhotonSpiralWaveforms"
     "TestIlluminationIrradiance"
     "TestInspectAcquisition"
+    "TestRoiTraceExtraction"
     "TestConnectivityAnalysis"
     ];
 
@@ -147,6 +148,7 @@ tiers.legacy = [ ...
 %   broken waveform.
 tiers.performance = [ ...
     "TestEventWaveformPerformance"
+    "TestRoiTraceExtractionPerformance"
     ];
 end
 

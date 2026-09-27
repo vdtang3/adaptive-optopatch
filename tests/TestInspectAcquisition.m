@@ -81,6 +81,36 @@ classdef TestInspectAcquisition < matlab.unittest.TestCase
                 "The ROI panel must remain outside the shared plotting column.");
         end
 
+        function equalTimesShareScreenColumnAcrossTraceAndStimulation(testCase)
+            % Equal XLim is not enough: each axes reserves its own room for
+            % Y tick labels, so the plot boxes can sit at different screen x
+            % while XLim still agrees. Compare the rendered data regions.
+            fixture=make_fixture(testCase,"1p_dmd",[1.2 0.7], ...
+                "CellIds",["cell_long_identifier_001";"cell_long_identifier_002"]);
+            viewer=inspect_acquisition(fixture.experiment,"Visible","off");
+            cleanup=onCleanup(@()delete(viewer.figure)); %#ok<NASGU>
+            drawnow;
+
+            traceBox=data_region_in_figure(viewer.trace_axes);
+            stimulationBox=data_region_in_figure(viewer.stimulation_axes);
+            testCase.verifyEqual(stimulationBox(1),traceBox(1),"AbsTol",1, ...
+                "Left edges of the trace and stimulation data regions differ.");
+            testCase.verifyEqual(stimulationBox(1)+stimulationBox(3), ...
+                traceBox(1)+traceBox(3),"AbsTol",1, ...
+                "Right edges of the trace and stimulation data regions differ.");
+            testCase.verifyEqual(time_to_figure_x(viewer.stimulation_axes,0.5), ...
+                time_to_figure_x(viewer.trace_axes,0.5),"AbsTol",1, ...
+                "t = 0.5 s (second pulse onset) must fall on the same screen column in both plots.");
+            testCase.verifyEqual(string(viewer.trace_axes.XLabel.String),"Time (s)");
+            testCase.verifyEqual(string(viewer.stimulation_axes.XLabel.String),"Time (s)");
+            testCase.verifyEqual(string(viewer.stimulation_axes.Tag), ...
+                "AdaptiveOptopatchStimulationAxes");
+
+            viewer.trace_axes.XLim=[0.2 0.4];
+            testCase.verifyEqual(viewer.stimulation_axes.XLim,[0.2 0.4], ...
+                "AbsTol",1e-12,"Zooming one time axis must zoom the other.");
+        end
+
         function cellColorsMatchAcrossFovTracesAndStimulation(testCase)
             fixture=make_fixture(testCase,"1p_dmd",[1.2 0.7]);
             viewer=inspect_acquisition(fixture.experiment,"Visible","off");
@@ -184,6 +214,109 @@ classdef TestInspectAcquisition < matlab.unittest.TestCase
             testCase.verifyError(@()inspect_acquisition( ...
                 fixture.experiment,"Visible","off","Force",true), ...
                 "adaptive_optopatch:MissingMovie");
+        end
+
+        function analysisOnlyCachesWithoutBuildingFigure(testCase)
+            fixture=make_fixture(testCase,"1p_dmd",[1.2 0.7]);
+            figuresBefore=findall(groot,"Type","figure");
+            viewer=inspect_acquisition(fixture.experiment,"GenerateFigure",false);
+
+            testCase.verifyNumElements(findall(groot,"Type","figure"), ...
+                numel(figuresBefore),"Analysis-only must not create a figure.");
+            testCase.verifyTrue(isfile(fullfile(fixture.experiment, ...
+                "inspection_analysis.mat")));
+            testCase.verifyFalse(isfile(fullfile(fixture.experiment, ...
+                "inspection.png")));
+            testCase.verifyFalse(viewer.cache_hit);
+            testCase.verifyEqual(viewer.png_path,"");
+            testCase.verifyEmpty(viewer.figure);
+            testCase.verifyEmpty(viewer.trace_axes);
+            testCase.verifyEmpty(viewer.stimulation_axes);
+            testCase.verifyEmpty(viewer.reference_axes);
+            testCase.verifyEmpty(viewer.trace_lines);
+            testCase.verifyEmpty(viewer.roi_lines);
+            testCase.verifyEqual(viewer.cell_ids,["cell_001";"cell_002"]);
+            testCase.verifyEqual(viewer.reference_model_path, ...
+                string(fullfile(fixture.run_directory,"reference_model.mat")));
+            testCase.verifyEqual(viewer.traces.raw_traces(4,:),[900 1000]);
+            testCase.verifyEqual(viewer.display_dff,-viewer.traces.dff);
+            testCase.verifyEqual(viewer.stimulation.events.command_voltage_v, ...
+                [1.2;0.7]);
+        end
+
+        function analysisOnlyCacheIsReusedByInteractiveView(testCase)
+            fixture=make_fixture(testCase,"1p_dmd",[1.2 0.7]);
+            first=inspect_acquisition(fixture.experiment,"GenerateFigure",false);
+            % Without the movie, only a cache hit can succeed.
+            delete(fullfile(fixture.experiment,"frames1.bin"));
+
+            second=inspect_acquisition(fixture.experiment,"GenerateFigure",false);
+            testCase.verifyTrue(second.cache_hit);
+            testCase.verifyEqual(second.traces,first.traces);
+
+            viewer=inspect_acquisition(fixture.experiment,"Visible","off");
+            cleanup=onCleanup(@()delete(viewer.figure)); %#ok<NASGU>
+            testCase.verifyTrue(viewer.cache_hit);
+            testCase.verifyTrue(isvalid(viewer.figure));
+            testCase.verifyNumElements(viewer.trace_lines,2);
+            testCase.verifyTrue(isfile(viewer.png_path));
+        end
+
+        function batchReportsProcessedCachedAndFailedSessions(testCase)
+            uncached=make_fixture(testCase,"1p_dmd",[1.2 0.7]);
+            cached=make_fixture(testCase,"1p_dmd",[1.2 0.7]);
+            inspect_acquisition(cached.experiment,"GenerateFigure",false);
+            delete(fullfile(cached.experiment,"frames1.bin"));
+            invalid=string(tempname); mkdir(invalid);
+            testCase.addTeardown(@()remove_if_present(invalid));
+            afterFailure=make_fixture(testCase,"2p_spiral",[2.1 1.4]);
+            sessions=[uncached.experiment;invalid;cached.experiment; ...
+                afterFailure.experiment];
+            figuresBefore=findall(groot,"Type","figure");
+
+            summary=batch_inspect_acquisitions(cellstr(sessions));
+
+            testCase.verifyEqual(summary.Properties.VariableNames, ...
+                {'session','status','cache_hit','elapsed_s', ...
+                'error_identifier','error_message'});
+            testCase.verifyEqual(summary.session,sessions);
+            testCase.verifyEqual(summary.status, ...
+                ["processed";"failed";"cached";"processed"]);
+            testCase.verifyEqual(summary.cache_hit,[false;false;true;false]);
+            testCase.verifyGreaterThanOrEqual(summary.elapsed_s,0);
+            testCase.verifyEqual(summary.error_identifier, ...
+                ["";"adaptive_optopatch:InvalidExperimentDirectory";"";""]);
+            testCase.verifySubstring(summary.error_message(2),invalid);
+            testCase.verifyEqual(summary.error_message([1 3 4]),["";"";""]);
+            for session=[uncached.experiment afterFailure.experiment]
+                testCase.verifyTrue(isfile(fullfile(session, ...
+                    "inspection_analysis.mat")));
+                testCase.verifyFalse(isfile(fullfile(session,"inspection.png")));
+            end
+            testCase.verifyNumElements(findall(groot,"Type","figure"), ...
+                numel(figuresBefore));
+
+            testCase.verifyError(@()batch_inspect_acquisitions(sessions, ...
+                "ContinueOnError",false), ...
+                "adaptive_optopatch:InvalidExperimentDirectory");
+        end
+
+        function batchCanAlsoWriteFiguresWithoutLeavingThemOpen(testCase)
+            fixture=make_fixture(testCase,"1p_dmd",[1.2 0.7]);
+            figuresBefore=findall(groot,"Type","figure");
+
+            summary=batch_inspect_acquisitions(fixture.experiment, ...
+                "GenerateFigures",true);
+
+            testCase.verifyEqual(summary.status,"processed");
+            testCase.verifyTrue(isfile(fullfile(fixture.experiment, ...
+                "inspection.png")));
+            testCase.verifyNumElements(findall(groot,"Type","figure"), ...
+                numel(figuresBefore));
+
+            forced=batch_inspect_acquisitions(fixture.experiment,"Force",true);
+            testCase.verifyEqual(forced.status,"processed");
+            testCase.verifyFalse(forced.cache_hit);
         end
 
         function missingReferenceLinkFailsClearly(testCase)
@@ -333,6 +466,7 @@ arguments
     options.DaqTriggerPeriodMs (1,1) double = NaN
     options.CameraFrameRateHz (1,1) double = 10
     options.CameraExposureTime (1,1) double = 100
+    options.CellIds (2,1) string = ["cell_001";"cell_002"]
 end
 root=tempname; mkdir(root);
 testCase.addTeardown(@()remove_if_present(root));
@@ -348,10 +482,10 @@ camera=struct("name","Orca Fusion","ROI",[0 nColumns 0 nRows],"bin",1, ...
     "x_world_limits",[0 nColumns],"y_world_limits",[0 nRows]);
 metadata=struct("rig_name","Virtual_Upright","voltage_camera",camera);
 reference=adaptive_optopatch.create_reference_model( ...
-    referenceImage,masks,metadata,"CellIds",["cell_001";"cell_002"]);
+    referenceImage,masks,metadata,"CellIds",options.CellIds);
 save(fullfile(runDirectory,"reference_model.mat"),"reference");
 
-events=table([1;2],["cell_001";"cell_002"],[0.1;0.5],[0.2;0.1], ...
+events=table([1;2],options.CellIds,[0.1;0.5],[0.2;0.1], ...
     [false;false],executedVoltage(:), ...
     'VariableNames',{'pulse_id','target_cell_id','onset_s','duration_s', ...
     'is_null','command_voltage_v'});
@@ -391,6 +525,21 @@ end
 
 fixture=struct("root",root,"run_directory",runDirectory, ...
     "experiment",string(experiment),"reference",reference,"record",record);
+end
+
+function box=data_region_in_figure(ax)
+% InnerPosition is the data rectangle. For UIAxes, Position (and therefore
+% getpixelposition) is the outer box including tick labels, so it cannot
+% show this bug; it is used only to find where the parent sits.
+units=ax.Units; ax.Units="pixels";
+restore=onCleanup(@()set(ax,"Units",units)); %#ok<NASGU>
+parentOrigin=getpixelposition(ax,true)-ax.Position;
+box=ax.InnerPosition+[parentOrigin(1:2) 0 0];
+end
+
+function x=time_to_figure_x(ax,t)
+box=data_region_in_figure(ax);
+x=box(1)+(t-ax.XLim(1))/diff(ax.XLim)*box(3);
 end
 
 function remove_if_present(folder)

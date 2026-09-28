@@ -15,7 +15,29 @@ try
                 protocol.acquisitions(k).parameters,"acquisition")]; %#ok<AGROW>
         end
     else
-        issues=validate_events(protocol.events,true);
+        if adaptive_optopatch.is_simultaneous_protocol(protocol)
+            fields=["simultaneous_target_cell_ids","simultaneous_target_indices", ...
+                "simultaneous_target_stimulation_enabled"];
+            if ~all(isfield(protocol,cellstr(fields))) || isempty(protocol.simultaneous_target_cell_ids)
+                error("adaptive_optopatch:InvalidSimultaneousTargets","Frozen simultaneous target metadata is required.");
+            end
+            ids=string(protocol.simultaneous_target_cell_ids(:));
+            indices=double(protocol.simultaneous_target_indices(:));
+            enabled=protocol.simultaneous_target_stimulation_enabled(:);
+            if numel(ids)~=numel(indices) || numel(enabled)~=numel(ids) || ~all(enabled) || ...
+                    numel(unique(ids))~=numel(ids) || any(strlength(strip(ids))==0 | ids=="multiple") || ...
+                    numel(unique(indices))~=numel(indices) || any(~isfinite(indices) | indices<1 | fix(indices)~=indices)
+                error("adaptive_optopatch:InvalidSimultaneousTargets","Frozen simultaneous IDs, indices, and eligibility are invalid.");
+            end
+            events=protocol.events;
+            if any(events.target_cell_id(~events.is_null)~="multiple") || any(events.target_index~=0) || ...
+                    any(events.stimulation_source=="2p_spiral") || ...
+                    ~isfield(protocol.parameters,"blue_mask_adjustment_pixels") || ...
+                    any(events.blue_mask_adjustment_pixels(events.stimulation_source=="1p_dmd")~=protocol.parameters.blue_mask_adjustment_pixels)
+                error("adaptive_optopatch:InvalidSimultaneousTargets","Simultaneous events require multiple/zero sentinel, 1P only, and one adjustment.");
+            end
+        end
+        issues=validate_events(protocol.events,true,adaptive_optopatch.is_simultaneous_protocol(protocol));
         issues=[issues;validate_resolved_parameters(protocol.parameters,protocol.events)];
     end
 catch exception
@@ -41,7 +63,8 @@ for k=1:numel(metadata)
 end
 end
 
-function issues=validate_events(events,resolved)
+function issues=validate_events(events,resolved,simultaneous)
+if nargin<3, simultaneous=false; end
 issues=strings(0,1); onset=events.onset_s; duration=events.duration_s;
 if isempty(events), issues(end+1)="Every acquisition requires at least one event."; return; end
 if numel(unique(events.pulse_id))~=height(events)
@@ -90,7 +113,7 @@ if resolved
     if any(~isfinite(duration) | duration<=0)
         issues(end+1)="Resolved pulse durations must be positive and finite.";
     end
-    if any(~isfinite(events.target_index(nonNull)) | ...
+    if ~simultaneous && any(~isfinite(events.target_index(nonNull)) | ...
             events.target_index(nonNull)<1 | ...
             fix(events.target_index(nonNull))~=events.target_index(nonNull))
         issues(end+1)="Resolved non-null target indices must be positive integers.";

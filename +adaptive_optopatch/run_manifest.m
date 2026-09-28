@@ -92,8 +92,14 @@ for k=1:n
             run.trials.settings_snapshot{k}= ...
                 adaptive_optopatch.snapshot_luminos_settings(options.App);
         end
-        config=adaptive_optopatch.prepare_luminos_target( ...
-            options.App,targets,row,"DryRun",true);
+        protocol=row.pulse_schedule{1};
+        if adaptive_optopatch.is_simultaneous_protocol(protocol)
+            config=adaptive_optopatch.prepare_luminos_target( ...
+                options.App,targets,row,"DryRun",true,"SimultaneousProtocol",protocol);
+        else
+            config=adaptive_optopatch.prepare_luminos_target( ...
+                options.App,targets,row,"DryRun",true);
+        end
         run.trials.target_configuration{k}=config;
         run.trials.acquisition_status(k)="dry_run_complete";
         run.trials.error_message(k)="";

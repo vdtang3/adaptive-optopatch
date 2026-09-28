@@ -8,9 +8,9 @@ report=adaptive_optopatch.validate_protocol(protocol); report.mode=mode;
 if ~report.passed, return; end
 if string(report.protocol.artifact_type)=="experiment_definition" && ...
         mode=="2p_spiral"
-    if string(report.protocol.target_policy)=="multi_target_continuous"
+    if ismember(string(report.protocol.target_policy),["multi_target_continuous","simultaneous_stimulation_enabled_cells"])
         report.issues(end+1)= ...
-            "multi_target_continuous is not supported by the 2P spiral runner.";
+            string(report.protocol.target_policy)+" is not supported by the 2P spiral runner.";
     end
     report.issues=[report.issues;pockels_voltage_issues(report.protocol)];
 end

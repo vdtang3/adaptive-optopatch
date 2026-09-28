@@ -55,6 +55,19 @@ for acquisitionIndex=1:numel(definition.acquisitions)
                 targetIndices(selectedIndex),acquisitionIndex,outputIndex, ...
                 options.FreshRandomization);
         end
+    elseif definition.target_policy=="simultaneous_stimulation_enabled_cells"
+        if options.Mode=="2p_spiral"
+            error("adaptive_optopatch:SimultaneousOnePhotonOnly","Simultaneous targeting requires 1p_dmd.");
+        end
+        acquisition.simultaneous_target_cell_ids=string({fovState.cells(cellIndices).cell_id})';
+        acquisition.simultaneous_target_indices=targetIndices;
+        acquisition.simultaneous_target_stimulation_enabled=true(numel(cellIndices),1);
+        events=acquisition.events;
+        events.target_cell_id=repmat("multiple",height(events),1);
+        events.target_index=zeros(height(events),1);
+        outputIndex=outputIndex+1;
+        resolved{outputIndex,1}=resolve_values(definition,acquisition,events, ...
+            fovState,guiDefaults,zeros(height(events),1),acquisitionIndex,outputIndex);
     else
         outputIndex=outputIndex+1;
         resolved{outputIndex,1}=resolve_multi_target(definition,acquisition, ...
@@ -75,6 +88,10 @@ function validate_blue_mask_executability(resolved,targets)
 % mask.
 seen=strings(0,1);
 for i=1:numel(resolved)
+    if adaptive_optopatch.is_simultaneous_protocol(resolved{i})
+        adaptive_optopatch.build_simultaneous_blue_mask(resolved{i},targets);
+        continue
+    end
     events=resolved{i}.events;
     for k=reshape(find(events.stimulation_source=="1p_dmd"),1,[])
         targetIndex=double(events.target_index(k));
@@ -276,8 +293,10 @@ for name=["command_voltage_v","pulse_duration_s","blue_mask_adjustment_pixels"]
         if events.is_null(k) && name=="command_voltage_v"
             values(k)=0; sources(k)="null"; continue
         end
+        cellRecord=struct;
+        if cellMap(k)>0, cellRecord=fovState.cells(cellMap(k)); end
         [values(k),sources(k)]=resolve_one(raw(k),name,definition, ...
-            acquisition,fovState.cells(cellMap(k)),gui,events.stimulation_source(k));
+            acquisition,cellRecord,gui,events.stimulation_source(k));
     end
     if name=="command_voltage_v" && ...
             ismember("command_voltage_scale",string(events.Properties.VariableNames))
@@ -301,7 +320,7 @@ if any(~isfinite(events.onset_s))
 end
 
 acquisitionCell=struct;
-if all(cellMap==cellMap(1))
+if cellMap(1)>0 && all(cellMap==cellMap(1))
     acquisitionCell=fovState.cells(cellMap(1));
 end
 [orange,orangeSource]=resolve_one(NaN,"orange_expansion_pixels",definition, ...
@@ -352,6 +371,17 @@ if isfield(acquisition,"scheduler_metadata")
 end
 if isfield(acquisition,"dmd_diagnostic")
     protocol.dmd_diagnostic=acquisition.dmd_diagnostic;
+end
+if adaptive_optopatch.is_simultaneous_protocol(protocol)
+    for field=["simultaneous_target_cell_ids","simultaneous_target_indices", ...
+            "simultaneous_target_stimulation_enabled"]
+        protocol.(field)=acquisition.(field);
+    end
+    adjustments=unique(events.blue_mask_adjustment_pixels(events.stimulation_source=="1p_dmd"));
+    if numel(adjustments)~=1
+        error("adaptive_optopatch:SimultaneousMaskAdjustment","Simultaneous acquisition requires one Blue mask adjustment.");
+    end
+    protocol.parameters.blue_mask_adjustment_pixels=adjustments;
 end
 protocol=adaptive_optopatch.normalize_protocol(protocol);
 validation=adaptive_optopatch.validate_protocol(protocol);

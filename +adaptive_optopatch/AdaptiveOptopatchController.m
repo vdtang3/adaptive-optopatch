@@ -1788,7 +1788,8 @@ classdef AdaptiveOptopatchController < handle
                         ids=unique(resolved.events.target_cell_id(oneRows));
                         varies=any(resolved.events.blue_mask_adjustment_pixels(oneRows)~= ...
                             plan.targets.parameters.blue_mask_adjustment_pixels);
-                        if any(twoRows) || numel(ids)>1 || varies
+                        if ~adaptive_optopatch.is_simultaneous_protocol(resolved) && ...
+                                (any(twoRows) || numel(ids)>1 || varies)
                             sequencePlan=adaptive_optopatch.build_dmd_sequence_plan(resolved,plan.targets);
                             % Capacity is a live-device property. Validate it
                             % during Update Plan, before Run can upload or arm
@@ -2115,7 +2116,11 @@ classdef AdaptiveOptopatchController < handle
                 events=trials.pulse_schedule{k}.events;
                 illuminated=~events.is_null;
                 lightEvents=lightEvents+sum(illuminated);
-                cells=[cells;string(events.target_cell_id(illuminated))]; %#ok<AGROW>
+                if adaptive_optopatch.is_simultaneous_protocol(trials.pulse_schedule{k})
+                    cells=[cells;trials.pulse_schedule{k}.simultaneous_target_cell_ids(:)]; %#ok<AGROW>
+                else
+                    cells=[cells;string(events.target_cell_id(illuminated))]; %#ok<AGROW>
+                end
             end
             summary.stimulating_cell_ids=unique(cells,"stable");
             summary.stimulating_cell_count=numel(summary.stimulating_cell_ids);
@@ -3792,7 +3797,7 @@ for k=1:numel(resolved)
     schedule=resolved{k};
     events=schedule.events;
     used=unique(events.target_cell_id(~events.is_null),"stable");
-    if isscalar(used)
+    if isscalar(used) && ~adaptive_optopatch.is_simultaneous_protocol(schedule)
         plan.manifest.trials.target_cell_id(k)=used;
         plan.manifest.trials.target_index(k)= ...
             events.target_index(find(~events.is_null,1));

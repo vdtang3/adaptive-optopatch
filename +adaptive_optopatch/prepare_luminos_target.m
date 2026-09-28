@@ -4,6 +4,7 @@ arguments
     app
     targetBundle (1,1) struct
     trialRow (1,:) table
+    options.SimultaneousProtocol (1,1) struct = struct
     options.DryRun (1,1) logical = true
     options.DmdName (1,1) string = "DMD_Blue"
     options.ScannerName (1,1) string = "Chameleon (To friends: Ben)"
@@ -42,10 +43,20 @@ if trialRow.is_null
     return
 end
 
-t = targetBundle.targets(trialRow.target_index);
+simultaneous=adaptive_optopatch.is_simultaneous_protocol(options.SimultaneousProtocol);
+if ~simultaneous, t = targetBundle.targets(trialRow.target_index); end
 if result.mode == "1p_dmd"
     result.action = "camera_mask_to_dmd";
-    result.camera_mask = targetBundle.dmd_camera_masks(:,:,trialRow.target_index);
+    if simultaneous
+        result.camera_mask=adaptive_optopatch.build_simultaneous_blue_mask(options.SimultaneousProtocol,targetBundle);
+        result.target_policy=options.SimultaneousProtocol.target_policy;
+        result.simultaneous_target_cell_ids=options.SimultaneousProtocol.simultaneous_target_cell_ids;
+        result.simultaneous_target_indices=options.SimultaneousProtocol.simultaneous_target_indices;
+        result.blue_mask_adjustment_pixels=options.SimultaneousProtocol.parameters.blue_mask_adjustment_pixels;
+        result.execution_mode="static_simultaneous";
+    else
+        result.camera_mask = targetBundle.dmd_camera_masks(:,:,trialRow.target_index);
+    end
     if options.DryRun, return; end
     dmd = app.getDevice("DMD", "name", options.DmdName);
     % Before anything reaches the mirrors: the transform this mask is about

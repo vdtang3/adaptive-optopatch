@@ -20,7 +20,7 @@ n=numel(resolvedProtocols); rows=table;
 for k=1:n
     protocol=resolvedProtocols{k}; events=protocol.events;
     used=unique(events.target_cell_id(~events.is_null),"stable");
-    if isscalar(used)
+    if isscalar(used) && ~adaptive_optopatch.is_simultaneous_protocol(protocol)
         targetCellId=used; targetIndex=events.target_index(find(~events.is_null,1));
     else
         targetCellId="multiple"; targetIndex=NaN;
@@ -68,6 +68,9 @@ for k=1:n
     protocol=resolvedProtocols{k};
     if any(protocol.events.stimulation_source=="1p_dmd")
         pulseIds=protocol.events.target_cell_id(~protocol.events.is_null);
+        if adaptive_optopatch.is_simultaneous_protocol(protocol)
+            pulseIds=protocol.simultaneous_target_cell_ids;
+        end
         advisories=[advisories adaptive_optopatch.collect_blue_spatial_advisories( ...
             targets,pulseIds)]; %#ok<AGROW>
     end

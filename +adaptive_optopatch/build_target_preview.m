@@ -58,7 +58,9 @@ for index=1:numel(options.ResolvedProtocols)
         resolved=targets;
         relevant=~events.is_null;
     end
+    simultaneous=adaptive_optopatch.is_simultaneous_protocol(protocol);
     used=unique(double(events.target_index(relevant)),"stable");
+    if simultaneous, used=protocol.simultaneous_target_indices; end
     for targetIndex=reshape(used,1,[])
         cellId=string(resolved.targets(targetIndex).cell_id);
         key=cellId+"_"+string(protocol.parameters.orange_expansion_pixels);
@@ -69,7 +71,11 @@ for index=1:numel(options.ResolvedProtocols)
                 protocol.parameters.orange_expansion_pixels); %#ok<AGROW>
         end
     end
-    if mode=="1p_dmd"
+    if mode=="1p_dmd" && simultaneous
+        mask=adaptive_optopatch.build_simultaneous_blue_mask(protocol,targets);
+        preview.blue(end+1)=blue_entry(mask,"all Stim-enabled cells", ...
+            protocol.parameters.blue_mask_adjustment_pixels);
+    elseif mode=="1p_dmd"
         for k=reshape(find(events.stimulation_source=="1p_dmd"),1,[])
             targetIndex=double(events.target_index(k));
             adjustment=double(events.blue_mask_adjustment_pixels(k));

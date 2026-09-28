@@ -1731,3 +1731,41 @@ pattern, open a shutter, start the laser, or launch an acquisition. It verifies
 the MATLAB release, Windows platform, toolbox and package paths, Luminos API,
 live devices, DMD calibration, observed OBIS mode/interlock, Camera 1 HSYNC
 timing, and the selected planning bundle.
+
+### Whole-FOV simultaneous Blue ramp
+
+`adaptive_optopatch.generate_whole_fov_ramp_protocol` creates one schema-4
+acquisition with explicit ramp voltages. At Update Plan,
+`simultaneous_stimulation_enabled_cells` freezes the Stim-enabled cells in FOV
+order. Recording eligibility continues to control Orange independently.
+Each canonical Blue ROI is adjusted independently, then the masks are unioned.
+Preview, preflight, and execution use `build_simultaneous_blue_mask`.
+The combined pattern is programmed once through the guarded static DMD adapter;
+mod488 supplies all pulse timing and voltage, and DMD advance remains neutral.
+No FLUT playlist is used. RampReviewApp remains a single-cell calibration UI.
+
+Create a definition (edit settings at the top of the script):
+
+```matlab
+addpath(pwd) % From the adaptive-optopatch repository root
+run(fullfile('pulse-protocols','create_whole_fov_ramp_protocol.m'))
+```
+
+Dry-run against your loaded `fov_state`, `targets`, and `gui_defaults`:
+
+```matlab
+definition = adaptive_optopatch.generate_whole_fov_ramp_protocol( ...
+    [0.5 0.75 1.0 1.15 1.3], 'RepeatsPerVoltage', 10);
+manifest = adaptive_optopatch.build_manifest(fov_state.reference, targets, ...
+    definition, 'FovState', fov_state, 'GuiDefaults', gui_defaults, 'Mode', '1p_dmd');
+report = adaptive_optopatch.preflight_trial(targets, manifest.trials(1,:));
+assert(report.passed, strjoin(report.issues, newline));
+dry_run = adaptive_optopatch.run_manifest(manifest, targets, ...
+    'OutputDirectory', fullfile(tempdir, 'whole-fov-ramp-dry-run'));
+```
+
+The manifest reports `multiple`; the archived resolved schedule records exact
+`simultaneous_target_cell_ids`, `simultaneous_target_indices`, resolution-time
+eligibility, and the common Blue adjustment. Target configuration archives the
+combined camera mask, static execution mode, programmed device-mask summary,
+and DMD ownership fingerprint.

@@ -4,6 +4,10 @@ arguments
     protocol (1,1) struct
     targets (1,1) struct
 end
+if adaptive_optopatch.is_simultaneous_protocol(protocol)
+    error("adaptive_optopatch:SimultaneousStaticPatternRequired", ...
+        "Simultaneous acquisitions use one static pattern, never a DMD sequence.");
+end
 protocol=adaptive_optopatch.normalize_protocol(protocol); events=protocol.events;
 events=events(events.stimulation_source=="1p_dmd",:);
 if isempty(events)

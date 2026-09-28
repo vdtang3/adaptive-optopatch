@@ -34,7 +34,17 @@ else
     if ~trialRow.is_null && validation.passed
         events=validation.protocol.events;
         ids=string({targets.targets.cell_id});
-        pulseIds=events.target_cell_id(~events.is_null);
+        simultaneous=adaptive_optopatch.is_simultaneous_protocol(protocol);
+        if simultaneous
+            try
+                adaptive_optopatch.build_simultaneous_blue_mask(protocol,targets);
+            catch exception
+                issues(end+1)=string(exception.message);
+            end
+            pulseIds=strings(0,1);
+        else
+            pulseIds=events.target_cell_id(~events.is_null);
+        end
         for id=unique(pulseIds(:))'
             idx=find(ids==id,1);
             if isempty(idx)
@@ -53,6 +63,7 @@ else
             % validate_2p_calibration_coverage, build_2p_trial_waveforms).
         end
         onePhotonIds=events.target_cell_id(events.stimulation_source=="1p_dmd");
+        if simultaneous, onePhotonIds=protocol.simultaneous_target_cell_ids; end
         if ~isempty(onePhotonIds)
             spatial=adaptive_optopatch.collect_blue_spatial_advisories(targets,onePhotonIds);
             if ~isempty(spatial)
@@ -61,7 +72,7 @@ else
         end
         defaultAdjustment=double(targets.parameters.blue_mask_adjustment_pixels);
         onePhotonEvents=events(events.stimulation_source=="1p_dmd",:);
-        if ~isempty(onePhotonEvents) && (numel(unique(onePhotonIds))>1 || ...
+        if ~simultaneous && ~isempty(onePhotonEvents) && (numel(unique(onePhotonIds))>1 || ...
                 any(onePhotonEvents.blue_mask_adjustment_pixels~=defaultAdjustment))
             try
                 adaptive_optopatch.build_dmd_sequence_plan(validation.protocol,targets);

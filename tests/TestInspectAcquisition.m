@@ -1,6 +1,18 @@
 classdef TestInspectAcquisition < matlab.unittest.TestCase
     %TESTINSPECTACQUISITION Synthetic quick-look linkage and display tests.
     methods (Test)
+        function simultaneousPulsesDisplayMultiple(testCase)
+            fixture=make_fixture(testCase,"1p_dmd",[.5 1]);
+            adaptive_optopatch_record=fixture.record;
+            adaptive_optopatch_record.pulse_schedule.events.target_cell_id(:)="multiple";
+            adaptive_optopatch_record.pulse_schedule.target_policy="simultaneous_stimulation_enabled_cells";
+            adaptive_optopatch_record.pulse_schedule.simultaneous_target_cell_ids=string({fixture.reference.cells.cell_id})';
+            save(fullfile(fixture.experiment,"output_data.mat"),"adaptive_optopatch_record","-append");
+            viewer=inspect_acquisition(fixture.experiment,"Visible","off");
+            cleanup=onCleanup(@()delete(viewer.figure)); %#ok<NASGU>
+            testCase.verifyEqual(viewer.stimulation.events.target_cell_id,["multiple";"multiple"]);
+        end
+
         function canonicalRoisAndCellIdsAreLoadedWithoutUserInput(testCase)
             fixture=make_fixture(testCase,"1p_dmd",[1.2 0.7]);
             viewer=inspect_acquisition(fixture.experiment,"Visible","off");

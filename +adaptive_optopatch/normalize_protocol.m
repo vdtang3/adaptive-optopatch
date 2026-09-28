@@ -37,9 +37,9 @@ protocol.protocol_type=string(protocol.protocol_type);
 protocol.target_policy=string(protocol.target_policy);
 protocol.event_order=string(protocol.event_order);
 if ~ismember(protocol.target_policy, ...
-        ["each_stimulation_enabled_cell","multi_target_continuous"])
+        ["each_stimulation_enabled_cell","multi_target_continuous","simultaneous_stimulation_enabled_cells"])
     error("adaptive_optopatch:InvalidTargetPolicy", ...
-        "target_policy must be each_stimulation_enabled_cell or multi_target_continuous.");
+        "Unknown target_policy. Use each_stimulation_enabled_cell, multi_target_continuous, or simultaneous_stimulation_enabled_cells.");
 end
 if ~ismember(protocol.event_order,["ordered","randomized"])
     error("adaptive_optopatch:InvalidEventOrder", ...
@@ -81,6 +81,13 @@ for k=1:numel(protocol.acquisitions)
             "Acquisition %s events must be a table.",acquisition.acquisition_id);
     end
     acquisition.events=normalize_events(acquisition.events,false);
+    if adaptive_optopatch.is_simultaneous_protocol(protocol) && ...
+            (any(acquisition.events.stimulation_source=="2p_spiral") || ...
+            ismember("target_cell_id",string(acquisition.events.Properties.VariableNames)) || ...
+            acquisition.target_repetitions~=1 || ~isempty(adaptive_optopatch.acquisition_scheduler_spec(acquisition)))
+        error("adaptive_optopatch:SimultaneousOnePhotonOnly", ...
+            "Simultaneous definitions require untargeted 1P/null events without a serial scheduler.");
+    end
     % A scheduler-backed acquisition states HOW its schedule is built rather
     % than what it contains, so its spec is normalized and checked here -
     % once, at the boundary - and resolve_protocol reads the normalized

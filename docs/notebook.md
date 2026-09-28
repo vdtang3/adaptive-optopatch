@@ -2598,3 +2598,21 @@ known time. And `uiaxes` measure fonts in pixels while `axes` use points, so
 the stimulation pulse labels now say `FontUnits="pixels"` to keep their size.
 Tiled `axes` also clear `Tag` on a first `plot` with `hold off`, so the
 stimulation tag is set after it.
+
+## 2026-09-28: Simultaneous whole-FOV Blue ramps
+
+A simultaneous ramp is one acquisition over a frozen group, rather than a
+serial schedule or a single representative cell. Schema 4 retains its pulse
+table with explicit `multiple`/zero group sentinels and stores exact group
+identities and indices at acquisition scope. Resolution uses current FOV Stim
+eligibility; execution consumes the frozen group. Per-cell calibration is not
+borrowed to resolve group commands or mask adjustment. Event/acquisition/protocol
+intent and GUI spatial defaults retain their normal precedence.
+
+The physical mask adjusts each canonical ROI before union, avoiding the change
+in erosion semantics caused by merging touching cells first. One shared helper
+serves preview, preflight, and the existing guarded static programming adapter.
+The sequence planner explicitly rejects this policy: a constant mask needs no
+FLUT or advance pulses. Orange eligibility and single-cell ramp review remain
+independent. Simultaneous 2P and varying within-acquisition group masks are
+intentionally unsupported.

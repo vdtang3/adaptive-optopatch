@@ -21,6 +21,7 @@ intentionally rejected and must be regenerated from their source scripts.
 | `create_stp_screen_protocol.m` | Core: short-term plasticity screen, 5 pulses at 20 Hz | `multi_target_continuous` | randomized |
 | `create_blue_dmd_mask_titration_protocol.m` | Multiple Blue-mask adjustments within each cell's acquisition | `each_stimulation_enabled_cell` | randomized |
 | `create_dmd_flut_wrap_test.m` | Three-slot/eight-trigger FLUT wrap hardware diagnostic | `multi_target_continuous` | ordered |
+| `create_static_blue_light_test.m` | One 500 ms, 1 V Blue pulse with a static DMD mask to check the 488 nm path | `each_stimulation_enabled_cell` | ordered |
 | `create_custom_event_protocol.m` | Minimal hand-written schema-4 example | `each_stimulation_enabled_cell` | ordered |
 | `create_mixed_1p_2p_test_protocol.m` | Conservative interleaved 1P/2P commissioning acquisition | `each_stimulation_enabled_cell` | ordered |
 

@@ -61,6 +61,8 @@ if ~isfield(globalProps,"completion_trigger"), globalProps.completion_trigger="N
 wfmData=ensure_fields(activeWfmData);
 wfmData=adaptive_optopatch.drop_ao_script_waveforms(wfmData);
 manifest=options.Manifest; aliases=manifest.alias_list;
+[wfmData.ai,auxiliaryInput]=adaptive_optopatch.ensure_auxiliary_input( ...
+    wfmData.ai,options.OnePhotonProfile);
 
 % Remove every ambient spelling of all six AO-owned stimulation outputs.
 ownedAnalog=[one.modulator.name one.modulator.port];
@@ -127,6 +129,7 @@ summary=struct("schema_version","1.0.0","sample_rate_hz",rate, ...
     "twophoton_event_count",height(twoPhoton),"has_mixed_sources",has1p&&has2p, ...
     "blue_shutter_runtime_owner",string(ternary(has1p,"imperative","buffered")), ...
     "script_owner",adaptive_optopatch.script_owner_tag());
+summary.auxiliary_input=auxiliaryInput;
 if ~isempty(options.DmdSequencePlan)
     summary.dmd_sequence=options.DmdSequencePlan;
     if isfield(summary.dmd_sequence,"unique_camera_masks")

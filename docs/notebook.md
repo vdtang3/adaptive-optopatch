@@ -2643,3 +2643,13 @@ the executed pulse schedule and extends the acquisition, retaining all raw
 frames. Inspection reports the 12 phase images and their RMS strengths without
 applying a correction, so a real recording can determine whether the pattern
 is present and whether its period is stable.
+
+## 2026-10-15 — Archive the Spinning Upright ai12 monitor during AO runs
+
+Yangdong's recent Spinning Upright waveform settings list Dev1/ai12, and his
+analysis can use a photodiode trace, but the archived channel has no name or
+samples that establish its physical identity. AO therefore adds ai12 as an
+unverified auxiliary analog input on this rig, unless the active waveform
+already includes that port. The DAQ archives the raw samples with the camera
+frame counters and AO commands. An optical check is required before treating
+this signal as delivered blue light or using it to correct fluorescence.

@@ -34,10 +34,37 @@ classdef TestSpinningUprightPort < matlab.unittest.TestCase
             testCase.verifyTrue(any(ports=="mod607"));
             testCase.verifyTrue(any(ports=="PatchCmd"));
             testCase.verifyTrue(any(ports=="780 LED"));
+            testCase.verifyEqual(numel(configured.ai),1);
+            testCase.verifyEqual(string(configured.ai(1).port),"Dev1/ai12");
+            testCase.verifyEqual(string(configured.ai(1).name), ...
+                "AO_AI12_monitor_unverified");
             report=adaptive_optopatch.account_stimulation_outputs( ...
                 globalProps,configured,"Manifest",manifest,"Modality","1p_dmd", ...
                 "Policy","report_only");
             testCase.verifyTrue(report.passed);
+        end
+
+        function reusesExistingAi12Input(testCase)
+            profile=adaptive_optopatch.spinning_upright_1p_profile();
+            records=struct("name","Operator AI12","port","/Dev1/ai12", ...
+                "id",123);
+            [configured,report]=adaptive_optopatch.ensure_auxiliary_input( ...
+                records,profile);
+            testCase.verifyEqual(numel(configured),1);
+            testCase.verifyEqual(configured,records);
+            testCase.verifyEqual(report.source,"operator_waveform");
+            testCase.verifyEqual(report.identity,"unverified");
+        end
+
+        function namesExistingUnnamedAi12Input(testCase)
+            profile=adaptive_optopatch.spinning_upright_1p_profile();
+            records=struct("name","","port","Dev1/ai12","id",123);
+            [configured,report]=adaptive_optopatch.ensure_auxiliary_input( ...
+                records,profile);
+            testCase.verifyEqual(numel(configured),1);
+            testCase.verifyEqual(string(configured.name), ...
+                "AO_AI12_monitor_unverified");
+            testCase.verifyEqual(report.source,"operator_waveform_unnamed");
         end
 
         function doesNotLookUpAbsentTwoPhotonHardware(testCase)

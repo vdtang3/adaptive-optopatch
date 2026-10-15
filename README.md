@@ -20,6 +20,13 @@ control `PatchCmd` or the 780 nm LED. There is no declared OBIS device on this
 rig, so the run archives OBIS power as unavailable and rejects an OBIS power
 override. The 2P spiral backend is unavailable on Spinning Upright.
 
+AO also records `Dev1/ai12` as `AO_AI12_monitor_unverified` during each
+Spinning Upright acquisition. If the active waveform already contains that
+input, AO retains its existing name and adds no duplicate. The raw voltage
+samples are archived with Luminos's DAQ data. Confirm the physical connection
+and an optical response before interpreting this channel as a photodiode or
+using it to time delivered blue light.
+
 Install this package on the MATLAB path alongside the Luminos version that
 contains the `Spinning_Upright` user tab configuration. Before the first live
 run, select the Orange camera snapshot, verify both DMD calibrations were made

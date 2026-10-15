@@ -37,6 +37,8 @@ if ~isfield(globalProps,"completion_trigger")
 end
 wfmData=ensure_wfm_fields(activeWfmData);
 wfmData=adaptive_optopatch.drop_ao_script_waveforms(wfmData);
+[wfmData.ai,auxiliaryInput]=adaptive_optopatch.ensure_auxiliary_input( ...
+    wfmData.ai,profile);
 % The inactive 2P outputs are SUPPRESSED, not neutralized. Appending
 % constant galvo records put Dev2/ao0 and Dev2/ao1 into wfm_data, and a
 % buffered record on a Dev2 terminal is what makes Luminos build a
@@ -142,6 +144,7 @@ summary.expected_clock_bridge=reshape(string(profile.daq.clock_bridge),1,[]);
 summary.expected_start_triggers=reshape(string(profile.daq.default_trigger),1,[]);
 summary.blue_shutter_runtime_owner= ...
     manifest_owner(options.Manifest,"blue_shutter").one_photon;
+summary.auxiliary_input=auxiliaryInput;
 summary.script_owner=adaptive_optopatch.script_owner_tag();
 % Provenance for the inactive 2P modality. The field name is unchanged
 % because archives and consumers read it, but it no longer records values

@@ -28,6 +28,14 @@ at the sample with a low `mod488` command. The DMD transform and physical light
 output still require validation on the rig; the software checks calibration
 identity and refuses missing or identity transforms.
 
+On Spinning Upright, AO records a two-second camera baseline before the first
+Blue stimulation pulse. This is an assumed disk settling interval, not a
+measured spin-up guarantee; the active Luminos waveform must provide 607 nm
+recording illumination during it. The executed pulse schedule and acquisition
+duration include the two seconds. `inspect_acquisition()` measures the spatial
+pattern at each phase of a 12-frame cycle and reports its peak RMS strength.
+It leaves the raw movie unchanged and does not remove the baseline frames.
+
 ## Audit task orchestration
 
 The repository includes a conservative local harness for running bounded audit

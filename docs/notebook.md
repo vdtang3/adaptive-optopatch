@@ -2631,3 +2631,15 @@ Luminos rig name. The Spinning Upright manifest owns only the blue modulator,
 shutter, and DMD advance line. The runner preserves the operator's 607 nm
 recording waveform and other unowned outputs; 2P plans fail before output.
 Live DMD calibration identity and illumination still need checking at the rig.
+
+## 2026-10-15 — Spinning Upright startup baseline and disk-pattern inspection
+
+Yangdong's processing excludes the first two seconds because 607 nm excitation
+was off in those recordings, then estimates a repeating 12-frame spatial
+pattern. For AO, the chosen acquisition policy is to record a two-second
+illuminated baseline before Blue stimulation. This is an explicit provisional
+settling assumption, not evidence that disk speed has stabilized. AO shifts
+the executed pulse schedule and extends the acquisition, retaining all raw
+frames. Inspection reports the 12 phase images and their RMS strengths without
+applying a correction, so a real recording can determine whether the pattern
+is present and whether its period is stable.

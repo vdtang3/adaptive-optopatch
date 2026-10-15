@@ -203,6 +203,14 @@ for k=1:n
     try
         row=run.trials(k,:);
         protocol=adaptive_optopatch.normalize_protocol(row.pulse_schedule{1});
+        if profile.rig_name=="Spinning_Upright"
+            % Keep the camera and recording waveform running while the disk
+            % settles; all planned stimulation starts after this interval.
+            protocol.events.onset_s=protocol.events.onset_s+2;
+            protocol.events.offset_s=protocol.events.offset_s+2;
+            protocol.acquisition_duration_s=protocol.acquisition_duration_s+2;
+            protocol.startup_baseline_s=2;
+        end
         twoPhotonCommandOverride=NaN;
         if any(protocol.events.stimulation_source=="2p_spiral")
             if options.TwoPhotonReleaseLevel=="blocked_test"
@@ -220,6 +228,9 @@ for k=1:n
             end
         end
         run.trials.executed_pulse_schedule{k}=protocol;
+        run.trials.acquisition_duration_s(k)=protocol.acquisition_duration_s;
+        row.acquisition_duration_s=protocol.acquisition_duration_s;
+        row.pulse_schedule{1}=protocol;
         trialTargets=adaptive_optopatch.apply_acquisition_parameters(targets,protocol);
         preflight=adaptive_optopatch.preflight_trial(trialTargets,row, ...
             "RequireConfirmedLiveProtocol",false,"LiveProtocolConfirmed",true, ...
@@ -453,7 +464,7 @@ save_checkpoint();
         record.created_at=string(datetime("now","TimeZone","local"));
         record.hardware_profile=profile;
         record.trial=row;
-        record.pulse_schedule=row.pulse_schedule{1};
+        record.pulse_schedule=run.trials.executed_pulse_schedule{k};
         record.waveform_summary=waveformSummary;
         record.target_configuration=config;
         record.experiment_directory=folder;

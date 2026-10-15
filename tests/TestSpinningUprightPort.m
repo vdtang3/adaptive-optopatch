@@ -88,6 +88,12 @@ classdef TestSpinningUprightPort < matlab.unittest.TestCase
                 "ConfirmLiveOutput",true);
             testCase.verifyEqual(run.trials.acquisition_status,"completed");
             testCase.verifyEqual(run.hardware_profile.rig_name,"Spinning_Upright");
+            executed=run.trials.executed_pulse_schedule{1};
+            testCase.verifyEqual(executed.startup_baseline_s,2);
+            testCase.verifyEqual(executed.events.onset_s(1), ...
+                protocol.events.onset_s(1)+2);
+            testCase.verifyEqual(executed.acquisition_duration_s, ...
+                protocol.acquisition_duration_s+2);
             framePlan=run.trials.waveform_summary{1}.camera_frame_plan;
             testCase.verifyEqual(framePlan(2).calculation_method, ...
                 "preserved_operator_setting");
@@ -95,6 +101,8 @@ classdef TestSpinningUprightPort < matlab.unittest.TestCase
             saved=load(fullfile(run.trials.experiment_directory, ...
                 "output_data.mat"),"adaptive_optopatch_record");
             testCase.verifyTrue(isnan(saved.adaptive_optopatch_record.obis_power_w));
+            testCase.verifyEqual(saved.adaptive_optopatch_record.pulse_schedule.events.onset_s(1), ...
+                executed.events.onset_s(1));
         end
     end
 end

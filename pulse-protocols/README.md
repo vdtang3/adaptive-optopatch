@@ -274,6 +274,11 @@ run this diagnostic on a non-FLUT DMD. The existing script filename remains
 for compatibility. Software tests verify programming; the displayed sequence
 still needs inspection on the rig.
 
+On Spinning Upright, AO arms the first picture before acquisition. The ALP
+holds that picture in master step mode and advances to each later picture
+1 ms before its corresponding blue pulse (seven edges for eight pictures). A schedule without enough dark time
+for that advance is rejected. Other rigs retain their existing sequence mode.
+
 Validate and save with:
 
 ```matlab

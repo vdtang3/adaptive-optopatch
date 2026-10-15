@@ -12,7 +12,11 @@ if isfield(plan,"programmed_playlist_slots")
 end
 playlistCount=numel(playlistSlots);
 configuration=rmfield(plan,"unique_camera_masks");
-configuration.mode="slave";
+projectionMode="slave";
+if isfield(plan,"projection_mode")
+    projectionMode=string(plan.projection_mode);
+end
+configuration.mode=projectionMode;
 configuration.loaded=false;
 configuration.execution_mode="unprogrammed";
 uniqueCount=plan.unique_mask_count;
@@ -75,12 +79,12 @@ if useFlut
     for slot=1:uniqueCount
         dmd.Write_Pattern_To_Slot(slot,transformedMasks(:,:,slot));
     end
-    dmd.Set_Playlist(playlistSlots,'slave');
+    dmd.Set_Playlist(playlistSlots,char(projectionMode));
     configuration.execution_mode="flut_playlist";
 else
     stack=transformedMasks(:,:,plan.event_slot_indices);
     dmd.pattern_stack=stack;
-    dmd.Write_Stack('slave');
+    dmd.Write_Stack(char(projectionMode));
     configuration.execution_mode="physical_event_stack";
     configuration.dmd_stack_size=size(stack);
     configuration.physical_upload_count=n;

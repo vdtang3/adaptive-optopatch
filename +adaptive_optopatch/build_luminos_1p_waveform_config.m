@@ -96,16 +96,22 @@ else
     end
     triggerWidth=max(3/rate,20e-6);
     triggerOffset=triggerOnset+triggerWidth;
-    firstLightOnset=min(pulses.onset_s(~pulses.is_null));
-    if ~isempty(firstLightOnset) && triggerOffset(1)>firstLightOnset
-        error("adaptive_optopatch:DmdInitializationNotDark", ...
-            "The first optical pulse begins before the DMD initialization trigger ends. Add protocol pre-delay.");
+    if isfield(options.DmdSequencePlan,"projection_mode") && ...
+            string(options.DmdSequencePlan.projection_mode)=="master"
+        laterOnsets=double(pulses.onset_s(2:end));
+        if numel(triggerOnset)~=numel(laterOnsets) || ...
+                any(triggerOffset>=laterOnsets)
+            error("adaptive_optopatch:DmdTriggerNotBeforePulse", ...
+                "Each DMD trigger must finish before its corresponding blue pulse.");
+        end
+    else
+        firstLightOnset=min(pulses.onset_s(~pulses.is_null));
+        if ~isempty(firstLightOnset) && ~isempty(triggerOffset) && ...
+                triggerOffset(1)>firstLightOnset
+            error("adaptive_optopatch:DmdInitializationNotDark", ...
+                "The first optical pulse begins before the DMD initialization trigger ends.");
+        end
     end
-    % The ALP advances on the rising edge. The digital pulse may remain high
-    % after a back-to-back optical event begins; requiring its full width to
-    % fit in darkness would add a biological gap that the protocol did not
-    % request. The initial edge remains fully dark so entry 1 is selected
-    % before any illumination.
     if ~isempty(triggerOffset) && triggerOffset(end)>globalProps.total_time
         error("adaptive_optopatch:DmdAdvanceOutsideAcquisition", ...
             "The final DMD advance trigger exceeds the acquisition duration.");

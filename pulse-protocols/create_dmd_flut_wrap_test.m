@@ -60,4 +60,5 @@ summary=table(event_index,expected_wrapped_slots, ...
     'VariableNames',["event_index","expected_slot","expected_cell_id","onset_s"]);
 disp(summary);
 fprintf("Saved %s\n",output_path);
-fprintf("Hardware check: eight explicit FLUT entries should show slots 1,2,3,1,2,3,1,2.\n");
+fprintf("Hardware check: eight FLUT pictures should show slots 1,2,3,1,2,3,1,2.\n");
+fprintf("Spinning Upright arms picture 1 and uses seven advance edges before pulses 2-8.\n");

@@ -1744,7 +1744,10 @@ classdef AdaptiveOptopatchController < handle
                 preview=fill_2p_waveform_preview(preview, ...
                     controller.build2pPreviewWaveforms(plan),options.MaximumPoints);
                 preview.acquisition_id=string(first.acquisition_id);
-                if has1p, preview=add_1p_channels_to_dense_preview(preview,first,plan.targets); end
+                if has1p
+                    preview=add_1p_channels_to_dense_preview(preview,first, ...
+                        plan.targets,controller.OnePhotonProfile.rig_name=="Spinning_Upright");
+                end
             elseif has1p
                 preview=fill_1p_waveform_preview(preview,plan, ...
                     options.MaximumPoints);
@@ -1809,7 +1812,9 @@ classdef AdaptiveOptopatchController < handle
                             plan.targets.parameters.blue_mask_adjustment_pixels);
                         if ~adaptive_optopatch.is_simultaneous_protocol(resolved) && ...
                                 (any(twoRows) || numel(ids)>1 || varies)
-                            sequencePlan=adaptive_optopatch.build_dmd_sequence_plan(resolved,plan.targets);
+                            sequencePlan=adaptive_optopatch.build_dmd_sequence_plan( ...
+                                resolved,plan.targets,"HoldPatternUntilTrigger", ...
+                                controller.OnePhotonProfile.rig_name=="Spinning_Upright");
                             % Capacity is a live-device property. Validate it
                             % during Update Plan, before Run can upload or arm
                             % anything; prepare_luminos_dmd_sequence remains
@@ -3426,7 +3431,7 @@ for id=reshape(unique(cellIds(~isNull),"stable"),1,[])
 end
 end
 
-function preview=add_1p_channels_to_dense_preview(preview,protocol,targets)
+function preview=add_1p_channels_to_dense_preview(preview,protocol,targets,holdPattern)
 % Add 1P commands on the exact dense 2P preview timebase.
 pulses=adaptive_optopatch.flatten_pulse_schedule(protocol);
 pulses=pulses(pulses.stimulation_source=="1p_dmd",:);
@@ -3442,7 +3447,8 @@ for k=1:height(pulses)
     event.stimulation_source="1p_dmd";
     preview.events(end+1,1)=event;
 end
-plan=adaptive_optopatch.build_dmd_sequence_plan(protocol,targets);
+plan=adaptive_optopatch.build_dmd_sequence_plan(protocol,targets, ...
+    "HoldPatternUntilTrigger",holdPattern);
 width=max(3/double(preview.sample_rate_hz),20e-6);
 triggerOnset=double(plan.dmd_trigger_s(:));
 advance=adaptive_optopatch.luminos_event_waveform(t,triggerOnset, ...

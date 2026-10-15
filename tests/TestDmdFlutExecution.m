@@ -18,6 +18,42 @@ classdef TestDmdFlutExecution < matlab.unittest.TestCase
     end
 
     methods (Test)
+        function spinningUprightHoldsPatternUntilNextPulse(testCase)
+            [targets,protocol]=fixture(3,[1;2;3],zeros(3,1));
+            plan=adaptive_optopatch.build_dmd_sequence_plan( ...
+                protocol,targets,"HoldPatternUntilTrigger",true);
+            testCase.verifyEqual(plan.projection_mode,"master");
+            testCase.verifyEqual(plan.dmd_trigger_s, ...
+                double(protocol.events.onset_s(2:end))-0.001, ...
+                "AbsTol",1e-12);
+            testCase.verifyEqual(plan.trigger_associated_pulse_id,[2;3]);
+            dmd=simulated_dmd(targets.reference_camera);
+            configuration=adaptive_optopatch.prepare_luminos_dmd_sequence( ...
+                dmd,plan,"DryRun",false);
+            testCase.verifyEqual(configuration.mode,"master");
+            testCase.verifyEqual(dmd.playlist_mode,"master");
+            testCase.verifyEqual(dmd.playlist,[1;2;3]);
+            props=struct("rate",100000,"total_time",1, ...
+                "clock_source","Dev1/PFI0","trigger_source","Dev1/PFI12", ...
+                "completion_trigger","None","daq_master",true);
+            wfm=struct("ao",[],"do",[],"ai",[],"di",[],"ctri",[], ...
+                "ao_camera_triggered",[],"do_camera_triggered",[]);
+            [~,configured]=adaptive_optopatch.build_luminos_mixed_waveform_config( ...
+                props,wfm,protocol,"DmdSequencePlan",plan, ...
+                "OnePhotonProfile",adaptive_optopatch.spinning_upright_1p_profile());
+            trigger=configured.do(string({configured.do.name})== ...
+                "AdaptiveOptopatch DMD trigger");
+            testCase.verifyEqual(trigger.params{1},plan.dmd_trigger_s);
+        end
+
+        function spinningUprightRejectsPatternChangeWithoutDarkTime(testCase)
+            [targets,protocol]=fixture(2,[1;2],zeros(2,1));
+            protocol.events.onset_s(2)=protocol.events.offset_s(1);
+            testCase.verifyError(@()adaptive_optopatch.build_dmd_sequence_plan( ...
+                protocol,targets,"HoldPatternUntilTrigger",true), ...
+                "adaptive_optopatch:DmdSettleIntervalUnavailable");
+        end
+
         function thirtyFourMasksProgramOnceForThirtyFourHundredEvents(testCase)
             sequence=repmat((1:34)',100,1);
             [targets,protocol]=fixture(34,sequence,zeros(3400,1));

@@ -2668,3 +2668,17 @@ The FLUT diagnostic now programs an entry for every trigger instead of relying
 on a three-entry playlist to wrap in slave mode. Three distinct bitmaps are
 still uploaded once. Whether the ALP advances on each trigger needs a live
 test.
+
+## 2026-10-15 — Hold Spinning Upright Blue DMD masks through each pulse
+
+The 19:37 FLUT trial archived blue commands at 2.10, 2.20, etc. seconds but
+DMD triggers at acquisition start and the preceding pulse offsets. An ALP
+sequence in slave mode illuminates a picture for its configured picture time
+and can then go dark until the next trigger; the saved trigger schedule did
+not overlap the blue pulses. Spinning Upright now arms the first playlist
+picture before acquisition and uses ALP master stepping, which repeats the
+current picture until a rising trigger edge. It advances later pictures 1 ms
+before their blue pulses and rejects protocols without that dark interval.
+Virtual Upright retains its existing slave sequence policy. This change
+follows the Luminos ALP driver behavior and simulation tests; the physical
+output still requires a rig retest.

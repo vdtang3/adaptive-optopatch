@@ -161,7 +161,18 @@ end
 if isfield(plan,"dmd_trigger_s"), onset=double(plan.dmd_trigger_s(:));
 else, onset=[0;double(plan.advance_onset_s(:))]; end
 offset=onset+max(3/rate,20e-6);
-if offset(1)>min(pulses.onset_s)
+if isempty(onset)
+    record=constant_record("AdaptiveOptopatch DMD trigger", ...
+        profile.dmd.trigger_port,neutral);
+    return
+end
+if isfield(plan,"projection_mode") && string(plan.projection_mode)=="master"
+    laterOnsets=double(pulses.onset_s(2:end));
+    if numel(onset)~=numel(laterOnsets) || any(offset>=laterOnsets)
+        error("adaptive_optopatch:DmdTriggerNotBeforePulse", ...
+            "Each DMD trigger must finish before its corresponding blue pulse.");
+    end
+elseif offset(1)>min(pulses.onset_s)
     error("adaptive_optopatch:DmdInitializationNotDark", ...
         "The first 1P pulse begins before DMD initialization ends.");
 end

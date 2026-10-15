@@ -130,13 +130,13 @@ classdef TestDmdFlutExecution < matlab.unittest.TestCase
 
             testCase.verifyEqual(dmd.reserved_slot_count,3);
             testCase.verifyEqual(dmd.slot_write_count,3);
-            testCase.verifyEqual(dmd.playlist,[1;2;3]);
+            testCase.verifyEqual(dmd.playlist,[1;2;3;1;2;3;1;2]);
             testCase.verifyEqual(numel(plan.dmd_trigger_s),8);
             testCase.verifyEqual(plan.dmd_diagnostic.expected_wrapped_slots, ...
                 [1;2;3;1;2;3;1;2]);
             testCase.verifyEqual(plan.dmd_diagnostic.slot_target_cell_ids, ...
                 ["cell_001";"cell_002";"cell_003"]);
-            testCase.verifyEqual(configuration.playlist_entry_count,3);
+            testCase.verifyEqual(configuration.playlist_entry_count,8);
             testCase.verifyEqual(configuration.execution_mode,"flut_playlist");
             testCase.verifyTrue(configuration.supports_flut);
             testCase.verifyEqual(configuration.flut_max_entries,4096);
@@ -158,7 +158,7 @@ classdef TestDmdFlutExecution < matlab.unittest.TestCase
                 "AdaptiveOptopatch DMD trigger",1);
             testCase.verifyEqual(numel(configured.do(trigger).params{1}),8);
             testCase.verifyEqual(summary.dmd_sequence.programmed_playlist_slots, ...
-                [1;2;3]);
+                [1;2;3;1;2;3;1;2]);
         end
 
         function wrapDiagnosticRejectsNonFlutHardware(testCase)
@@ -180,7 +180,7 @@ classdef TestDmdFlutExecution < matlab.unittest.TestCase
             run(fullfile(testCase.ProtocolPath,"create_dmd_flut_wrap_test.m"));
 
             diagnostic=protocol.acquisitions.dmd_diagnostic;
-            testCase.verifyEqual(diagnostic.diagnostic_name,"dmd_flut_wrap");
+            testCase.verifyEqual(diagnostic.diagnostic_name,"dmd_flut_sequence");
             testCase.verifyEqual(diagnostic.base_playlist_slots,[1;2;3]);
             testCase.verifyEqual(diagnostic.base_playlist_length,3);
             testCase.verifyEqual(diagnostic.dmd_trigger_count,8);
@@ -193,7 +193,8 @@ classdef TestDmdFlutExecution < matlab.unittest.TestCase
             testCase.verifyNumElements(resolved,1);
             testCase.verifyEqual(resolved{1}.dmd_diagnostic,diagnostic);
             plan=adaptive_optopatch.build_dmd_sequence_plan(resolved{1},targets);
-            testCase.verifyEqual(plan.programmed_playlist_slots,[1;2;3]);
+            testCase.verifyEqual(plan.programmed_playlist_slots, ...
+                [1;2;3;1;2;3;1;2]);
             testCase.verifyEqual(numel(plan.dmd_trigger_s),8);
         end
 

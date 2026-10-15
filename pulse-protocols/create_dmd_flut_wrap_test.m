@@ -1,4 +1,4 @@
-% Create a hardware diagnostic for cyclic FLUT playback in slave mode.
+% Create a hardware diagnostic for an explicit FLUT sequence in slave mode.
 
 % Edit these explicit test settings for the current FOV. The three named cells
 % must exist, be stimulation-enabled, and have distinct executable Blue masks.
@@ -9,7 +9,7 @@ event_spacing_s=0.100;
 pre_delay_s=0.100;
 post_delay_s=0.100;
 
-diagnostic_name="dmd_flut_wrap";
+diagnostic_name="dmd_flut_sequence";
 base_playlist_slots=(1:3)';
 expected_wrapped_slots=[1;2;3;1;2;3;1;2];
 dmd_trigger_count=numel(expected_wrapped_slots);
@@ -60,4 +60,4 @@ summary=table(event_index,expected_wrapped_slots, ...
     'VariableNames',["event_index","expected_slot","expected_cell_id","onset_s"]);
 disp(summary);
 fprintf("Saved %s\n",output_path);
-fprintf("Hardware check: eight slave triggers should show slots 1,2,3,1,2,3,1,2.\n");
+fprintf("Hardware check: eight explicit FLUT entries should show slots 1,2,3,1,2,3,1,2.\n");

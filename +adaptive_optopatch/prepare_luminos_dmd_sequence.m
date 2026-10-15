@@ -20,7 +20,7 @@ useFlut=supports_flut(dmd);
 configuration.supports_flut=useFlut;
 if isfield(plan,"dmd_diagnostic") && ~useFlut
     error("adaptive_optopatch:DmdFlutDiagnosticRequiresFlut", ...
-        "The dmd_flut_wrap diagnostic requires a DMD with FLUT support.");
+        "The DMD FLUT diagnostic requires a DMD with FLUT support.");
 end
 flutMaxEntries=NaN; playlistCapacity=NaN;
 if useFlut

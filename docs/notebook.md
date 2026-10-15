@@ -2653,3 +2653,18 @@ unverified auxiliary analog input on this rig, unless the active waveform
 already includes that port. The DAQ archives the raw samples with the camera
 frame counters and AO commands. An optical check is required before treating
 this signal as delivered blue light or using it to correct fluorescence.
+
+## 2026-10-15 — DAQ camera alignment and explicit FLUT entries
+
+Inspection uses the archived camera VSYNC counter when its rising transition
+count exactly matches the movie frame count. It records the timing source and
+count. Otherwise it retains nominal timing and reports the mismatch, since the
+counter cannot identify which movie frames lack matching transitions. The
+2026-10-15 static Spinning Upright archive has 2,894 edges for 3,000 frames;
+its frame-to-DAQ alignment remains unresolved. The ai12 monitor may support
+an optical onset measurement after its wiring is verified.
+
+The FLUT diagnostic now programs an entry for every trigger instead of relying
+on a three-entry playlist to wrap in slave mode. Three distinct bitmaps are
+still uploaded once. Whether the ALP advances on each trigger needs a live
+test.

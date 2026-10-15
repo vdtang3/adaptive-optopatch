@@ -1,6 +1,28 @@
 classdef TestInspectAcquisition < matlab.unittest.TestCase
     %TESTINSPECTACQUISITION Synthetic quick-look linkage and display tests.
     methods (Test)
+        function alignsFramesOnlyWhenVsyncEdgesMatchMovie(testCase)
+            folder=tempname; mkdir(folder);
+            cleanup=onCleanup(@()rmdir(folder,"s")); %#ok<NASGU>
+            counter=struct("counter","Dev1/Ctr3", ...
+                "data",[0;0;1;1;2;2;3;3]);
+            daq=struct("Counter_Inputs",counter, ...
+                "global_props",struct("rate",100));
+            cameraDevice=struct("vsync","Dev1/Ctr3");
+            Device_Data={struct,daq,cameraDevice}; %#ok<NASGU>
+            outputPath=fullfile(folder,"output_data.mat");
+            save(outputPath,"Device_Data");
+            camera=struct("archive_index",3);
+            [times,report]=adaptive_optopatch.align_camera_frames_to_daq( ...
+                outputPath,camera,[0;0.01;0.02]);
+            testCase.verifyEqual(times,[0.02;0.04;0.06]);
+            testCase.verifyEqual(report.status,"aligned");
+            [times,report]=adaptive_optopatch.align_camera_frames_to_daq( ...
+                outputPath,camera,[0;0.01;0.02;0.03]);
+            testCase.verifyEqual(times,[0;0.01;0.02;0.03]);
+            testCase.verifyEqual(report.status,"frame_count_mismatch");
+        end
+
         function simultaneousPulsesDisplayMultiple(testCase)
             fixture=make_fixture(testCase,"1p_dmd",[.5 1]);
             adaptive_optopatch_record=fixture.record;

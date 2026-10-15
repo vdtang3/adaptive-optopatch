@@ -9,6 +9,7 @@ arguments
     options.Resume (1,1) logical = true
     options.StopAfterTrial (1,1) double {mustBeNonnegative,mustBeInteger} = 0
     options.Profile (1,1) struct = adaptive_optopatch.virtual_upright_1p_profile()
+    options.StimulationManifest struct = struct([])
     options.LaserPowerW (1,1) double = NaN
     options.ConfirmLiveOutput (1,1) logical = false
     options.ManageLaserEmission (1,1) logical = true
@@ -39,8 +40,8 @@ arguments
 end
 if ~options.ConfirmLiveOutput
     error("adaptive_optopatch:LiveOutputNotConfirmed", ...
-        "Live 488-nm output was not confirmed. Review the DMD mask, OBIS " + ...
-        "power, and mod488 voltage, then pass ConfirmLiveOutput=true.");
+        "Live 488-nm output was not confirmed. Review the DMD mask, " + ...
+        "illumination source, and mod488 voltage, then pass ConfirmLiveOutput=true.");
 end
 if ~isfield(manifest,"trials") || isempty(manifest.trials)
     error("adaptive_optopatch:EmptyManifest","The manifest has no trials.");
@@ -52,6 +53,22 @@ if any(~ismember(string(manifest.trials.stimulation_mode),allowed))
         "run_1p_manifest accepts only 1p_dmd trials.");
 end
 profile=options.Profile;
+stimulationManifest=options.StimulationManifest;
+if isempty(stimulationManifest)
+    stimulationManifest=adaptive_optopatch.stimulation_manifest_for_profile(profile);
+end
+if string(stimulationManifest.rig_name)~=string(profile.rig_name)
+    error("adaptive_optopatch:RigManifestMismatch", ...
+        "The stimulation output manifest must match the hardware profile.");
+end
+if profile.rig_name=="Spinning_Upright" && options.AllowMixedSources
+    error("adaptive_optopatch:UnsupportedRigModality", ...
+        "Spinning_Upright supports only 1P DMD stimulation.");
+end
+if strlength(string(profile.laser.name))==0 && isfinite(options.LaserPowerW)
+    error("adaptive_optopatch:LaserPowerUnavailable", ...
+        "This rig has no managed OBIS laser; set LaserPowerW=NaN.");
+end
 if isfinite(options.LaserPowerW) && ...
         (options.LaserPowerW<0 || options.LaserPowerW>profile.laser.max_power_w)
     error("adaptive_optopatch:LaserPowerOutOfRange", ...
@@ -154,12 +171,13 @@ run.dmd_ownership=dmdOwnership.report;
 % power set that early.
 try
     run.initial_neutralization=adaptive_optopatch.neutralize_all_stimulation( ...
-        app,"Context","1p run start","Modality",runModality);
+        app,"Context","1p run start","Modality",runModality, ...
+        "Manifest",stimulationManifest,"OnePhotonProfile",profile);
     warn_neutralization(run.initial_neutralization);
-    if isfinite(options.LaserPowerW)
+    if ~isempty(hardware.laser) && isfinite(options.LaserPowerW)
         hardware.laser.SetPower=options.LaserPowerW;
     end
-    if options.ManageLaserEmission && ~hardware.laser_was_on
+    if ~isempty(hardware.laser) && options.ManageLaserEmission && ~hardware.laser_was_on
         hardware.laser.Start();
         runnerStartedLaser=true;
     end
@@ -170,12 +188,12 @@ catch exception
     % nothing.
     restore_1p_hardware(app,hardware,original,profile, ...
         options.BlankDmdAfterTrial,isfinite(options.LaserPowerW), ...
-        runnerStartedLaser,runModality,dmdOwnership);
+        runnerStartedLaser,runModality,dmdOwnership,stimulationManifest);
     rethrow(exception)
 end
 cleanup=onCleanup(@()restore_1p_hardware(app,hardware,original,profile, ...
     options.BlankDmdAfterTrial,isfinite(options.LaserPowerW), ...
-    runnerStartedLaser,runModality,dmdOwnership));
+    runnerStartedLaser,runModality,dmdOwnership,stimulationManifest));
 
 completedThisCall=0;
 for k=1:n
@@ -237,7 +255,7 @@ for k=1:n
         end
         run.trials.orange_configuration{k}= ...
             adaptive_optopatch.prepare_luminos_orange_mask(app,trialTargets, ...
-            "DryRun",false);
+            "DryRun",false,"Profile",profile);
         run.trials.target_configuration{k}=config;
         run.trials.acquisition_status(k)="configured";
 
@@ -260,7 +278,8 @@ for k=1:n
             adaptive_optopatch.build_luminos_mixed_waveform_config( ...
             original.global_props,original.wfm_data,protocol, ...
             "DmdSequencePlan",dmdSequencePlan, ...
-            "TwoPhotonWaveforms",twoPhotonWaveforms);
+            "TwoPhotonWaveforms",twoPhotonWaveforms, ...
+            "OnePhotonProfile",profile,"Manifest",stimulationManifest);
         % Measure the candidate configuration BEFORE it is installed, so a
         % configuration that would drive an AO-owned stimulation line
         % nobody commanded never reaches the DAQ at all.
@@ -268,6 +287,7 @@ for k=1:n
         accounting=adaptive_optopatch.account_stimulation_outputs( ...
             globalProps,wfmData,"Modality",trialModality, ...
             "Policy",options.StimulationAccountingPolicy, ...
+            "Manifest",stimulationManifest, ...
             "Context",sprintf("1p trial %d (%s)",k,string(row.output_tag)));
         run.trials.stimulation_accounting{k}=accounting;
         report_accounting(accounting);
@@ -285,15 +305,21 @@ for k=1:n
         % hardware it is not about to use.
         adaptive_optopatch.neutralize_all_stimulation(app, ...
             "Context",sprintf("1p trial %d pre-arm",k),"BlankBlueDmd",false, ...
-            "Modality",trialModality);
+            "Modality",trialModality,"Manifest",stimulationManifest, ...
+            "OnePhotonProfile",profile);
 
         hardware.daq.global_props=globalProps;
         hardware.daq.wfm_data=wfmData;
         hardware.daq.waveforms_built=false;
+        onlyCameraIndex=0;
+        if profile.rig_name=="Spinning_Upright"
+            onlyCameraIndex=hardware.voltage_camera_index;
+        end
         [hardware.cameras,cameraFramePlan]= ...
             adaptive_optopatch.set_camera_frames_for_duration( ...
             hardware.cameras,globalProps.total_time, ...
-            "AllowRateLimitOverride",options.AllowCameraRateOverride);
+            "AllowRateLimitOverride",options.AllowCameraRateOverride, ...
+            "OnlyCameraIndex",onlyCameraIndex);
         waveformSummary.camera_frame_plan=cameraFramePlan;
         waveformSummary.two_photon_release_level=options.TwoPhotonReleaseLevel;
         run.trials.waveform_summary{k}=waveformSummary;
@@ -433,8 +459,12 @@ save_checkpoint();
         record.experiment_directory=folder;
         record.run_directory=options.OutputDirectory;
         record.reference_model_path=linked_reference_path(options.OutputDirectory);
-        record.obis_power_w=double(hardware.laser.SetPower);
-        record.obis_mode=string(hardware.laser.Mode);
+        record.obis_power_w=hardware.laser_power_w;
+        record.obis_mode=hardware.laser_mode;
+        if ~isempty(hardware.laser)
+            record.obis_power_w=double(hardware.laser.SetPower);
+            record.obis_mode=string(hardware.laser.Mode);
+        end
         record.daq_synchronization= ...
             adaptive_optopatch.capture_luminos_daq_sync(hardware.daq);
         record.camera_geometry=cameraGeometry;
@@ -583,7 +613,7 @@ end
 end
 
 function restore_1p_hardware(app,hardware,original,profile,blankDmd, ...
-        restorePower,stopLaser,modality,dmdOwnership)
+        restorePower,stopLaser,modality,dmdOwnership,stimulationManifest)
 % Stimulation goes safe first, over what this run actually used. Cleanup
 % once unwound only the modality that had been selected, so a 1P run ended
 % with the Pockels cell and the galvos exactly as the previous 2P run had
@@ -594,7 +624,8 @@ function restore_1p_hardware(app,hardware,original,profile,blankDmd, ...
 % value either, which would be a command like any other.
 try
     adaptive_optopatch.neutralize_all_stimulation(app, ...
-        "Context","1p cleanup","BlankBlueDmd",blankDmd,"Modality",modality);
+        "Context","1p cleanup","BlankBlueDmd",blankDmd,"Modality",modality, ...
+        "Manifest",stimulationManifest,"OnePhotonProfile",profile);
 catch
 end
 try
@@ -636,13 +667,13 @@ for k=1:numel(hardware.cameras)
     end
 end
 try
-    if restorePower
+    if restorePower && ~isempty(hardware.laser)
         hardware.laser.SetPower=original.laser_power_w;
     end
 catch
 end
 try
-    if stopLaser, hardware.laser.Stop(); end
+    if stopLaser && ~isempty(hardware.laser), hardware.laser.Stop(); end
 catch
 end
 % Last, after the DMDs have been blanked: releasing restores each device's

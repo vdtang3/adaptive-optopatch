@@ -17,7 +17,10 @@ end
 hardware=struct;
 hardware.daq=require_device(app,"DAQ",profile.daq.name);
 hardware.dmd=require_device(app,"DMD",profile.dmd.name);
-hardware.laser=require_device(app,"Laser_Device",profile.laser.name);
+hardware.laser=[];
+if string(profile.laser.device_type)~="none"
+    hardware.laser=require_device(app,"Laser_Device",profile.laser.name);
+end
 hardware.modulator=require_device(app,"NI_DAQ_Modulator",profile.modulator.name);
 hardware.shutter=require_device(app,"NI_DAQ_Shutter",profile.shutter.name);
 hardware.dmd_trigger=require_device(app,"NI_DAQ_Shutter",profile.dmd.trigger_alias);
@@ -74,18 +77,24 @@ if options.RequireCalibratedDmd
     end
 end
 
-hardware.laser_mode=string(hardware.laser.Mode);
-hardware.laser_was_on=logical(hardware.laser.Get_state());
-hardware.laser_power_w=double(hardware.laser.SetPower);
-hardware.laser_interlock_ok=logical(hardware.laser.Get_interlockStatus());
-if ~hardware.laser_interlock_ok
-    error("adaptive_optopatch:LaserInterlockOpen", ...
-        "The 488 OBIS reports that its key or interlock is not enabled.");
-end
-if hardware.laser_power_w<0 || hardware.laser_power_w>profile.laser.max_power_w
-    error("adaptive_optopatch:ActiveLaserPowerOutOfRange", ...
-        "The active OBIS setpoint %.4g W is outside the profile range 0-%.4g W.", ...
-        hardware.laser_power_w,profile.laser.max_power_w);
+hardware.laser_mode="not_managed";
+hardware.laser_was_on=false;
+hardware.laser_power_w=NaN;
+hardware.laser_interlock_ok=NaN;
+if ~isempty(hardware.laser)
+    hardware.laser_mode=string(hardware.laser.Mode);
+    hardware.laser_was_on=logical(hardware.laser.Get_state());
+    hardware.laser_power_w=double(hardware.laser.SetPower);
+    hardware.laser_interlock_ok=logical(hardware.laser.Get_interlockStatus());
+    if ~hardware.laser_interlock_ok
+        error("adaptive_optopatch:LaserInterlockOpen", ...
+            "The 488 OBIS reports that its key or interlock is not enabled.");
+    end
+    if hardware.laser_power_w<0 || hardware.laser_power_w>profile.laser.max_power_w
+        error("adaptive_optopatch:ActiveLaserPowerOutOfRange", ...
+            "The active OBIS setpoint %.4g W is outside the profile range 0-%.4g W.", ...
+            hardware.laser_power_w,profile.laser.max_power_w);
+    end
 end
 if ~isstruct(hardware.daq.global_props) || isempty(fieldnames(hardware.daq.global_props)) || ...
         ~isstruct(hardware.daq.wfm_data)
@@ -118,7 +127,7 @@ end
 if strlength(hardware.daq_sync.selected_master_device)>0 && ...
         ~ismember(hardware.daq_sync.selected_master_device,profile.daq.supported_internal_masters)
     error("adaptive_optopatch:UnsupportedDaqMaster", ...
-        "The selected clock master '%s' is not supported by this VU profile.", ...
+        "The selected clock master '%s' is not supported by this rig profile.", ...
         hardware.daq_sync.selected_master_device);
 end
 if ~hardware.daq_sync.passed

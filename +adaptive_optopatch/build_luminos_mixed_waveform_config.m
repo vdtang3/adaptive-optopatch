@@ -32,6 +32,10 @@ pulses=adaptive_optopatch.flatten_pulse_schedule(protocol);
 onePhoton=pulses(pulses.stimulation_source=="1p_dmd",:);
 twoPhoton=pulses(pulses.stimulation_source=="2p_spiral",:);
 has1p=~isempty(onePhoton); has2p=~isempty(twoPhoton);
+if string(options.OnePhotonProfile.rig_name)=="Spinning_Upright" && has2p
+    error("adaptive_optopatch:UnsupportedRigModality", ...
+        "Spinning_Upright has no declared 2P scanner or modulator path.");
+end
 one=options.OnePhotonProfile; two=options.TwoPhotonProfile;
 rate=double(activeGlobalProps.rate);
 duration=double(protocol.acquisition_duration_s);
@@ -59,9 +63,13 @@ wfmData=adaptive_optopatch.drop_ao_script_waveforms(wfmData);
 manifest=options.Manifest; aliases=manifest.alias_list;
 
 % Remove every ambient spelling of all six AO-owned stimulation outputs.
+ownedAnalog=[one.modulator.name one.modulator.port];
+if string(one.rig_name)=="Virtual_Upright"
+    ownedAnalog=[ownedAnalog "Adaptive2P_X" two.scanner.x_port ...
+        "Adaptive2P_Y" two.scanner.y_port two.modulator.name two.modulator.port];
+end
 wfmData.ao=adaptive_optopatch.remove_output_records(wfmData.ao, ...
-    [one.modulator.name one.modulator.port "Adaptive2P_X" two.scanner.x_port ...
-     "Adaptive2P_Y" two.scanner.y_port two.modulator.name two.modulator.port],aliases);
+    ownedAnalog,aliases);
 wfmData.do=adaptive_optopatch.remove_output_records(wfmData.do, ...
     [one.shutter.name one.shutter.port "AdaptiveOptopatch DMD trigger" ...
      one.dmd.trigger_alias one.dmd.trigger_port],aliases);

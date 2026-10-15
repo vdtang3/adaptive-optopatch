@@ -20,6 +20,7 @@ classdef AdaptiveOptopatchController < handle
         LifecycleState (1,1) string = "EDITABLE"
         StopRequested (1,1) logical = false
         Status string = strings(0,1)
+        OnePhotonProfile struct
         ScannerWarning (1,1) string = ""
         ReferenceImage = []
         ReferenceInfo struct = struct([])
@@ -134,10 +135,13 @@ classdef AdaptiveOptopatchController < handle
                 options.RunRoot (1,1) string = ""
             end
             controller.LuminosApp=options.LuminosApp;
+            controller.OnePhotonProfile=adaptive_optopatch.one_photon_profile_for_rig( ...
+                options.LuminosApp);
             controller.RunRoot=options.RunRoot;
             controller.FovGeometry=adaptive_optopatch.create_fov_geometry();
             controller.PlanParameters=default_plan_parameters();
-            controller.Status=["Ready. In Luminos, click Snap for Camera 1."; ...
+            controller.Status=["Ready. In Luminos, click Snap for "+ ...
+                controller.OnePhotonProfile.camera.name+"."; ...
                 "Then load its MAT file from the Luminos Snaps folder."];
         end
 
@@ -505,7 +509,9 @@ classdef AdaptiveOptopatchController < handle
                 snapshotPath (1,1) string
             end
             controller.assertNotRunning("Loading a snapshot");
-            [image,info]=adaptive_optopatch.read_reference_snapshot(snapshotPath);
+            [image,info]=adaptive_optopatch.read_reference_snapshot(snapshotPath, ...
+                "ExpectedCameraName",controller.OnePhotonProfile.camera.name, ...
+                "RigName",controller.OnePhotonProfile.rig_name);
             controller.matchSimulatedReferenceCamera(info.metadata.voltage_camera);
             controller.adoptReference(image,info);
             controller.ReferenceSourceKind="snapshot";
@@ -528,7 +534,8 @@ classdef AdaptiveOptopatchController < handle
             %   is_current even when the session's Snaps folder has rolled
             %   over to a new day.
             choices=adaptive_optopatch.list_snapshot_choices( ...
-                "Roots",controller.snapshotSearchRoots());
+                "Roots",controller.snapshotSearchRoots(), ...
+                "ExpectedCameraName",controller.OnePhotonProfile.camera.name);
             currentPath=info_string(controller.ReferenceInfo,"snapshot_path");
             for k=1:numel(choices)
                 choices(k).is_current=strlength(currentPath)>0 && ...
@@ -583,7 +590,8 @@ classdef AdaptiveOptopatchController < handle
             %   per snapshot and a MAT per bundle to answer `loadable`
             %   honestly.
             choices=adaptive_optopatch.list_reference_choices( ...
-                "Roots",controller.snapshotSearchRoots());
+                "Roots",controller.snapshotSearchRoots(), ...
+                "ExpectedCameraName",controller.OnePhotonProfile.camera.name);
             currentPath=controller.ReferenceSourcePath;
             for k=1:numel(choices)
                 choices(k).is_current=strlength(currentPath)>0 && ...
@@ -714,6 +722,13 @@ classdef AdaptiveOptopatchController < handle
             end
             controller.assertNotRunning("Loading a saved FOV");
             reference=fovState.reference;
+            if controller.OnePhotonProfile.rig_name=="Spinning_Upright" && ...
+                    (string(reference.rig_name)~="Spinning_Upright" || ...
+                    string(reference.voltage_camera.name)~= ...
+                    controller.OnePhotonProfile.camera.name)
+                error("adaptive_optopatch:WrongReferenceCamera", ...
+                    "Load a Spinning_Upright FOV from Orca Flash Orange.");
+            end
             controller.matchSimulatedReferenceCamera(reference.voltage_camera);
             % The FOV being replaced is forgotten first, through the same
             % primitive an explicit New FOV uses; what a saved bundle adds
@@ -1764,13 +1779,17 @@ classdef AdaptiveOptopatchController < handle
             end
             has1p=any(plan.manifest.trials.onephoton_event_count>0);
             has2p=any(plan.manifest.trials.twophoton_event_count>0);
+            if has2p && controller.OnePhotonProfile.rig_name=="Spinning_Upright"
+                issues(end+1)="Spinning_Upright has no declared 2P stimulation path.";
+            end
             oneHardware=struct([]); twoHardware=struct([]);
             if has2p
                 bundleReport=adaptive_optopatch.validate_2p_planning_bundle(plan.targets);
                 issues=[issues;bundleReport.issues(:)];
             end
             if isempty(issues) && has1p
-                oneHardware=adaptive_optopatch.resolve_luminos_1p_hardware(controller.LuminosApp);
+                oneHardware=adaptive_optopatch.resolve_luminos_1p_hardware( ...
+                    controller.LuminosApp,controller.OnePhotonProfile);
             end
             if isempty(issues) && has2p
                 twoHardware=adaptive_optopatch.resolve_luminos_2p_hardware( ...
@@ -1810,16 +1829,26 @@ classdef AdaptiveOptopatchController < handle
                     end
                     [globalProps,wfmData]=adaptive_optopatch.build_luminos_mixed_waveform_config( ...
                         hardware.daq.global_props,hardware.daq.wfm_data,resolved, ...
-                        "DmdSequencePlan",sequencePlan,"TwoPhotonWaveforms",waveforms);
+                        "DmdSequencePlan",sequencePlan,"TwoPhotonWaveforms",waveforms, ...
+                        "OnePhotonProfile",controller.OnePhotonProfile, ...
+                        "Manifest",adaptive_optopatch.stimulation_manifest_for_profile( ...
+                            controller.OnePhotonProfile));
                     if any(oneRows)&&any(twoRows), modality="mixed";
                     elseif any(twoRows), modality="2p_spiral"; else, modality="1p_dmd"; end
                     accounting=adaptive_optopatch.account_stimulation_outputs( ...
                         globalProps,wfmData,"Modality",modality, ...
+                        "Manifest",adaptive_optopatch.stimulation_manifest_for_profile( ...
+                            controller.OnePhotonProfile), ...
                         "Context",sprintf("preflight trial %d",rowIndex));
                     accountingReports{end+1}=accounting; %#ok<AGROW>
                     issues=[issues;accounting.blocking(:)]; %#ok<AGROW>
+                    onlyCameraIndex=0;
+                    if controller.OnePhotonProfile.rig_name=="Spinning_Upright"
+                        onlyCameraIndex=hardware.voltage_camera_index;
+                    end
                     preflight_camera_frames(hardware.cameras,globalProps.total_time, ...
-                        any(twoRows)&&parameters.allow_camera_rate_override);
+                        any(twoRows)&&parameters.allow_camera_rate_override, ...
+                        onlyCameraIndex);
                 end
             end
             issues=unique(issues(strlength(issues)>0),"stable");
@@ -2923,6 +2952,7 @@ classdef AdaptiveOptopatchController < handle
                 "OutputRoot",outputRoot,"Resume",true,"StopAfterTrial",count, ...
                 "ConfirmTrajectoryTest",true,"ConfirmLiveOutput",true, ...
                 "LaserPowerW",frozenControls.laser_power_w, ...
+                "OnePhotonProfile",controller.OnePhotonProfile, ...
                 "MaximumVelocityVPerS",frozenControls.maximum_velocity_v_per_s, ...
                 "MaximumAccelerationVPerS2",frozenControls.maximum_acceleration_v_per_s2, ...
                 "AllowCalibrationExtrapolation",frozenControls.allow_calibration_extrapolation, ...
@@ -3690,11 +3720,12 @@ if isfield(saved,"repeat_batch_count")
 end
 end
 
-function preflight_camera_frames(cameras,durationS,allowOverride)
+function preflight_camera_frames(cameras,durationS,allowOverride,onlyCameraIndex)
 original=arrayfun(@(camera)double(camera.frames_requested),cameras);
 cleanup=onCleanup(@()restore_camera_frames(cameras,original)); %#ok<NASGU>
 adaptive_optopatch.set_camera_frames_for_duration(cameras,durationS, ...
-    "AllowRateLimitOverride",allowOverride);
+    "AllowRateLimitOverride",allowOverride, ...
+    "OnlyCameraIndex",onlyCameraIndex);
 end
 
 function restore_camera_frames(cameras,frames)

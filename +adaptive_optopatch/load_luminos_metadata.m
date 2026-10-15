@@ -2,7 +2,7 @@ function metadata = load_luminos_metadata(outputDataPath, options)
 %LOAD_LUMINOS_METADATA Read archived Luminos metadata without loading movies.
 arguments
     outputDataPath (1,1) string
-    options.VoltageCameraSerial (1,1) string = "001125"
+    options.VoltageCameraSerial (1,1) string = ""
     options.StimulationDmdName (1,1) string = "DMD_Blue"
     options.ScannerName (1,1) string = "Chameleon (To friends: Ben)"
 end
@@ -25,6 +25,18 @@ elseif isfield(appArchive, "Rig")
     rigName = string(appArchive.Rig);
 else
     rigName = "";
+end
+voltageCameraSerial=options.VoltageCameraSerial;
+if strlength(voltageCameraSerial)==0
+    switch rigName
+        case "Virtual_Upright"
+            voltageCameraSerial="001125";
+        case "Spinning_Upright"
+            voltageCameraSerial="002312";
+        otherwise
+            error("adaptive_optopatch:UnsupportedRig", ...
+                "Specify VoltageCameraSerial for archived rig '%s'.",rigName);
+    end
 end
 
 metadata = struct;
@@ -62,7 +74,7 @@ for k = 2:numel(dd)
             "frame_rate", get_field(d, ["frame_rate","framerate"], []), ...
             "raw_archive", d);
         metadata.cameras(cameraCounter) = camera;
-        if strip(serial) == options.VoltageCameraSerial
+        if strip(serial) == voltageCameraSerial
             metadata.voltage_camera = camera;
         end
     elseif deviceName == options.StimulationDmdName
@@ -72,13 +84,9 @@ for k = 2:numel(dd)
     end
 end
 
-if metadata.rig_name ~= "Virtual_Upright"
-    warning("adaptive_optopatch:UnexpectedRig", ...
-        "Expected Virtual_Upright but found '%s'.", metadata.rig_name);
-end
 if isempty(metadata.voltage_camera)
     error("adaptive_optopatch:VoltageCameraNotFound", ...
-        "Voltage camera serial %s was not found.", options.VoltageCameraSerial);
+        "Voltage camera serial %s was not found.", voltageCameraSerial);
 end
 if isempty(metadata.stimulation_dmd)
     error("adaptive_optopatch:DmdNotFound", ...

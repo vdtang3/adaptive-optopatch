@@ -2,11 +2,31 @@
 
 MATLAB package for planning and running Optopatch experiments alongside
 Luminos. A persistent FOV stores canonical cell ROIs, stable IDs, recording and
-stimulation eligibility, and per-cell Blue-light calibrations. It supports two
-interchangeable stimulation backends:
+stimulation eligibility, and per-cell Blue-light calibrations. Available
+stimulation backends depend on the Luminos rig:
 
 - `1p_dmd`: logical soma masks transformed by Luminos through `DMD_Blue`.
 - `2p_spiral`: soma centers and radii passed to the Luminos scanning device.
+
+### Spinning Upright 1P support
+
+The Luminos `Spinning_Upright` rig selects a separate 1P profile. Its voltage
+camera is **Orca Flash Orange** (serial `002312`); **Orca Flash Blue** (serial
+`001339`) is not used for the voltage reference. AO commands blue stimulation
+through `mod488` on `Dev1/ao0`, `shutter488` on `Dev1/port0/line0`, and the
+Blue DMD trigger on `Dev1/port0/line4`. The active Luminos protocol retains
+control of recording illumination (`mod607` and `shutter607`). AO does not
+control `PatchCmd` or the 780 nm LED. There is no declared OBIS device on this
+rig, so the run archives OBIS power as unavailable and rejects an OBIS power
+override. The 2P spiral backend is unavailable on Spinning Upright.
+
+Install this package on the MATLAB path alongside the Luminos version that
+contains the `Spinning_Upright` user tab configuration. Before the first live
+run, select the Orange camera snapshot, verify both DMD calibrations were made
+against that camera, inspect the active Luminos waveform, and check blue light
+at the sample with a low `mod488` command. The DMD transform and physical light
+output still require validation on the rig; the software checks calibration
+identity and refuses missing or identity transforms.
 
 ## Audit task orchestration
 

@@ -92,11 +92,15 @@ actions(end+1)=step(scope,"two_photon_modulator","two_photon_modulator", ...
 
 % The Blue DMD advance line, held at its declared safe state so no pattern
 % can step while nothing is driving the buffered train.
+triggerSafeState=twoP.inactive_one_photon.dmd.trigger_safe_state;
+if isfield(oneP.dmd,"trigger_safe_state")
+    triggerSafeState=oneP.dmd.trigger_safe_state;
+end
 actions(end+1)=step(scope,"blue_dmd_advance_trigger","blue_dmd_advance_trigger", ...
     "trigger safe state",oneP.dmd.trigger_port, ...
-    double(twoP.inactive_one_photon.dmd.trigger_safe_state), ...
+    double(triggerSafeState), ...
     @()set_property(app,"NI_DAQ_Shutter",oneP.dmd.trigger_alias,"State", ...
-        logical(twoP.inactive_one_photon.dmd.trigger_safe_state)));
+        logical(triggerSafeState)));
 
 % A blank static pattern makes the Blue DMD non-stimulating even if light
 % does reach it, which the trigger state alone cannot guarantee: the device
@@ -114,11 +118,13 @@ end
 % explicit-update API; there is no separate "park" call on the device. One
 % call drives both axes, so it is governed by both declarations and is only
 % skipped when neither axis is commanded by this modality.
-stationary=double(oneP.inactive_two_photon.scanner.stationary_v);
-actions(end+1)=step(scope,["galvo_x","galvo_y"],"galvo_xy", ...
-    "stationary command", ...
-    twoP.scanner.x_port+", "+twoP.scanner.y_port,stationary(1), ...
-    @()park_galvos(app,twoP.scanner.name,stationary));
+if isfield(oneP,"inactive_two_photon")
+    stationary=double(oneP.inactive_two_photon.scanner.stationary_v);
+    actions(end+1)=step(scope,["galvo_x","galvo_y"],"galvo_xy", ...
+        "stationary command", ...
+        twoP.scanner.x_port+", "+twoP.scanner.y_port,stationary(1), ...
+        @()park_galvos(app,twoP.scanner.name,stationary));
+end
 
 suppressed=reshape(string({actions(is_suppressed_entry(actions)).role}),[],1);
 report=struct("schema_version","1.1.0", ...
@@ -154,6 +160,12 @@ end
 function tf=suppressed_here(scope,roles)
 %SUPPRESSED_HERE Does this modality's declaration say to leave these alone?
 tf=false;
+if string(scope.manifest.rig_name)=="Spinning_Upright" && ...
+        all(ismember(reshape(string(roles),1,[]), ...
+        ["two_photon_modulator","galvo_x","galvo_y"]))
+    tf=true;
+    return
+end
 % "all" is the legacy scope: not a rig modality, and nothing suppresses
 % under it. Callers that have not stated which acquisition they are making
 % safe keep the behaviour they had.

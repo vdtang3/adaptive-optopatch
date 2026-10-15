@@ -19,6 +19,8 @@ arguments
     % profile's voltage camera, which is the camera an AO reference is taken
     % with; a test states a different one to build the wrong-camera case.
     options.CalibrationCamera (1,1) string = ""
+    options.RigName (1,1) string {mustBeMember(options.RigName, ...
+        ["Virtual_Upright","Spinning_Upright"])} = "Virtual_Upright"
 end
 if options.LaserPowerMw>55
     error("adaptive_optopatch:SimulatedLaserPowerOutOfRange", ...
@@ -29,20 +31,26 @@ if strlength(options.SimulationOutputRoot)==0
 end
 
 profile1p=adaptive_optopatch.virtual_upright_1p_profile();
+if options.RigName=="Spinning_Upright"
+    profile1p=adaptive_optopatch.spinning_upright_1p_profile();
+end
 profile2p=adaptive_optopatch.virtual_upright_2p_profile();
 if strlength(options.CalibrationCamera)==0
     options.CalibrationCamera=string(profile1p.camera.name);
 end
 daq=device("DAQ","Dev1");
-daq.alias_list=adaptive_optopatch.virtual_upright_stimulation_manifest().alias_list;
+daq.alias_list=adaptive_optopatch.stimulation_manifest_for_profile(profile1p).alias_list;
 daq.global_props=struct("rate",200000,"total_time",1, ...
-    "clock_source","Internal Dev1", ...
-    "trigger_source",profile2p.daq.default_trigger, ...
+    "clock_source",profile1p.daq.default_clock, ...
+    "trigger_source",profile1p.daq.default_trigger, ...
     "completion_trigger","None","daq_master",true);
 daq.wfm_data=struct("ao",base_outputs(),"do",[],"ai",[],"di",[], ...
     "ctri",[],"ao_camera_triggered",[],"do_camera_triggered",[]);
-daq.default_trigger=profile2p.daq.default_trigger;
-daq.clock_bridge=profile2p.daq.clock_bridge;
+if options.RigName=="Spinning_Upright"
+    daq.wfm_data.ao=daq.wfm_data.ao(1);
+end
+daq.default_trigger=profile1p.daq.default_trigger;
+daq.clock_bridge=profile1p.daq.clock_bridge;
 daq.clock_master_device="Dev1";
 daq.master_clock_task_index=1;
 if ~options.ValidDaqSync
@@ -51,7 +59,7 @@ if ~options.ValidDaqSync
 end
 
 camera=device("Camera",profile1p.camera.name);
-camera.cam_id="S/N: 001125";
+camera.cam_id="S/N: "+profile1p.camera.serial;
 camera.ROI=options.CameraRoi;
 camera.bin=options.CameraBin;
 camera.frametrigger_source="DAQ";
@@ -70,12 +78,15 @@ orangeDmd.refimage=camera_reference(options.CameraRoi,options.CameraBin);
 % rig that skipped the pair store would be a rig AO would refuse to run on.
 calibrate(dmd,options.CalibrationCamera,affinetform2d([1.01 0 2;0 1.01 3;0 0 1]));
 calibrate(orangeDmd,options.CalibrationCamera,affinetform2d([1.02 0 1;0 1.02 2;0 0 1]));
-laser=device("Laser_Device",profile1p.laser.name);
+laser=device("Laser_Device","488");
 laser.Mode=options.LaserMode;
 laser.SetPower=options.LaserPowerMw/1000;
 laser.InterlockEnabled=options.LaserInterlockEnabled;
 mod488=device("NI_DAQ_Modulator",profile1p.modulator.name);
 mod488.port=options.Modulator488Port;
+if options.RigName=="Spinning_Upright"
+    mod488.port=profile1p.modulator.port;
+end
 shutter=device("NI_DAQ_Shutter",profile1p.shutter.name);
 shutter.port=profile1p.shutter.port;
 dmdTrigger=device("NI_DAQ_Shutter",profile1p.dmd.trigger_alias);
@@ -94,13 +105,22 @@ else
 end
 scanner.tform=calibration.calibration.tform;
 devices=[daq camera dmd orangeDmd laser mod488 shutter dmdTrigger scanner mod2p];
+if options.RigName=="Spinning_Upright"
+    blueCamera=device("Camera","Orca Flash Blue");
+    blueCamera.cam_id="S/N: 001339";
+    blueCamera.ROI=options.CameraRoi;
+    blueCamera.bin=options.CameraBin;
+    blueCamera.frametrigger_source="DAQ";
+    blueCamera.daqtrig_period_ms=1000/options.CameraFrameRateHz;
+    devices=[daq camera blueCamera dmd orangeDmd mod488 shutter dmdTrigger];
+end
 if strlength(options.MissingDevice)>0
     keep=arrayfun(@(d)d.name~=options.MissingDevice && ...
         d.DeviceType~=options.MissingDevice,devices);
     devices=devices(keep);
 end
 app=adaptive_optopatch.testing.SimulatedLuminosApp( ...
-    devices,calibration,options.SimulationOutputRoot);
+    devices,calibration,options.SimulationOutputRoot,options.RigName);
 
     function value=device(type,name)
         value=adaptive_optopatch.testing.SimulatedLuminosDevice(type,name);

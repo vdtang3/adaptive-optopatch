@@ -5,6 +5,9 @@ arguments
     durationS (1,1) double {mustBePositive}
     % Retained for caller compatibility; DAQ cadence no longer needs an override.
     options.AllowRateLimitOverride (1,1) logical = false
+    % Zero keeps the established all-camera behavior. A rig with a separate
+    % snapshot camera may resize only its voltage camera acquisition.
+    options.OnlyCameraIndex (1,1) double {mustBeNonnegative,mustBeInteger} = 0
 end
 n=numel(cameras);
 plan=repmat(struct("camera_index",0,"camera_name","", ...
@@ -16,6 +19,15 @@ plan=repmat(struct("camera_index",0,"camera_name","", ...
     "rate_override_used",false),n,1);
 for k=1:n
     camera=cameras(k);
+    if options.OnlyCameraIndex>0 && k~=options.OnlyCameraIndex
+        plan(k).camera_index=k;
+        plan(k).camera_name=string(read_member(camera,"name","Camera "+string(k)));
+        plan(k).trigger_source=string(read_member(camera,"frametrigger_source",""));
+        plan(k).calculation_method="preserved_operator_setting";
+        plan(k).frames_requested=double(camera.frames_requested);
+        plan(k).rate_validation_passed=true;
+        continue
+    end
     source=string(read_member(camera,"frametrigger_source",""));
     isDaq=contains(upper(source),"DAQ");
     if isDaq

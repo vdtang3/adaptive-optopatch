@@ -6,6 +6,7 @@ classdef SimulatedLuminosApp < handle
         GalvoCalibration struct
         SimulationOutputRoot string
         AcquisitionHistory struct = struct([])
+        Rig_Init struct = struct("rigname","Virtual_Upright")
     end
     properties
         % Every getDevice request, as "type|name". A suppressed output is
@@ -29,10 +30,13 @@ classdef SimulatedLuminosApp < handle
     end
 
     methods
-        function app=SimulatedLuminosApp(devices,calibration,outputRoot)
+        function app=SimulatedLuminosApp(devices,calibration,outputRoot,rigName)
             app.Devices=devices;
             app.GalvoCalibration=calibration;
             app.SimulationOutputRoot=string(outputRoot);
+            if nargin>=4
+                app.Rig_Init=struct("rigname",string(rigName));
+            end
         end
 
         function applyGalvoCalibration(app,calibration)

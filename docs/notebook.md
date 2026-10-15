@@ -2616,3 +2616,18 @@ The sequence planner explicitly rejects this policy: a constant mask needs no
 FLUT or advance pulses. Orange eligibility and single-cell ramp review remain
 independent. Simultaneous 2P and varying within-acquisition group masks are
 intentionally unsupported.
+
+## 2026-10-15 — Spinning Upright gets a separate 1P hardware declaration
+
+Yangdong's 2026-10-13 Optopatch recordings use Orca Flash Orange (serial
+002312) for voltage frames and a 488 nm DAQ waveform for blue stimulation.
+The Luminos Spinning Upright initializer places mod488 on Dev1/ao0, unlike
+Virtual Upright's Dev1/ao2, and declares no OBIS laser or 2P scanner. Its
+Dev1/ao3 is a 780 nm LED, so applying Virtual Upright's 2P cleanup there
+would command the wrong physical device.
+
+AO therefore selects a rig-specific 1P profile and output manifest from the
+Luminos rig name. The Spinning Upright manifest owns only the blue modulator,
+shutter, and DMD advance line. The runner preserves the operator's 607 nm
+recording waveform and other unowned outputs; 2P plans fail before output.
+Live DMD calibration identity and illumination still need checking at the rig.

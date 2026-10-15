@@ -23,6 +23,7 @@ arguments
     options.ScannerCalibration struct = struct([])
     options.ModulatorVoltageOverride (1,1) double = NaN
     options.StimulationAccountingPolicy (1,1) string = "report_only"
+    options.OnePhotonProfile struct = struct([])
 end
 % Routed by the shared helper rather than inline, so that the controller can
 % find the checkpoint THIS decision causes to be written. The two were
@@ -30,7 +31,13 @@ end
 route=adaptive_optopatch.manifest_execution_route(manifest.trials);
 has2p=route.has_two_photon;
 if route.has_one_photon
+    profile=options.OnePhotonProfile;
+    if isempty(profile)
+        profile=adaptive_optopatch.one_photon_profile_for_rig(app);
+    end
+    outputManifest=adaptive_optopatch.stimulation_manifest_for_profile(profile);
     run=adaptive_optopatch.run_1p_manifest(manifest,targets,app, ...
+        "Profile",profile,"StimulationManifest",outputManifest, ...
         "OutputDirectory",options.OutputDirectory,"OutputRoot",options.OutputRoot, ...
         "Resume",options.Resume,"StopAfterTrial",options.StopAfterTrial, ...
         "ConfirmLiveOutput",options.ConfirmLiveOutput,"LaserPowerW",options.LaserPowerW, ...

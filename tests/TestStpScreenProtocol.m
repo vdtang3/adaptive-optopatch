@@ -37,6 +37,52 @@ classdef TestStpScreenProtocol < matlab.unittest.TestCase
     end
 
     methods (Test)
+        function reusableStpUsesStimEnabledCellsAtPlanResolution(testCase)
+            definition=adaptive_optopatch.generate_stp_chunked_protocol( ...
+                "TotalTrainsPerCell",4,"TrainsPerCellPerChunk",2, ...
+                "BaseRandomSeed",101);
+            testCase.verifyNumElements(definition.acquisitions,2);
+            testCase.verifyFalse(ismember("target_cell_id", ...
+                string(definition.acquisitions(1).events.Properties.VariableNames)));
+            [fov,targets,gui]=fixture();
+            fov=adaptive_optopatch.update_cell_calibration(fov,"cell_001", ...
+                "CommandVoltageV",0.85,"PulseDurationMs",10);
+            fov=adaptive_optopatch.update_cell_calibration(fov,"cell_002", ...
+                "CommandVoltageV",1.35,"PulseDurationMs",10);
+            both=adaptive_optopatch.resolve_protocol(definition,fov,targets,gui);
+            testCase.verifyNumElements(both,2);
+            for k=1:2
+                events=both{k}.events;
+                testCase.verifyEqual(height(events),20);
+                testCase.verifyEqual(sort(unique(events.target_cell_id)), ...
+                    ["cell_001";"cell_002"]);
+                testCase.verifyEqual(unique(events.frequency_hz),20);
+                testCase.verifyEqual(sum(events.target_cell_id=="cell_001"),10);
+                testCase.verifyEqual(sum(events.target_cell_id=="cell_002"),10);
+                testCase.verifyEqual(unique(events.command_voltage_v( ...
+                    events.target_cell_id=="cell_001")),0.85);
+                testCase.verifyEqual(unique(events.command_voltage_v( ...
+                    events.target_cell_id=="cell_002")),1.35);
+                verify_train_blocks_are_contiguous(testCase,events);
+                plan=adaptive_optopatch.build_dmd_sequence_plan(both{k},targets);
+                testCase.verifyEqual(numel(plan.dmd_trigger_s),height(events));
+            end
+            fov.cells(1).stimulation_enabled=false;
+            one=adaptive_optopatch.resolve_protocol(definition,fov,targets,gui);
+            testCase.verifyEqual(unique(one{1}.events.target_cell_id),"cell_002");
+            testCase.verifyEqual(height(one{1}.events),10);
+        end
+
+        function reusableStpChecksFlutCapacityAtPlanResolution(testCase)
+            definition=adaptive_optopatch.generate_stp_chunked_protocol( ...
+                "TotalTrainsPerCell",2,"TrainsPerCellPerChunk",2, ...
+                "FlutMaxEntries",10);
+            [fov,targets,gui]=fixture();
+            testCase.verifyError(@()adaptive_optopatch.resolve_protocol( ...
+                definition,fov,targets,gui), ...
+                "adaptive_optopatch:StpChunkExceedsFlutCapacity");
+        end
+
         % --- 14-22: the shipped experimental design -------------------------
 
         function shippedScriptUsesFivePulseTwentyHertzTenMillisecondTrains(testCase)

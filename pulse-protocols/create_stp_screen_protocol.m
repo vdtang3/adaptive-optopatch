@@ -1,4 +1,6 @@
-% Canonical 1P SHORT-TERM PLASTICITY (STP) SCREEN.
+% Legacy FOV-specific 1P SHORT-TERM PLASTICITY (STP) SCREEN.
+% For Stim-enabled targets without editing cell IDs, run
+% create_stp_screen_from_stim_enabled.m instead.
 %
 % The name is STP rather than STF because the experiment measures short-term
 % facilitation OR depression; which one a connection shows is the result, not

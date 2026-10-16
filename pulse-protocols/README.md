@@ -2,11 +2,10 @@
 
 Pulse-protocol files own experimental design and emit explicit event timing.
 Most reusable protocols do not name cells: the current FOV's **Stim**
-checkboxes select their targets when a plan is frozen. The two constrained
-round-robin screens are deliberately FOV-specific and contain their literal
-target order and onset times. Adaptive Optopatch maps those schedules to
-hardware without changing their timing, balance, recovery rule, or
-randomization.
+checkboxes select their targets when a plan is frozen. Connectivity and STP
+schedules are realized at Update plan, then their literal target order and
+onset times are frozen. The older `create_stp_screen_protocol.m` remains for
+experiments that intentionally name their cells in advance.
 
 Generated artifacts use protocol schema `4.0.0`. Every event explicitly owns
 `stimulation_source` (`1p_dmd`, `2p_spiral`, or `none`). Older protocol files are
@@ -18,7 +17,8 @@ intentionally rejected and must be regenerated from their source scripts.
 |---|---|---|---|
 | `create_single_cell_ramp_protocol.m` | Core: ascending explicit Blue-voltage blocks, 10 ms | `each_stimulation_enabled_cell` | ordered |
 | `create_connectivity_round_robin_protocol.m` | Core: connectivity screen, 10 ms single pulses | `multi_target_continuous` | randomized |
-| `create_stp_screen_protocol.m` | Core: short-term plasticity screen, 5 pulses at 20 Hz | `multi_target_continuous` | randomized |
+| `create_stp_screen_from_stim_enabled.m` | Reusable short-term plasticity screen, 5 pulses at 20 Hz | `multi_target_continuous` | randomized at Update plan |
+| `create_stp_screen_protocol.m` | Legacy explicit-target short-term plasticity screen | `multi_target_continuous` | randomized when generated |
 | `create_blue_dmd_mask_titration_protocol.m` | Multiple Blue-mask adjustments within each cell's acquisition | `each_stimulation_enabled_cell` | randomized |
 | `create_dmd_flut_wrap_test.m` | Three-mask/eight-entry FLUT sequence hardware diagnostic | `multi_target_continuous` | ordered |
 | `create_static_blue_light_test.m` | One 500 ms, 1 V Blue pulse with a static DMD mask to check the 488 nm path | `each_stimulation_enabled_cell` | ordered |
@@ -48,11 +48,11 @@ artifact contains ten independently scheduled 100-pulse acquisitions, not one
 the 4096-entry executable FLUT capacity; reduce
 `pulses_per_cell_per_chunk` if it is too large.
 
-Short-term plasticity (`create_stp_screen_protocol.m`):
+Short-term plasticity (`create_stp_screen_from_stim_enabled.m`):
 
 ```matlab
-target_cell_ids = compose("cell_%03d", (1:10)');
-trains_per_cell = 300;                        % n at each of P1..P5
+total_trains_per_cell = 300;                  % n at each of P1..P5
+trains_per_cell_per_chunk = 50;              % 6 acquisitions; FLUT capacity checked at Update plan
 pulses_per_train = 5;
 frequency_hz = 20;
 pulse_duration_s = 0.010;
@@ -97,12 +97,11 @@ and eight selected cells therefore resolve to eight actual acquisitions. A
 two-entry definition resolves to sixteen. The Blue voltage ramp and Blue-mask
 titrations use this policy.
 
-`multi_target_continuous` produces one actual multi-target acquisition for each
-explicit acquisition definition. Targets vary event-by-event. The connectivity
-and STP generators write those target IDs and all event times explicitly; every
-named target must be stimulation-enabled in the selected FOV. This is the
-policy that makes the STP screen one continuous acquisition covering every
-cell, rather than the whole 300-train experiment repeated once per cell.
+`multi_target_continuous` produces one multi-target acquisition for each
+definition acquisition. Connectivity and the reusable STP screen choose their
+targets from the Stim checkboxes and freeze their event tables at Update plan.
+The default STP design has six chunks, each interleaving complete trains across
+the selected cells. The legacy explicit STP definition keeps its named cells.
 
 These are the only policies. Reusable definitions normally omit
 `target_cell_id`; a FOV-specific explicit multi-target schedule may contain it
@@ -179,8 +178,8 @@ Typical sources are:
 |---|---|---|---|---|
 | Ramp | protocol events | GUI | GUI | Stim checkboxes |
 | Blue-mask titration | per-cell FOV | protocol events | GUI | Stim checkboxes |
-| Connectivity round robin | per-cell FOV | GUI | GUI | explicit `target_cell_ids` |
-| STP screen | per-cell FOV | GUI | GUI | explicit `target_cell_ids` |
+| Connectivity round robin | per-cell FOV | GUI | GUI | Stim checkboxes at Update plan |
+| Reusable STP screen | per-cell FOV | GUI | GUI | Stim checkboxes at Update plan |
 
 ## Parameter scopes
 
@@ -260,9 +259,10 @@ Two pure helpers in the `adaptive_optopatch` package realize the screens:
 Both give every target an exact quota, select randomly among the eligible
 targets with the largest remaining quota using a protocol-local `RandStream`,
 use other targets while one is inside its recovery window, and advance time
-only when nothing is eligible. The scripts record the realized order, onset and
-offset of every event plus spacing, idle-time, and seed metadata. AO performs
-hardware checks but does not recreate or repair these schedules.
+only when nothing is eligible. For the reusable definitions, AO records the
+realized order, onset and offset of every event plus spacing, idle-time, and
+seed metadata when Update plan freezes the schedule. The default STP chunks
+are checked against executable FLUT capacity using the actual selected count.
 
 ## FLUT sequence hardware diagnostic
 

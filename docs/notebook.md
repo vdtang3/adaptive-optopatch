@@ -1,5 +1,21 @@
 # Engineering notebook
 
+## 2026-10-15 — STP targets are chosen when the plan is frozen
+
+The first 20 Hz STP generator wrote `cell_001` through `cell_010` into an
+explicit schedule. That made an experimental design depend on one FOV and
+required editing cell IDs before each sample. The reusable generator now
+stores train timing, recovery, chunk size, and random seeds without naming
+targets. At Update plan, the existing scheduler boundary reads Stim-enabled
+cells, checks the actual DMD FLUT capacity, realizes whole-train interleaving,
+and freezes the literal event table and selected target IDs. Per-cell Blue
+voltage still resolves from each selected cell's calibration. The old script
+remains available for experiments that intentionally specify targets.
+
+The default 300 trains per cell are divided into 50-train chunks. This keeps
+each executable FLUT playlist below 4,096 entries for the usual ten-cell FOV;
+larger selections fail at Update plan with an actionable capacity error.
+
 ## 2026-10-15 — Camera cadence can be known without a frame-to-DAQ anchor
 
 On Spinning Upright, a 2,910-frame orange movie had 2,804 archived VSYNC

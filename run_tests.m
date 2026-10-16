@@ -63,6 +63,7 @@ function tiers = tier_manifest()
 %   failure. Plus one inexpensive end-to-end simulation smoke test.
 tiers.core = [ ...
     "TestSpinningUprightPort"
+    "TestSpinningDiskPattern"
     "TestWholeFovRamp"
     % Controller, actions and the React-facing boundary
     "TestAdaptiveOptopatchController"

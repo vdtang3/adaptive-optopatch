@@ -23,6 +23,39 @@ classdef TestInspectAcquisition < matlab.unittest.TestCase
             testCase.verifyEqual(report.status,"frame_count_mismatch");
         end
 
+        function cameraClockedDaqUsesExposureTimeNotNominalRate(testCase)
+            % Spinning Upright: the DAQ samples on camera HSYNC, so 103
+            % samples are one 1.00367 ms frame, not 1.03 ms at 100 kHz.
+            folder=tempname; mkdir(folder);
+            cleanup=onCleanup(@()rmdir(folder,"s")); %#ok<NASGU>
+            values=zeros(3500,1);
+            edgeSamples=3+(5:33)*103;   % counter missed the first 5 edges
+            for k=1:numel(edgeSamples)
+                values(edgeSamples(k):end)=k;
+            end
+            Device_Data={struct, ...
+                struct("Counter_Inputs",struct("counter","Dev1/Ctr3", ...
+                    "data",values),"global_props",struct("rate",100000, ...
+                    "clock_source","Dev1/PFI0")), ...
+                struct("vsync","Dev1/Ctr3","clock","/Dev1/PFI0")}; %#ok<NASGU>
+            outputPath=fullfile(folder,"output_data.mat");
+            save(outputPath,"Device_Data");
+            framePeriod=0.00100366917293233;
+            camera=struct("archive_index",3,"exposuretime",framePeriod, ...
+                "raw_archive",Device_Data{3});
+            nominal=(0:39)'/996.344;
+
+            [times,report]=adaptive_optopatch.align_camera_frames_to_daq( ...
+                outputPath,camera,nominal);
+
+            testCase.verifyEqual(report.status,"camera_clocked_aligned");
+            testCase.verifyEqual(diff(times),repmat(framePeriod,39,1),"AbsTol",1e-12);
+            testCase.verifyEqual(times(1),2*framePeriod/103,"AbsTol",1e-12);
+            testCase.verifyEqual(report.measured_frame_rate_hz,1/framePeriod,"RelTol",1e-12);
+            testCase.verifyEqual(report.daq_time_scale,100000*framePeriod/103,"RelTol",1e-12);
+            testCase.verifyTrue(report.absolute_offset_known);
+        end
+
         function usesStableVsyncCadenceWithoutInventingFrameOffset(testCase)
             folder=tempname; mkdir(folder);
             cleanup=onCleanup(@()rmdir(folder,"s")); %#ok<NASGU>

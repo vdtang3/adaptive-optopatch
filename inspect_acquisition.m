@@ -15,7 +15,7 @@ arguments
     options.Force (1,1) logical = false
     options.GenerateFigure (1,1) logical = true
 end
-INSPECTION_SCHEMA_VERSION=5;
+INSPECTION_SCHEMA_VERSION=6;
 
 if strlength(experimentDirectory)==0
     selected=uigetdir(pwd,"Select a completed Luminos experiment");
@@ -129,7 +129,7 @@ metadata=adaptive_optopatch.load_luminos_metadata( ...
 if isfinite(cameraTiming.measured_frame_rate_hz)
     traces.frame_rate_hz=cameraTiming.measured_frame_rate_hz;
 end
-command=executed_command(record,traces.tvec);
+command=executed_command(record,traces.tvec,cameraTiming.daq_time_scale);
 if metadata.rig_name=="Spinning_Upright"
     pattern=adaptive_optopatch.inspect_spinning_disk_pattern( ...
         traces.movie_path,reference.image_size, ...
@@ -144,7 +144,9 @@ inspection=struct("schema_version",schemaVersion, ...
     "camera_timing",cameraTiming);
 end
 
-function command=executed_command(record,traceTime)
+function command=executed_command(record,traceTime,daqTimeScale)
+% Pulse schedules are written in nominal DAQ seconds; daqTimeScale puts
+% them on the same physical time axis as the frames.
 if ~isfield(record,"pulse_schedule") || ...
         ~isfield(record.pulse_schedule,"events")
     error("adaptive_optopatch:ExecutedPulseScheduleMissing", ...
@@ -177,8 +179,8 @@ events=events(order,:);
 timeS=0;
 commandV=0;
 for k=1:height(events)
-    onset=double(events.onset_s(k));
-    offset=onset+double(events.duration_s(k));
+    onset=daqTimeScale*double(events.onset_s(k));
+    offset=onset+daqTimeScale*double(events.duration_s(k));
     amplitude=double(events.command_voltage_v(k));
     timeS=[timeS;onset;onset;offset;offset]; %#ok<AGROW>
     commandV=[commandV;0;amplitude;amplitude;0]; %#ok<AGROW>
@@ -186,7 +188,7 @@ end
 if isempty(traceTime), traceEnd=0; else, traceEnd=double(traceTime(end)); end
 scheduleEnd=0;
 if isfield(record.pulse_schedule,"acquisition_duration_s")
-    scheduleEnd=double(record.pulse_schedule.acquisition_duration_s);
+    scheduleEnd=daqTimeScale*double(record.pulse_schedule.acquisition_duration_s);
 end
 timeS(end+1)=max([traceEnd,scheduleEnd,timeS(end)]);
 commandV(end+1)=0;
@@ -197,7 +199,8 @@ end
 command=struct( ...
     "source","adaptive_optopatch_record.pulse_schedule", ...
     "mode",mode,"label",label,"events",events, ...
-    "target_cell_ids",targetIds,"time_s",timeS,"command_v",commandV);
+    "target_cell_ids",targetIds,"time_s",timeS,"command_v",commandV, ...
+    "time_scale_from_schedule_seconds",daqTimeScale);
 end
 
 function [fig,traceLines,roiLines,axesHandles]=build_figure( ...
@@ -232,7 +235,11 @@ traceAxes.YTick=fliplr(offsets);
 traceAxes.YTickLabel=flipud(cellstr(cellIds));
 xlabel(traceAxes,"Time (s)"); ylabel(traceAxes,"Cell / inverted dF/F (%)");
 traceTitle="Canonical soma ROI traces (voltage activity upward)";
-if cameraTiming.status=="cadence_aligned_offset_unknown"
+if cameraTiming.status=="camera_clocked_aligned"
+    traceTitle=[traceTitle; sprintf( ...
+        "Camera-clocked DAQ: %.2f Hz frames; schedule scaled x%.4f to physical time", ...
+        cameraTiming.measured_frame_rate_hz,cameraTiming.daq_time_scale)];
+elseif cameraTiming.status=="cadence_aligned_offset_unknown"
     traceTitle=[traceTitle; sprintf( ...
         "VSYNC cadence %.1f Hz; absolute start offset unverified", ...
         cameraTiming.measured_frame_rate_hz)];
@@ -274,8 +281,9 @@ for k=1:height(command.events)
     targetCellId=command.target_cell_ids(k);
     cellIndex=find(cellIds==targetCellId,1);
     if isempty(cellIndex), pulseColor=[0.2 0.2 0.2]; else, pulseColor=colors(cellIndex,:); end
-    onset=double(command.events.onset_s(k));
-    offset=onset+double(command.events.duration_s(k));
+    scale=command.time_scale_from_schedule_seconds;
+    onset=scale*double(command.events.onset_s(k));
+    offset=onset+scale*double(command.events.duration_s(k));
     amplitude=double(command.events.command_voltage_v(k));
     pulse=plot(stimAxes,[onset onset offset offset], ...
         [0 amplitude amplitude 0],"Color",pulseColor,"LineWidth",1.5);

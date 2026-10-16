@@ -42,6 +42,9 @@ recording illumination during it. The executed pulse schedule and acquisition
 duration include the two seconds. `inspect_acquisition()` measures the spatial
 pattern at each phase of a 12-frame cycle and reports its peak RMS strength.
 It leaves the raw movie unchanged and does not remove the baseline frames.
+Its DAQ is clocked by the camera's HSYNC, so inspection times frames from the
+VSYNC grid and the camera exposure (about 996 Hz) and scales the executed
+schedule, which is written in nominal 100 kHz seconds, onto the same axis.
 
 ## Audit task orchestration
 

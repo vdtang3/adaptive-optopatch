@@ -1,5 +1,30 @@
 # Engineering notebook
 
+## 2026-10-16 — Spinning Upright DAQ runs on the camera's line clock
+
+The 2026-10-15 cadence entry below measured the right spacing but the wrong
+unit. On Spinning Upright, `global_props.clock_source` is the Orange
+camera's `clock` (`/Dev1/PFI0`, its HSYNC), so one DAQ sample is one camera
+line (9.744 us), not 1/100 kHz. Orange VSYNC edges are 103 samples apart, and
+Blue-camera edges for its 150.0047 ms exposure are 15,394 apart; both
+give 102.6 kHz. The camera therefore runs at its exposure rate, 996.34 Hz,
+not 970.87 Hz. Protocol seconds (written assuming 100 kHz) are 2.6% longer
+than physical seconds: a "20 ms" pulse lasts 19.5 ms, and a 2 s startup
+baseline lasts 1.95 s.
+
+When the camera clocks the DAQ, `align_camera_frames_to_daq` now places
+frames on the VSYNC grid, extended back to the first frame period of the
+DAQ, and converts samples to seconds with the camera exposure time.
+Inspection scales the executed schedule by the same factor
+(`daq_time_scale`), so traces and pulses share physical time. The
+backward extension assumes the camera starts with the DAQ. This is
+confirmed on trial 0009 at 23:35:47: the 607 nm command ends with the DAQ
+record, and the movie darkens on the predicted frame (25,418). The trailing
+763 movie frames lie after the DAQ stopped. Camera `frames_requested` is
+duration x nominal 1000 Hz, so the camera records about 3% longer than the
+DAQ. VIPP (branch `vdtang3/spinning-disk-ao`) applies the same timing and
+drops those frames.
+
 ## 2026-10-15 — STP targets are chosen when the plan is frozen
 
 The first 20 Hz STP generator wrote `cell_001` through `cell_010` into an

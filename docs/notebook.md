@@ -1,5 +1,21 @@
 # Engineering notebook
 
+## 2026-10-15 — Camera cadence can be known without a frame-to-DAQ anchor
+
+On Spinning Upright, a 2,910-frame orange movie had 2,804 archived VSYNC
+edges. The camera's nominal exposure implied 996.34 frames/s, while the
+regular counter edges measured 970.87 frames/s. The movie reported no dropped
+frames. Requiring one counter edge per movie frame made `inspect_acquisition`
+discard this useful rate measurement and placed slide artifacts roughly
+50–65 ms before their commanded pulses on the plot.
+
+Inspection now uses the median VSYNC interval when at least 20 edges advance
+by one count with regular spacing, even if the total counts differ. It keeps
+movie frame one at the old zero and labels its absolute DAQ offset unknown;
+the missing frame-to-edge correspondence cannot be inferred from cadence.
+Irregular or unavailable counter traces retain the nominal-rate fallback.
+The inspection cache version changed so old plots are recomputed.
+
 ## 2026-09-17 — The illuminated footprint is drawn, not thresholded
 
 `measure_illumination_irradiance` now segments the footprint by asking the

@@ -23,6 +23,47 @@ classdef TestInspectAcquisition < matlab.unittest.TestCase
             testCase.verifyEqual(report.status,"frame_count_mismatch");
         end
 
+        function usesStableVsyncCadenceWithoutInventingFrameOffset(testCase)
+            folder=tempname; mkdir(folder);
+            cleanup=onCleanup(@()rmdir(folder,"s")); %#ok<NASGU>
+            values=zeros(3500,1);
+            edgeSamples=23+(0:29)*103;
+            for k=1:numel(edgeSamples)
+                values(edgeSamples(k):end)=k;
+            end
+            Device_Data={struct, ...
+                struct("Counter_Inputs",struct("counter","Dev1/Ctr3", ...
+                    "data",values),"global_props",struct("rate",100000)), ...
+                struct("vsync","Dev1/Ctr3")}; %#ok<NASGU>
+            outputPath=fullfile(folder,"output_data.mat");
+            save(outputPath,"Device_Data");
+            nominal=(0:34)'/996.344;
+
+            [times,report]=adaptive_optopatch.align_camera_frames_to_daq( ...
+                outputPath,struct("archive_index",3),nominal);
+
+            testCase.verifyEqual(diff(times),repmat(0.00103,34,1), ...
+                "AbsTol",1e-12);
+            testCase.verifyEqual(times(1),nominal(1));
+            testCase.verifyEqual(report.status,"cadence_aligned_offset_unknown");
+            testCase.verifyEqual(report.measured_frame_rate_hz,1/0.00103, ...
+                "RelTol",1e-12);
+            testCase.verifyFalse(report.absolute_offset_known);
+            testCase.verifyTrue(isnan(report.first_frame_offset_s));
+
+            edgeSamples(15:end)=edgeSamples(15:end)+103;
+            values=zeros(3600,1);
+            for k=1:numel(edgeSamples)
+                values(edgeSamples(k):end)=k;
+            end
+            Device_Data{2}.Counter_Inputs.data=values; %#ok<NASGU>
+            save(outputPath,"Device_Data");
+            [times,report]=adaptive_optopatch.align_camera_frames_to_daq( ...
+                outputPath,struct("archive_index",3),nominal);
+            testCase.verifyEqual(times,nominal);
+            testCase.verifyEqual(report.status,"frame_count_mismatch");
+        end
+
         function simultaneousPulsesDisplayMultiple(testCase)
             fixture=make_fixture(testCase,"1p_dmd",[.5 1]);
             adaptive_optopatch_record=fixture.record;

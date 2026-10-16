@@ -15,7 +15,7 @@ arguments
     options.Force (1,1) logical = false
     options.GenerateFigure (1,1) logical = true
 end
-INSPECTION_SCHEMA_VERSION=4;
+INSPECTION_SCHEMA_VERSION=5;
 
 if strlength(experimentDirectory)==0
     selected=uigetdir(pwd,"Select a completed Luminos experiment");
@@ -43,7 +43,8 @@ end
 if options.GenerateFigure
     [figureHandle,traceLines,roiLines,axesHandles]=build_figure( ...
         inspection.reference,inspection.traces,inspection.cell_ids, ...
-        inspection.stimulation,inspection.spinning_disk_pattern,options.Visible);
+        inspection.stimulation,inspection.spinning_disk_pattern, ...
+        inspection.camera_timing,options.Visible);
     exportapp(figureHandle,pngPath);
 else
     figureHandle=gobjects(0); traceLines=gobjects(0,1); roiLines=gobjects(0,1);
@@ -125,6 +126,9 @@ metadata=adaptive_optopatch.load_luminos_metadata( ...
 [traces.tvec,cameraTiming]=adaptive_optopatch.align_camera_frames_to_daq( ...
     fullfile(experimentDirectory,"output_data.mat"), ...
     metadata.voltage_camera,traces.tvec);
+if isfinite(cameraTiming.measured_frame_rate_hz)
+    traces.frame_rate_hz=cameraTiming.measured_frame_rate_hz;
+end
 command=executed_command(record,traces.tvec);
 if metadata.rig_name=="Spinning_Upright"
     pattern=adaptive_optopatch.inspect_spinning_disk_pattern( ...
@@ -197,7 +201,7 @@ command=struct( ...
 end
 
 function [fig,traceLines,roiLines,axesHandles]=build_figure( ...
-        reference,traces,cellIds,command,pattern,visible)
+        reference,traces,cellIds,command,pattern,cameraTiming,visible)
 nCells=numel(cellIds);
 fig=uifigure("Name","Adaptive Optopatch acquisition quick look", ...
     "Position",[100 100 1200 760],"Visible",visible);
@@ -227,7 +231,13 @@ end
 traceAxes.YTick=fliplr(offsets);
 traceAxes.YTickLabel=flipud(cellstr(cellIds));
 xlabel(traceAxes,"Time (s)"); ylabel(traceAxes,"Cell / inverted dF/F (%)");
-title(traceAxes,"Canonical soma ROI traces (voltage activity upward)");
+traceTitle="Canonical soma ROI traces (voltage activity upward)";
+if cameraTiming.status=="cadence_aligned_offset_unknown"
+    traceTitle=[traceTitle; sprintf( ...
+        "VSYNC cadence %.1f Hz; absolute start offset unverified", ...
+        cameraTiming.measured_frame_rate_hz)];
+end
+title(traceAxes,traceTitle);
 grid(traceAxes,"on");
 
 referenceAxes=uiaxes(layout); referenceAxes.Layout.Row=1; referenceAxes.Layout.Column=2;
@@ -283,7 +293,7 @@ end
 xlabel(stimAxes,"Time (s)"); ylabel(stimAxes,command.label);
 title(stimAxes,"Executed stimulation command (labels mark each cell's first pulse)");
 grid(stimAxes,"on");
-endTime=max(command.time_s(end),eps);
+endTime=max([command.time_s(end),traces.tvec(end),eps]);
 xlim(traceAxes,[0 endTime]); xlim(stimAxes,[0 endTime]);
 linkaxes([traceAxes stimAxes],"x");
 axesHandles=struct("trace",traceAxes,"stimulation",stimAxes, ...

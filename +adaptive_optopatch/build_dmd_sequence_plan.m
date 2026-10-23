@@ -4,12 +4,31 @@ arguments
     protocol (1,1) struct
     targets (1,1) struct
     options.HoldPatternUntilTrigger (1,1) logical = false
+    % Used only by blanket-depolarization acquisitions, whose plan is built
+    % from a sample-exact state table: the live DAQ rate and the
+    % DAQ-triggered voltage camera's frame period.
+    options.SampleRateHz (1,1) double = NaN
+    options.CameraFramePeriodS (1,1) double = NaN
 end
 if adaptive_optopatch.is_simultaneous_protocol(protocol)
     error("adaptive_optopatch:SimultaneousStaticPatternRequired", ...
         "Simultaneous acquisitions use one static pattern, never a DMD sequence.");
 end
 protocol=adaptive_optopatch.normalize_protocol(protocol); events=protocol.events;
+blanket=adaptive_optopatch.blanket_depolarization_spec(protocol);
+if blanket.enabled
+    if options.HoldPatternUntilTrigger
+        error("adaptive_optopatch:BlanketModeRequiresSlaveDmd", ...
+            "Blanket depolarization advances the DMD on every DAQ edge in " + ...
+            "slave mode. It is not available on a rig that holds patterns " + ...
+            "with master-mode stepping.");
+    end
+    stateTable=adaptive_optopatch.build_blanket_state_table(protocol, ...
+        options.SampleRateHz,options.CameraFramePeriodS);
+    plan=adaptive_optopatch.build_blanket_dmd_sequence_plan( ...
+        protocol,targets,stateTable);
+    return
+end
 events=events(events.stimulation_source=="1p_dmd",:);
 if isempty(events)
     error("adaptive_optopatch:NoOnePhotonEvents", ...

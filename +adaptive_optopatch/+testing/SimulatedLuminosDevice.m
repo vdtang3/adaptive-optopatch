@@ -111,6 +111,14 @@ classdef SimulatedLuminosDevice < handle
         % camera than the one the plan was made on.
         calibrations struct = struct()
         calibration_camera string = ""
+        % ALP_PROJ_PROGRESS model. frames_advanced counts DMD trigger edges
+        % since the playlist was (re)started; SimulatedTriggerCountError
+        % adds lost (<0) or doubled (>0) edges to the next acquisition so
+        % tests can make the playlist slip against mod488.
+        supports_projection_progress logical = true
+        frames_advanced double = 0
+        SimulatedTriggerCountError double = 0
+        displayed_slots double = zeros(0,1)
     end
 
     properties (Access=private)
@@ -449,6 +457,40 @@ classdef SimulatedLuminosDevice < handle
             device.projection_mode_code=mode_code(mode);
             device.projection_step_code=0;
             device.projection_state_code=1200;
+            device.frames_advanced=0;
+            device.displayed_slots=zeros(0,1);
+        end
+
+        function Advance_On_Trigger_Edges(device,edgeCount)
+            % Slave FLUT behaviour the VU wrap diagnostics showed: edge k
+            % shows playlist entry mod(k-1,L)+1, wrapping indefinitely.
+            if isempty(device.playlist), return; end
+            edges=max(0,edgeCount+device.SimulatedTriggerCountError);
+            L=numel(device.playlist);
+            k=device.frames_advanced+(1:edges)';
+            device.displayed_slots=[device.displayed_slots; ...
+                device.playlist(mod(k-1,L)+1)];
+            device.frames_advanced=device.frames_advanced+edges;
+        end
+
+        function progress=Get_Projection_Progress(device)
+            % Counters as alp.h describes them: iterations left (counting
+            % down from 2^32-1 for an indefinite sequence) and frames left
+            % in the current iteration.
+            if ~device.supports_projection_progress
+                error("DMD:ProjectionProgressUnavailable", ...
+                    "The simulated DMD has no projection-progress readback.");
+            end
+            L=numel(device.playlist);
+            if L==0, L=1; end
+            completed=floor(device.frames_advanced/L);
+            within=mod(device.frames_advanced,L);
+            progress=struct("status",0,"current_queue_id",1, ...
+                "sequence_id",1,"waiting_sequences",0, ...
+                "sequence_counter",mod(2^32-1-completed,2^32), ...
+                "sequence_counter_underflow",double(completed>0), ...
+                "frame_counter",L-within,"picture_time_us",44, ...
+                "frames_per_sub_sequence",L,"flags",4);
         end
 
         function sync=Resolve_Buffered_Sync(device,varargin) %#ok<INUSD>

@@ -142,6 +142,7 @@ classdef SimulatedLuminosApp < handle
             mkdir(folder);
             daq=app.getDevice("DAQ");
             app.populateGalvoFeedback(daq);
+            app.advanceDmdsOnTriggerEdges(daq);
             simulated_acquisition=struct( ...
                 "simulation",true,"backend","SimulatedLuminosApp", ...
                 "created_at",string(datetime("now","TimeZone","local")), ...
@@ -168,6 +169,29 @@ classdef SimulatedLuminosApp < handle
             dmds=app.getDevice("DMD");
             if isempty(dmds), report=struct([]); return; end
             report=Write_Pending_Dmd_Stacks(dmds);
+        end
+
+        function advanceDmdsOnTriggerEdges(app,daq)
+            % Counts the rising edges the buffered DO records would put on
+            % each playlist DMD's trigger terminal - the same compiled
+            % samples accounting measures - and advances that DMD by them.
+            dmds=app.getDevice("DMD");
+            if isempty(dmds) || isempty(daq) || ~isfield(daq.wfm_data,"do") || ...
+                    isempty(daq.wfm_data.do), return; end
+            withPlaylist=arrayfun(@(dmd)~isempty(dmd.playlist) && ...
+                strlength(dmd.trigger_channel)>0,dmds);
+            if ~any(withPlaylist), return; end
+            terminals=adaptive_optopatch.compile_output_samples( ...
+                daq.global_props,daq.wfm_data.do,daq.alias_list);
+            for dmd=reshape(dmds(withPlaylist),1,[])
+                port=adaptive_optopatch.canonical_terminal( ...
+                    dmd.trigger_channel,daq.alias_list);
+                match=find([terminals.canonical_terminal]==port,1);
+                if isempty(match), continue; end
+                line=double(terminals(match).samples(:)')>0.5;
+                edges=sum(diff([false line])==1);
+                dmd.Advance_On_Trigger_Edges(edges);
+            end
         end
 
         function populateGalvoFeedback(~,daq)

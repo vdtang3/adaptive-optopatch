@@ -163,6 +163,11 @@ if isfield(record,"trial") && ...
         ismember("stimulation_mode",string(record.trial.Properties.VariableNames))
     mode=string(record.trial.stimulation_mode(1));
 end
+blanket=blanket_block(record);
+if blanket.enabled
+    command=blanket_command(record,blanket,events,traceTime,daqTimeScale,mode);
+    return
+end
 if mode=="1p_dmd"
     label="mod488 command (V)";
 elseif mode=="2p_spiral"
@@ -201,6 +206,140 @@ command=struct( ...
     "mode",mode,"label",label,"events",events, ...
     "target_cell_ids",targetIds,"time_s",timeS,"command_v",commandV, ...
     "time_scale_from_schedule_seconds",daqTimeScale);
+end
+
+function blanket=blanket_block(record)
+%BLANKET_BLOCK The acquisition's blanket-depolarization settings, or off.
+blanket=struct("enabled",false);
+if isfield(record,"pulse_schedule") && ...
+        isfield(record.pulse_schedule,"blanket_depolarization") && ...
+        isstruct(record.pulse_schedule.blanket_depolarization) && ...
+        isfield(record.pulse_schedule.blanket_depolarization,"enabled")
+    blanket=record.pulse_schedule.blanket_depolarization;
+    blanket.enabled=logical(blanket.enabled);
+end
+end
+
+function command=blanket_command(record,blanket,events,traceTime,daqTimeScale,mode)
+%BLANKET_COMMAND What a blanket acquisition actually put on mod488.
+%   A blanket acquisition's mod488 is not the logical schedule: it alternates
+%   between the blanket phase and the segment's own level every cycle, and a
+%   recruitment sweep's logical segments are null and would otherwise draw
+%   nothing at all. So the grey background trace is rebuilt from the
+%   archived state table - the same one the DAQ waveform was built from -
+%   and the coloured bars stay the LOGICAL units: one per target epoch, or
+%   one per voltage step, at the level that step delivered.
+schedule="round_robin";
+if isfield(blanket,"schedule"), schedule=string(blanket.schedule); end
+[timeS,commandV,source]=blanket_mod488_trace(record,daqTimeScale);
+
+% The logical units, and the level each one carries.
+if schedule=="recruitment_sweep"
+    sweep=blanket.sweep;
+    segments=sweep.segments;
+    bars=table(double(segments.onset_s),double(segments.offset_s)- ...
+        double(segments.onset_s),double(segments.level_v), ...
+        'VariableNames',{'onset_s','duration_s','command_voltage_v'});
+    targetIds=repmat("",height(bars),1);
+    label="blanket level per step (mod488, V)";
+else
+    bars=events(~events.is_null,:);
+    [~,order]=sort(bars.onset_s); bars=bars(order,:);
+    targetIds=strings(height(bars),1);
+    if ismember("target_cell_id",string(bars.Properties.VariableNames))
+        targetIds=string(bars.target_cell_id);
+    end
+    if schedule=="population_target_sweep"
+        label="population target level (mod488, V)";
+    else
+        label="target epochs, blanket-modulated (Vstim, V)";
+    end
+end
+if isempty(timeS)
+    % No archived state table (an older record, or a dry run): draw the
+    % logical units alone rather than inventing a waveform.
+    timeS=0; commandV=0;
+    for k=1:height(bars)
+        onset=daqTimeScale*double(bars.onset_s(k));
+        offset=onset+daqTimeScale*double(bars.duration_s(k));
+        amplitude=double(bars.command_voltage_v(k));
+        timeS=[timeS;onset;onset;offset;offset]; %#ok<AGROW>
+        commandV=[commandV;0;amplitude;amplitude;0]; %#ok<AGROW>
+    end
+    source="adaptive_optopatch_record.pulse_schedule";
+end
+traceEnd=0;
+if ~isempty(traceTime), traceEnd=double(traceTime(end)); end
+scheduleEnd=0;
+if isfield(record.pulse_schedule,"acquisition_duration_s")
+    scheduleEnd=daqTimeScale*double(record.pulse_schedule.acquisition_duration_s);
+end
+timeS(end+1)=max([traceEnd,scheduleEnd,timeS(end)]);
+commandV(end+1)=0;
+command=struct("source",source,"mode",mode,"label",label,"events",bars, ...
+    "target_cell_ids",targetIds,"time_s",timeS,"command_v",commandV, ...
+    "time_scale_from_schedule_seconds",daqTimeScale, ...
+    "blanket_schedule",schedule);
+end
+
+function [timeS,commandV,source]=blanket_mod488_trace(record,daqTimeScale)
+%BLANKET_MOD488_TRACE The archived state table as a mod488 step trace.
+%   Exact while it stays a reasonable number of points. A long acquisition
+%   has hundreds of thousands of states, so beyond that the trace is the
+%   per-camera-frame MAXIMUM instead - an envelope, which is what a quick
+%   look can show of a 1 kHz modulation anyway, and it is labelled as one.
+MAXIMUM_EXACT_STATES=100000;
+timeS=[]; commandV=[]; source="";
+if ~isfield(record,"waveform_summary") || ...
+        ~isfield(record.waveform_summary,"dmd_sequence") || ...
+        ~isfield(record.waveform_summary.dmd_sequence,"state_table")
+    return
+end
+stateTable=record.waveform_summary.dmd_sequence.state_table;
+states=stateTable.states;
+rate=double(stateTable.sample_rate_hz);
+repeats=double(stateTable.round_count);
+unitSamples=double(stateTable.round_samples);
+start=double(stateTable.round_start_sample);
+total=height(states)*repeats;
+scale=daqTimeScale/rate;
+if total<=MAXIMUM_EXACT_STATES
+    offsets=reshape(repmat((0:repeats-1)*unitSamples,height(states),1),[],1);
+    starts=repmat(double(states.start_sample),repeats,1)+start+offsets;
+    levels=repmat(double(states.mod488_v),repeats,1);
+    guards=repmat(double(states.mod488_guard_samples),repeats,1);
+    ends=starts+repmat(double(states.duration_samples),repeats,1);
+    % Two constant segments per state at most: the guard at 0 V, then the
+    % state's level. A staircase is two points per segment, so a segment
+    % boundary is one vertical step.
+    segmentStart=[starts;starts+guards];
+    segmentEnd=[starts+guards;ends];
+    segmentValue=[zeros(size(levels));levels];
+    keep=segmentEnd>segmentStart;
+    segmentStart=segmentStart(keep); segmentEnd=segmentEnd(keep);
+    segmentValue=segmentValue(keep);
+    [segmentStart,order]=sort(segmentStart);
+    segmentEnd=segmentEnd(order); segmentValue=segmentValue(order);
+    timeS=scale*reshape([segmentStart segmentEnd]',[],1);
+    commandV=reshape([segmentValue segmentValue]',[],1);
+    source="adaptive_optopatch_record.waveform_summary.dmd_sequence.state_table";
+    return
+end
+frame=double(stateTable.camera_frame_samples);
+frames=ceil((start+repeats*unitSamples)/frame);
+envelope=zeros(1,frames);
+starts=double(states.start_sample); levels=double(states.mod488_v);
+for repeat=1:repeats
+    index=floor((start+(repeat-1)*unitSamples+starts)/frame)+1;
+    for k=1:numel(index)
+        if levels(k)>envelope(index(k)), envelope(index(k))=levels(k); end
+    end
+end
+edgeTimes=scale*(0:frames)*frame;
+timeS=reshape([edgeTimes(1:end-1);edgeTimes(2:end)],[],1);
+commandV=reshape([envelope;envelope],[],1);
+source="adaptive_optopatch_record.waveform_summary.dmd_sequence.state_table " + ...
+    "(per-camera-frame maximum)";
 end
 
 function [fig,traceLines,roiLines,axesHandles]=build_figure( ...

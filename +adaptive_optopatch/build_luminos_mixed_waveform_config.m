@@ -76,17 +76,36 @@ wfmData.do=adaptive_optopatch.remove_output_records(wfmData.do, ...
     [one.shutter.name one.shutter.port "AdaptiveOptopatch DMD trigger" ...
      one.dmd.trigger_alias one.dmd.trigger_port],aliases);
 
-if has1p
+% A blanket-depolarization plan carries its own sample-exact state table,
+% and both Blue outputs are expanded from it instead of from the pulse list.
+blanketPlan=~isempty(options.DmdSequencePlan) && ...
+    isfield(options.DmdSequencePlan,"state_table");
+if blanketPlan && has2p
+    error("adaptive_optopatch:InvalidBlanketAcquisition", ...
+        "A blanket-depolarization plan requires a 1P-only acquisition.");
+end
+if blanketPlan
+    % Both Blue outputs come from the one state table, whether or not the
+    % acquisition targets a cell: a blanket recruitment sweep has only null
+    % logical segments and still emits blanket light on every cycle.
+    [blanketMod488,blanketTrigger,blanketSummary]=blanket_records( ...
+        options.DmdSequencePlan,one,manifest,rate,duration);
+    if has1p, validate_one_photon(onePhoton,one,rate); end
+    wfmData.ao=append_record(wfmData.ao,blanketMod488);
+    wfmData.do=append_record(wfmData.do,blanketTrigger);
+elseif has1p
     validate_one_photon(onePhoton,one,rate);
     wfmData.ao=append_record(wfmData.ao,event_record(one.modulator.name, ...
         one.modulator.name,onePhoton.onset_s,onePhoton.offset_s, ...
         onePhoton.command_voltage_v,one.modulator.dark_v));
+    wfmData.do=append_record(wfmData.do,dmd_record(options.DmdSequencePlan, ...
+        one,manifest,rate,duration,onePhoton));
 else
     wfmData.ao=append_record(wfmData.ao,constant_record( ...
         one.modulator.name,one.modulator.name,one.modulator.dark_v));
+    wfmData.do=append_record(wfmData.do,dmd_record(options.DmdSequencePlan, ...
+        one,manifest,rate,duration,onePhoton));
 end
-wfmData.do=append_record(wfmData.do,dmd_record(options.DmdSequencePlan, ...
-    one,manifest,rate,duration,onePhoton));
 
 if has2p
     wave=options.TwoPhotonWaveforms;
@@ -116,9 +135,11 @@ end
 % This is the has2p==false path only. A mixed acquisition takes the branch
 % above and drives all three from the planned 2P waveforms as before.
 
-% Any acquisition containing 1P uses the runner's imperative shutter owner.
-% Otherwise the buffered line explicitly owns the closed state.
-if ~has1p
+% Any acquisition that emits 488 nm light uses the runner's imperative
+% shutter owner - including a blanket recruitment sweep, whose logical
+% segments are null but whose blanket phase is lit. Otherwise the buffered
+% line explicitly owns the closed state.
+if ~has1p && ~blanketPlan
     shutter=two.inactive_one_photon.shutter;
     wfmData.do=append_record(wfmData.do,constant_record( ...
         shutter.name,shutter.port,shutter.closed_state));
@@ -127,9 +148,15 @@ summary=struct("schema_version","1.0.0","sample_rate_hz",rate, ...
     "sample_count",round(rate*duration),"duration_s",duration, ...
     "pulses",pulses,"onephoton_event_count",height(onePhoton), ...
     "twophoton_event_count",height(twoPhoton),"has_mixed_sources",has1p&&has2p, ...
-    "blue_shutter_runtime_owner",string(ternary(has1p,"imperative","buffered")), ...
+    "blue_shutter_runtime_owner", ...
+        string(ternary(has1p||blanketPlan,"imperative","buffered")), ...
     "script_owner",adaptive_optopatch.script_owner_tag());
 summary.auxiliary_input=auxiliaryInput;
+if blanketPlan
+    summary.blanket_depolarization=blanketSummary;
+    summary.pulses=describe_blanket_delivery(summary.pulses, ...
+        options.DmdSequencePlan.state_table,blanketSummary);
+end
 if ~isempty(options.DmdSequencePlan)
     summary.dmd_sequence=options.DmdSequencePlan;
     if isfield(summary.dmd_sequence,"unique_camera_masks")
@@ -182,6 +209,117 @@ if offset(end)>duration
 end
 record=event_record("AdaptiveOptopatch DMD trigger",profile.dmd.trigger_port, ...
     onset,offset,ones(size(onset)),neutral);
+end
+
+function [mod488,trigger,summary]=blanket_records(plan,profile,manifest,rate,duration)
+%BLANKET_RECORDS mod488 and the DMD trigger, from one state table.
+%   Each state is one DMD trigger (high for the first
+%   dmd_trigger_width_samples, at the state's first sample) and one mod488
+%   level (0 V for mod488_guard_samples, then the state's voltage). The
+%   round repeats round_count times; outside it mod488 sits at the rig's
+%   dark_v and the trigger at its manifest neutral.
+stateTable=plan.state_table; states=stateTable.states;
+if abs(double(stateTable.sample_rate_hz)-rate)>1e-9
+    error("adaptive_optopatch:BlanketSampleRateChanged", ...
+        "The blanket state table was built for %.0f Hz, but Luminos is " + ...
+        "configured for %.0f Hz.",stateTable.sample_rate_hz,rate);
+end
+totalSamples=round(rate*duration);
+if stateTable.final_sample>totalSamples
+    error("adaptive_optopatch:BlanketRoundsOutsideAcquisition", ...
+        "The final blanket round ends after the acquisition.");
+end
+levels=states.mod488_v;
+if any(levels<profile.modulator.minimum_v | levels>profile.modulator.maximum_v)
+    error("adaptive_optopatch:ModulatorVoltageOutOfRange", ...
+        "A blanket-mode mod488 command lies outside the declared range.");
+end
+guard=states.mod488_guard_samples;
+modSamples=reshape([guard states.duration_samples-guard]',[],1);
+modValues=reshape([zeros(height(states),1) levels]',[],1);
+keep=modSamples>0;
+mod488=base_record(profile.modulator.name,profile.modulator.name, ...
+    "adaptive_optopatch.luminos_round_waveform", ...
+    {rate,stateTable.round_start_sample,modSamples(keep),modValues(keep), ...
+    stateTable.round_count,double(profile.modulator.dark_v)});
+
+role=string({manifest.outputs.role});
+neutral=manifest.outputs(role=="blue_dmd_advance_trigger").neutral_value;
+width=stateTable.dmd_trigger_width_samples;
+triggerSamples=reshape([repmat(width,height(states),1) ...
+    states.duration_samples-width]',[],1);
+triggerValues=repmat([1;0],height(states),1);
+trigger=base_record("AdaptiveOptopatch DMD trigger",profile.dmd.trigger_port, ...
+    "adaptive_optopatch.luminos_round_waveform", ...
+    {rate,stateTable.round_start_sample,triggerSamples,triggerValues, ...
+    stateTable.round_count,double(neutral)});
+
+cycle=stateTable.cycle_samples;
+summary=struct("schema_version","1.0.0", ...
+    "state_table_source","dmd_sequence.state_table", ...
+    "blanket_mod488_v",stateTable.blanket_mod488_v, ...
+    "cycle_period_s",cycle/rate, ...
+    "blanket_phase_s",stateTable.blanket_samples/rate, ...
+    "target_phase_s",stateTable.target_samples/rate, ...
+    "target_onset_guard_s",stateTable.target_onset_guard_samples/rate, ...
+    ... % Zero for a recruitment sweep: its second state is the blank mask,
+    ... % so no cycle delivers targeted light at all.
+    "target_illuminated_fraction", ...
+        any(states.state_type=="target")* ...
+        (stateTable.target_samples-stateTable.target_onset_guard_samples)/cycle, ...
+    "blanket_fraction",stateTable.blanket_samples/cycle, ...
+    "schedule",string(stateTable.schedule), ...
+    "epoch_cycles",stateTable.epoch_cycles, ...
+    "gap_cycles",stateTable.gap_cycles, ...
+    "states_per_round",stateTable.states_per_round, ...
+    "round_count",stateTable.round_count, ...
+    "expected_dmd_trigger_count",stateTable.expected_trigger_count, ...
+    "round_start_sample",stateTable.round_start_sample, ...
+    "final_sample",stateTable.final_sample, ...
+    "dmd_trigger_lead_samples",stateTable.dmd_trigger_lead_samples);
+end
+
+function pulses=describe_blanket_delivery(pulses,stateTable,blanket)
+% What each logical segment ACTUALLY delivered, measured from its own
+% states, so nothing downstream can read a 20 ms row as a continuous 20 ms
+% pulse - and so a recruitment sweep's segments say plainly that they
+% delivered blanket light and no targeted light at all.
+n=height(pulses);
+states=stateTable.states;
+rate=stateTable.sample_rate_hz;
+lit=states.duration_samples-states.mod488_guard_samples;
+% The table holds ONE programmed unit, which the DAQ repeats, so a round
+% robin's later rounds have no states of their own: each logical segment
+% takes the delivery of the unit segment at its own position. Pulses arrive
+% sorted by onset, and the unit's segments are in that same order.
+unitIds=unique(states.logical_pulse_id,"stable");
+unitIds=unitIds(isfinite(unitIds));
+if isempty(unitIds) || mod(n,numel(unitIds))~=0
+    error("adaptive_optopatch:BlanketDeliveryMappingUnavailable", ...
+        "The blanket state table describes %d logical segments, which does " + ...
+        "not divide the acquisition's %d.",numel(unitIds),n);
+end
+unitTarget=zeros(numel(unitIds),1); unitBlanket=zeros(numel(unitIds),1);
+unitLevel=nan(numel(unitIds),1);
+for u=1:numel(unitIds)
+    rows=states.logical_pulse_id==unitIds(u);
+    unitTarget(u)=sum(lit(rows & states.state_type=="target"));
+    unitBlanket(u)=sum(lit(rows & states.state_type=="blanket"));
+    levels=unique(states.level_v(rows));
+    if isscalar(levels), unitLevel(u)=levels; end
+end
+position=mod((0:n-1)',numel(unitIds))+1;
+targetSamples=unitTarget(position);
+blanketSamples=unitBlanket(position);
+level=unitLevel(position);
+pulses.blue_delivery=repmat("blanket_modulated",n,1);
+pulses.target_illumination_s=targetSamples/rate;
+pulses.blanket_illumination_s=blanketSamples/rate;
+pulses.target_illuminated_fraction= ...
+    repmat(blanket.target_illuminated_fraction,n,1);
+pulses.blanket_mod488_v=repmat(blanket.blanket_mod488_v,n,1);
+pulses.blanket_schedule=repmat(string(stateTable.schedule),n,1);
+pulses.segment_level_v=level;
 end
 
 function record=event_record(name,port,onset,offset,values,dark)

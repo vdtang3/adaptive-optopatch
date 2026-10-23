@@ -93,6 +93,8 @@ tiers.core = [ ...
     % These are layered on purpose; see Phase 3 of docs/notebook.md.
     "TestDmdCameraMaskRemapping"
     "TestDmdFlutExecution"
+    "TestBlanketDepolarization"
+    "TestBlanketCalibrationSweeps"
     "TestDmdStaticTargetExecutionState"
     "TestDmdOwnershipAcrossAcquisition"
     "TestDmdCalibrationIdentity"

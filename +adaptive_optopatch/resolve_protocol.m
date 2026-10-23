@@ -93,6 +93,21 @@ for i=1:numel(resolved)
         continue
     end
     events=resolved{i}.events;
+    blanket=adaptive_optopatch.blanket_depolarization_spec(resolved{i});
+    if blanket.enabled && blanket.schedule=="population_target_sweep"
+        % Its target is the union of the selected cells' masks, so what has
+        % to be executable is each contributing cell's mask at the resolved
+        % adjustment - built with the same primitive, one cell at a time.
+        sweep=blanket.sweep;
+        for k=1:numel(sweep.population_target_indices)
+            adaptive_optopatch.apply_blue_mask_adjustment( ...
+                targets.canonical_roi_masks(:,:,sweep.population_target_indices(k)), ...
+                sweep.blue_mask_adjustment_pixels,"Context", ...
+                sprintf("population target cell %s, requested adjustment %d", ...
+                sweep.population_cell_ids(k),sweep.blue_mask_adjustment_pixels));
+        end
+        continue
+    end
     for k=reshape(find(events.stimulation_source=="1p_dmd"),1,[])
         targetIndex=double(events.target_index(k));
         adjustment=double(events.blue_mask_adjustment_pixels(k));
@@ -137,6 +152,19 @@ function protocol=resolve_scheduled_acquisition(definition,acquisition, ...
 %   same selection, same schedule" true.
 selectedIds=string({fovState.cells(cellIndices).cell_id})';
 targetCount=numel(selectedIds);
+if scheduler.type=="blanket_round_robin"
+    protocol=resolve_blanket_acquisition(definition,acquisition,scheduler, ...
+        fovState,gui,cellIndices,targetIndices,selectedIds, ...
+        acquisitionIndex,outputIndex);
+    return
+end
+if ismember(scheduler.type, ...
+        ["blanket_recruitment_sweep","blanket_population_target_sweep"])
+    protocol=resolve_blanket_sweep_acquisition(definition,acquisition, ...
+        scheduler,fovState,gui,cellIndices,targetIndices,selectedIds, ...
+        acquisitionIndex,outputIndex);
+    return
+end
 
 % FLUT CAPACITY, AGAINST THE REAL TARGET COUNT.
 %
@@ -220,6 +248,173 @@ acquisition.scheduler_metadata=metadata;
 
 protocol=resolve_values(definition,acquisition,events,fovState,gui, ...
     cellMap,acquisitionIndex,outputIndex);
+end
+
+function protocol=resolve_blanket_acquisition(definition,acquisition, ...
+        scheduler,fovState,gui,cellIndices,targetIndices,selectedIds, ...
+        acquisitionIndex,outputIndex)
+%RESOLVE_BLANKET_ACQUISITION Realize one fixed blanket-depolarization round.
+%   The round is frozen into the resolved acquisition's
+%   blanket_depolarization block, beside the literal epoch table, so the
+%   runner and the archive both say exactly which round the DMD wrapped.
+%
+%   One round has to fit the DMD playlist, which wraps it for every later
+%   round. That is checked here against the nominal 4096-entry FLUT, with
+%   the real target count, and again against the device at Run.
+blanket=adaptive_optopatch.blanket_depolarization_spec(definition);
+cycles=@(seconds)round(seconds/blanket.cycle_period_s);
+statesPerRound=numel(selectedIds)*2* ...
+    (cycles(scheduler.epoch_duration_s)+cycles(scheduler.inter_epoch_gap_s));
+nominalFlutEntries=4096;
+uniqueMaskBound=numel(selectedIds)+2;
+capacity=adaptive_optopatch.calculate_dmd_flut_playlist_capacity( ...
+    nominalFlutEntries,uniqueMaskBound);
+if statesPerRound>capacity
+    error("adaptive_optopatch:BlanketRoundExceedsFlutCapacity", ...
+        "Acquisition %s: one blanket round for the %d selected cells " + ...
+        "needs %d DMD states, but the FLUT playlist holds %d. Shorten " + ...
+        "epoch_duration_s or inter_epoch_gap_s, or select fewer cells.", ...
+        string(acquisition.acquisition_id),numel(selectedIds), ...
+        statesPerRound,capacity);
+end
+
+template=acquisition.events(1,:);
+[events,metadata]=adaptive_optopatch.generate_blanket_round_robin_schedule( ...
+    selectedIds,scheduler.rounds,scheduler.epoch_duration_s, ...
+    scheduler.inter_epoch_gap_s,double(template.command_voltage_v), ...
+    "PreDelayS",scheduler.pre_delay_s, ...
+    "ConditionId",string(template.condition_id));
+events.blue_mask_adjustment_pixels(:)= ...
+    double(template.blue_mask_adjustment_pixels);
+positions=double(events.position_in_round);
+cellMap=cellIndices(positions);
+events.target_index=targetIndices(positions);
+
+metadata.scheduler_type=scheduler.type;
+metadata.chunk_index=scheduler.chunk_index;
+metadata.chunk_count=scheduler.chunk_count;
+metadata.selected_target_ids=selectedIds;
+metadata.realized_at_resolution=true;
+metadata.flut=struct("states_per_round",statesPerRound, ...
+    "unique_mask_upper_bound",uniqueMaskBound, ...
+    "playlist_capacity",capacity, ...
+    "max_entries",nominalFlutEntries,"valid",true);
+acquisition.scheduler_metadata=metadata;
+
+postDelay=field_number(acquisition,"post_delay_s",0);
+acquisition.acquisition_duration_s=metadata.schedule_end_s+postDelay;
+blanket.round=struct("start_s",scheduler.pre_delay_s, ...
+    "period_s",metadata.round_period_s, ...
+    "count",scheduler.rounds, ...
+    "cell_ids",selectedIds, ...
+    "epoch_duration_s",scheduler.epoch_duration_s, ...
+    "inter_epoch_gap_s",scheduler.inter_epoch_gap_s);
+acquisition.blanket_depolarization=blanket;
+protocol=resolve_values(definition,acquisition,events,fovState,gui, ...
+    cellMap,acquisitionIndex,outputIndex);
+end
+
+function protocol=resolve_blanket_sweep_acquisition(definition,acquisition, ...
+        scheduler,fovState,gui,cellIndices,targetIndices,selectedIds, ...
+        acquisitionIndex,outputIndex)
+%RESOLVE_BLANKET_SWEEP_ACQUISITION Realize one blanket calibration sweep.
+%   The levels and their timing are the definition's and need no field of
+%   view. What is resolved here is the realized segment table, the cells
+%   whose masks form a population sweep's union target, and the DMD playlist
+%   capacity - all frozen into the acquisition so the archive says exactly
+%   what ran.
+blanket=adaptive_optopatch.blanket_depolarization_spec(definition);
+schedule=blanket.schedule;
+[events,metadata]=adaptive_optopatch.generate_blanket_sweep_schedule( ...
+    schedule,scheduler,"ConditionId",string(acquisition.events.condition_id(1)));
+template=acquisition.events(1,:);
+events.blue_mask_adjustment_pixels(:)= ...
+    double(template.blue_mask_adjustment_pixels);
+% No row names a cell: a recruitment sweep targets nothing, and a
+% population sweep's target is the union, which belongs to the acquisition.
+events.target_index=zeros(height(events),1);
+
+% CAPACITY, AGAINST THE PLAYLIST THAT IS ACTUALLY PROGRAMMED. A sweep's DMD
+% sequence repeats one slot - two states per cycle, and for a population
+% sweep one epoch plus one gap - whatever the sweep's length, because the
+% masks do not change between levels. Only mod488 does. So the check is on
+% the slot, and it is checked again against the live device at Run.
+cycles=@(seconds)round(seconds/blanket.cycle_period_s);
+if schedule=="recruitment_sweep"
+    statesPerSlot=2;
+    uniqueMaskBound=2;                      % blanket and blank
+else
+    statesPerSlot=2*(cycles(scheduler.epoch_duration_s)+ ...
+        cycles(scheduler.inter_epoch_gap_s));
+    uniqueMaskBound=3;                      % blanket, blank and the union
+end
+nominalFlutEntries=4096;
+capacity=adaptive_optopatch.calculate_dmd_flut_playlist_capacity( ...
+    nominalFlutEntries,uniqueMaskBound);
+if statesPerSlot>capacity
+    error("adaptive_optopatch:BlanketSweepExceedsFlutCapacity", ...
+        "Acquisition %s repeats a %d-state DMD slot, but the FLUT " + ...
+        "playlist holds %d. Shorten epoch_duration_s or inter_epoch_gap_s.", ...
+        string(acquisition.acquisition_id),statesPerSlot,capacity);
+end
+
+cellMap=zeros(height(events),1);
+if schedule=="population_target_sweep"
+    % The union is a property of the acquisition, so the rows name no cell
+    % and the contributing cells are archived here instead. Resolution of
+    % per-event values has no cell to consult, which is correct: a
+    % population sweep's voltage is the sweep's level, never a per-cell
+    % calibration.
+    metadata.population_cell_ids=selectedIds;
+    metadata.population_target_indices=targetIndices;
+else
+    metadata.population_cell_ids=strings(0,1);
+    metadata.population_target_indices=zeros(0,1);
+end
+metadata.scheduler_type=scheduler.type;
+metadata.chunk_index=scheduler.chunk_index;
+metadata.chunk_count=scheduler.chunk_count;
+metadata.selected_target_ids=selectedIds;
+metadata.realized_at_resolution=true;
+metadata.flut=struct("states_per_slot",statesPerSlot, ...
+    "unique_mask_upper_bound",uniqueMaskBound, ...
+    "playlist_capacity",capacity, ...
+    "max_entries",nominalFlutEntries,"valid",true);
+acquisition.scheduler_metadata=metadata;
+
+postDelay=field_number(acquisition,"post_delay_s",0);
+acquisition.acquisition_duration_s=metadata.program_end_s+postDelay;
+segment_index=(1:height(events))';
+blanket.sweep=struct("start_s",metadata.start_s, ...
+    "levels_v",metadata.levels_v, ...
+    "segment_duration_s",metadata.segment_duration_s, ...
+    "inter_segment_gap_s",metadata.inter_segment_gap_s, ...
+    "program_end_s",metadata.program_end_s, ...
+    "population_cell_ids",metadata.population_cell_ids, ...
+    "population_target_indices",metadata.population_target_indices, ...
+    "blue_mask_adjustment_pixels",double(template.blue_mask_adjustment_pixels), ...
+    "segments",table(segment_index,double(events.level_index), ...
+        double(events.level_v),double(events.repetition_index), ...
+        double(events.pulse_id),double(events.onset_s),double(events.offset_s), ...
+        'VariableNames',{'segment_index','level_index','level_v', ...
+        'repetition_index','pulse_id','onset_s','offset_s'}));
+acquisition.blanket_depolarization=blanket;
+protocol=resolve_values(definition,acquisition,events,fovState,gui, ...
+    cellMap,acquisitionIndex,outputIndex);
+% The Blue mask adjustment the union is built at is resolved with the
+% events, not before them, so the frozen sweep records the resolved value
+% rather than the template's unresolved one.
+if schedule=="population_target_sweep"
+    adjustment=unique(protocol.events.blue_mask_adjustment_pixels( ...
+        protocol.events.stimulation_source=="1p_dmd"));
+    if ~isscalar(adjustment)
+        error("adaptive_optopatch:InvalidBlanketSweepTarget", ...
+            "A population-target sweep builds one union mask, so every " + ...
+            "epoch must resolve the same Blue mask adjustment.");
+    end
+    protocol.blanket_depolarization.sweep.blue_mask_adjustment_pixels=adjustment;
+    protocol=adaptive_optopatch.normalize_protocol(protocol);
+end
 end
 
 function protocol=resolve_multi_target(definition,acquisition,fovState,gui, ...
@@ -390,6 +585,9 @@ if isfield(acquisition,"scheduler_metadata")
 end
 if isfield(acquisition,"dmd_diagnostic")
     protocol.dmd_diagnostic=acquisition.dmd_diagnostic;
+end
+if isfield(acquisition,"blanket_depolarization")
+    protocol.blanket_depolarization=acquisition.blanket_depolarization;
 end
 if adaptive_optopatch.is_simultaneous_protocol(protocol)
     for field=["simultaneous_target_cell_ids","simultaneous_target_indices", ...

@@ -21,6 +21,9 @@ intentionally rejected and must be regenerated from their source scripts.
 | `create_stp_screen_protocol.m` | Legacy explicit-target short-term plasticity screen | `multi_target_continuous` | randomized when generated |
 | `create_blue_dmd_mask_titration_protocol.m` | Multiple Blue-mask adjustments within each cell's acquisition | `each_stimulation_enabled_cell` | randomized |
 | `create_dmd_flut_wrap_test.m` | Three-mask/eight-entry FLUT sequence hardware diagnostic | `multi_target_continuous` | ordered |
+| `create_blanket_round_robin_protocol.m` | Commissioning: fixed-order round robin with 20%-duty full-FOV blanket depolarization each 1 ms cycle (VU only) | `multi_target_continuous` | ordered |
+| `create_blanket_recruitment_sweep_protocol.m` | Calibration helper: steps the blanket level upward in short steps, no cell targeted (VU only) | `multi_target_continuous` | ordered |
+| `create_blanket_population_target_sweep_protocol.m` | Calibration helper: steps the target level under a fixed blanket, targeting the union of all selected cells (VU only) | `multi_target_continuous` | ordered |
 | `create_static_blue_light_test.m` | One 500 ms, 1 V Blue pulse with a static DMD mask to check the 488 nm path | `each_stimulation_enabled_cell` | ordered |
 | `create_custom_event_protocol.m` | Minimal hand-written schema-4 example | `each_stimulation_enabled_cell` | ordered |
 | `create_mixed_1p_2p_test_protocol.m` | Conservative interleaved 1P/2P commissioning acquisition | `each_stimulation_enabled_cell` | ordered |

@@ -26,6 +26,14 @@ if isfield(plan,"dmd_diagnostic") && ~useFlut
     error("adaptive_optopatch:DmdFlutDiagnosticRequiresFlut", ...
         "The DMD FLUT diagnostic requires a DMD with FLUT support.");
 end
+wraps=isfield(plan,"playlist_wraps") && logical(plan.playlist_wraps);
+if wraps && ~useFlut
+    % Wrapping is established for a slave FLUT playlist on the VU ALP (the
+    % 2026-09 wrap diagnostics), not for a physical stack, so a wrapping
+    % round never falls back to one.
+    error("adaptive_optopatch:WrappingPlaylistRequiresFlut", ...
+        "A wrapping blanket-depolarization round requires a DMD with FLUT support.");
+end
 flutMaxEntries=NaN; playlistCapacity=NaN;
 if useFlut
     state=dmd.Get_State();
@@ -81,6 +89,13 @@ if useFlut
     end
     dmd.Set_Playlist(playlistSlots,char(projectionMode));
     configuration.execution_mode="flut_playlist";
+    if wraps
+        % Set_Playlist has just restarted the sequence at entry 1. Its
+        % counters now are the reference the post-acquisition advance count
+        % is measured from, and the pre-trigger check compares against.
+        configuration.dmd_progress_armed= ...
+            adaptive_optopatch.read_dmd_projection_progress(dmd);
+    end
 else
     stack=transformedMasks(:,:,plan.event_slot_indices);
     dmd.pattern_stack=stack;

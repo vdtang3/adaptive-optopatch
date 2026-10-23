@@ -29,8 +29,12 @@ for k=1:n
     onephotonEventCount=sum(events.stimulation_source=="1p_dmd");
     twophotonEventCount=sum(events.stimulation_source=="2p_spiral");
     hasMixedSources=onephotonEventCount>0 && twophotonEventCount>0;
+    % A blanket acquisition is a 1P DMD acquisition even when every logical
+    % segment is null, because the blanket phase is 488 nm light on the Blue
+    % DMD; a recruitment sweep is exactly that acquisition.
+    blanketEnabled=adaptive_optopatch.blanket_depolarization_spec(protocol).enabled;
     if hasMixedSources, mode="mixed"; elseif twophotonEventCount>0, mode="2p_spiral";
-    elseif onephotonEventCount>0, mode="1p_dmd"; else, mode="none"; end
+    elseif onephotonEventCount>0 || blanketEnabled, mode="1p_dmd"; else, mode="none"; end
     stimulationSources={sources};
     trialId=k; repeatIndex=1; isNull=all(events.is_null);
     acquisitionId=string(protocol.acquisition_id);

@@ -11,6 +11,13 @@ arguments
         adaptive_optopatch.virtual_upright_stimulation_manifest()
 end
 aliasList=options.Manifest.alias_list;
+if ~isempty(options.DmdSequencePlan) && isfield(options.DmdSequencePlan,"state_table")
+    % This builder knows only rectangular pulses, so it would emit a blanket
+    % plan's epochs as continuous Vstim on whatever mask is showing.
+    error("adaptive_optopatch:BlanketPlanNeedsMixedBuilder", ...
+        "Blanket-depolarization plans are realized by " + ...
+        "build_luminos_mixed_waveform_config, which expands the state table.");
+end
 required=["rate","clock_source","trigger_source","daq_master"];
 if ~all(isfield(activeGlobalProps,required))
     error("adaptive_optopatch:IncompleteActiveWaveformSettings", ...

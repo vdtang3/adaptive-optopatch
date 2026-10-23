@@ -37,7 +37,10 @@ try
                 error("adaptive_optopatch:InvalidSimultaneousTargets","Simultaneous events require multiple/zero sentinel, 1P only, and one adjustment.");
             end
         end
-        issues=validate_events(protocol.events,true,adaptive_optopatch.is_simultaneous_protocol(protocol));
+        blanket=adaptive_optopatch.blanket_depolarization_spec(protocol);
+        issues=validate_events(protocol.events,true, ...
+            adaptive_optopatch.is_simultaneous_protocol(protocol), ...
+            blanket.enabled && blanket.schedule=="population_target_sweep");
         issues=[issues;validate_resolved_parameters(protocol.parameters,protocol.events)];
     end
 catch exception
@@ -63,8 +66,15 @@ for k=1:numel(metadata)
 end
 end
 
-function issues=validate_events(events,resolved,simultaneous)
+function issues=validate_events(events,resolved,simultaneous,populationTarget)
+%VALIDATE_EVENTS Check one acquisition's event table.
+%   POPULATIONTARGET is the blanket population-target sweep, whose epochs
+%   address the union of every selected cell's mask. That target belongs to
+%   the acquisition rather than to one cell, so those rows carry the
+%   sentinel target "population" with index 0, exactly as the simultaneous
+%   policy carries "multiple".
 if nargin<3, simultaneous=false; end
+if nargin<4, populationTarget=false; end
 issues=strings(0,1); onset=events.onset_s; duration=events.duration_s;
 if isempty(events), issues(end+1)="Every acquisition requires at least one event."; return; end
 if numel(unique(events.pulse_id))~=height(events)
@@ -113,7 +123,11 @@ if resolved
     if any(~isfinite(duration) | duration<=0)
         issues(end+1)="Resolved pulse durations must be positive and finite.";
     end
-    if ~simultaneous && any(~isfinite(events.target_index(nonNull)) | ...
+    if populationTarget && any(events.target_cell_id(nonNull)~="population")
+        issues(end+1)="Every blanket population-target epoch must name the "+ ...
+            "sentinel target ""population"".";
+    end
+    if ~simultaneous && ~populationTarget && any(~isfinite(events.target_index(nonNull)) | ...
             events.target_index(nonNull)<1 | ...
             fix(events.target_index(nonNull))~=events.target_index(nonNull))
         issues(end+1)="Resolved non-null target indices must be positive integers.";

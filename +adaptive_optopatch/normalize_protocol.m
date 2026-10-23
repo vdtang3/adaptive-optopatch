@@ -136,6 +136,7 @@ end
 if ~isfield(protocol,"created_at")
     protocol.created_at=string(datetime("now","TimeZone","local"));
 end
+protocol=normalize_blanket_depolarization(protocol);
 end
 
 function protocol=normalize_resolved(protocol)
@@ -150,6 +151,17 @@ if ~isscalar(protocol.acquisition_duration_s) || ...
         protocol.acquisition_duration_s<max(protocol.events.offset_s,[],"omitmissing")
     error("adaptive_optopatch:InvalidAcquisitionDuration", ...
         "Resolved acquisition duration must include every event.");
+end
+protocol=normalize_blanket_depolarization(protocol);
+end
+
+function protocol=normalize_blanket_depolarization(protocol)
+% Validated in either case, but only written back when the protocol has the
+% block: a protocol that never mentions blanket mode keeps exactly the
+% fields it had.
+blanket=adaptive_optopatch.blanket_depolarization_spec(protocol);
+if isfield(protocol,"blanket_depolarization")
+    protocol.blanket_depolarization=blanket;
 end
 end
 

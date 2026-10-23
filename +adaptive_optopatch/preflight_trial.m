@@ -35,7 +35,21 @@ else
         events=validation.protocol.events;
         ids=string({targets.targets.cell_id});
         simultaneous=adaptive_optopatch.is_simultaneous_protocol(protocol);
-        if simultaneous
+        blanket=adaptive_optopatch.blanket_depolarization_spec(validation.protocol);
+        populationSweep=blanket.enabled && ...
+            blanket.schedule=="population_target_sweep";
+        if populationSweep
+            % Its epochs address the union of the selected cells' masks, so
+            % no row names a cell. What has to exist is every cell the union
+            % is built from, which is frozen in the sweep.
+            sweep=blanket.sweep;
+            missing=sweep.population_cell_ids(~ismember( ...
+                sweep.population_cell_ids,ids));
+            for id=reshape(missing,1,[])
+                issues(end+1)="Unknown population target cell ID: "+id; %#ok<AGROW>
+            end
+            pulseIds=strings(0,1);
+        elseif simultaneous
             try
                 adaptive_optopatch.build_simultaneous_blue_mask(protocol,targets);
             catch exception
@@ -72,7 +86,12 @@ else
         end
         defaultAdjustment=double(targets.parameters.blue_mask_adjustment_pixels);
         onePhotonEvents=events(events.stimulation_source=="1p_dmd",:);
-        if ~simultaneous && ~isempty(onePhotonEvents) && (numel(unique(onePhotonIds))>1 || ...
+        % A blanket-depolarization plan is sample-exact and so needs the
+        % live DAQ rate and camera period, which preflight does not have;
+        % the runner and Update plan build it with both.
+        blanket=adaptive_optopatch.blanket_depolarization_spec(validation.protocol);
+        if ~simultaneous && ~blanket.enabled && ~isempty(onePhotonEvents) && ...
+                (numel(unique(onePhotonIds))>1 || ...
                 any(onePhotonEvents.blue_mask_adjustment_pixels~=defaultAdjustment))
             try
                 adaptive_optopatch.build_dmd_sequence_plan(validation.protocol,targets);

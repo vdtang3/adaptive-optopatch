@@ -249,16 +249,25 @@ for k=1:n
         pulseTargets=unique(protocol.events.target_cell_id(onePhotonRows),"stable");
         dmdSequencePlan=struct([]);
         config=struct("mode","no_1p_events");
+        % Blanket depolarization always runs as a wrapping FLUT round, even
+        % for one cell, because the blanket and blank masks alternate with
+        % the target's.
+        blanketMode=adaptive_optopatch.blanket_depolarization_spec(protocol).enabled;
+        dmdAdvance=struct([]);
         maskVaries=any(protocol.events.blue_mask_adjustment_pixels(onePhotonRows)~= ...
             trialTargets.parameters.blue_mask_adjustment_pixels);
         if adaptive_optopatch.is_simultaneous_protocol(protocol)
             config=adaptive_optopatch.prepare_luminos_target(app,trialTargets,row, ...
                 "SimultaneousProtocol",protocol,"DryRun",false, ...
                 "DmdName",profile.dmd.name,"WriteDmdImmediately",true);
-        elseif any(onePhotonRows) && (any(twoPhotonRows) || numel(pulseTargets)>1 || maskVaries)
+        elseif blanketMode || (any(onePhotonRows) && (any(twoPhotonRows) || ...
+                numel(pulseTargets)>1 || maskVaries))
             dmdSequencePlan=adaptive_optopatch.build_dmd_sequence_plan( ...
                 protocol,trialTargets, ...
-                "HoldPatternUntilTrigger",profile.rig_name=="Spinning_Upright");
+                "HoldPatternUntilTrigger",profile.rig_name=="Spinning_Upright", ...
+                "SampleRateHz",double(original.global_props.rate), ...
+                "CameraFramePeriodS", ...
+                    adaptive_optopatch.daq_camera_frame_period_s(hardware.voltage_camera));
             config=adaptive_optopatch.prepare_luminos_dmd_sequence( ...
                 hardware.dmd,dmdSequencePlan,"DryRun",false);
         elseif any(onePhotonRows)
@@ -342,7 +351,15 @@ for k=1:n
         % decides when light is emitted, and this shutter write must not
         % become a second source of timing.
         hardware.modulator.level=profile.modulator.dark_v;
-        if any(onePhotonRows)
+        if blanketMode
+            % Before any light: the playlist must still be where Set_Playlist
+            % left it. A stray edge since arming would start every state
+            % one mask late.
+            check_blanket_dmd_still_armed(hardware.dmd,config);
+        end
+        if any(onePhotonRows) || blanketMode
+            % A blanket recruitment sweep targets no cell and still emits
+            % 488 nm light on every cycle, so the shutter opens for it too.
             hardware.shutter.State=profile.shutter.open_state;
             pause(options.ShutterSettleTimeS);
         end
@@ -361,6 +378,14 @@ for k=1:n
         wait_for_acquisition(globalProps.total_time+options.TimeoutMarginS);
         hardware.shutter.State=profile.shutter.closed_state;
         hardware.modulator.level=profile.modulator.dark_v;
+        if blanketMode
+            % Read before the DMD is blanked: blanking reloads the device.
+            dmdAdvance=adaptive_optopatch.verify_dmd_advance_count( ...
+                config.dmd_progress_armed, ...
+                adaptive_optopatch.read_dmd_projection_progress(hardware.dmd), ...
+                dmdSequencePlan.expected_trigger_count, ...
+                dmdSequencePlan.programmed_playlist_length);
+        end
 
         experimentDirectory=string(app.expfolder);
         if ~isfolder(experimentDirectory) || ...
@@ -369,9 +394,18 @@ for k=1:n
                 "Luminos completed but output_data.mat was not found in %s.",experimentDirectory);
         end
         record=build_trial_record(row,waveformSummary,config,experimentDirectory);
+        if blanketMode
+            record.dmd_advance_verification=dmdAdvance;
+            record.blanket_validity=blanket_validity(dmdAdvance);
+        end
         adaptive_optopatch_record=record;
         save(fullfile(experimentDirectory,"output_data.mat"), ...
             "adaptive_optopatch_record","-append");
+        if blanketMode
+            % Archived first, so the evidence is on disk; then the run stops.
+            % Later rounds of a shifted playlist are not data.
+            report_blanket_advance(dmdAdvance,k);
+        end
         run.trials.experiment_directory(k)=experimentDirectory;
         run.trials.acquisition_status(k)="completed";
         run.trials.error_message(k)="";
@@ -518,6 +552,14 @@ save_checkpoint();
             frameRate=double(hardware.voltage_camera.calculate_framerate());
         end
         expected_frame=floor(pulses.onset_s*frameRate)+1;
+        if blanketMode
+            % Blanket epochs start exactly on frame boundaries by
+            % construction, where floor(seconds x rate) can land one frame
+            % early on floating-point error; count samples instead.
+            stateTable=dmdSequencePlan.state_table;
+            expected_frame=round(pulses.onset_s*stateTable.sample_rate_hz)/ ...
+                stateTable.camera_frame_samples+1;
+        end
         map=table(pulses.pulse_id,pulses.onset_s,expected_frame, ...
             repmat(frameRate,height(pulses),1), ...
             'VariableNames',{'pulse_id','onset_s','expected_frame','expected_frame_rate_hz'});
@@ -585,6 +627,49 @@ save_checkpoint();
         hardware.dmd.Write_Static();
     end
 
+end
+
+function check_blanket_dmd_still_armed(dmd,config)
+armed=config.dmd_progress_armed;
+if ~armed.available, return; end
+current=adaptive_optopatch.read_dmd_projection_progress(dmd);
+if ~current.available, return; end
+fields=["sequence_counter","frame_counter","frames_per_sub_sequence"];
+moved=fields(arrayfun(@(name)current.(name)~=armed.(name),fields));
+if ~isempty(moved)
+    error("adaptive_optopatch:DmdAdvancedBeforeAcquisition", ...
+        "The blanket DMD playlist moved after it was armed and before the " + ...
+        "acquisition started (%s changed). No light was emitted. Check the " + ...
+        "DMD trigger line for stray edges.",strjoin(moved,", "));
+end
+end
+
+function validity=blanket_validity(dmdAdvance)
+switch dmdAdvance.status
+    case "matched"
+        validity="valid";
+    case "mismatched"
+        validity="invalid_dmd_advance_mismatch";
+    otherwise
+        validity="unverified_dmd_advance_count";
+end
+end
+
+function report_blanket_advance(dmdAdvance,trialIndex)
+if dmdAdvance.status=="mismatched"
+    error("adaptive_optopatch:DmdAdvanceMismatch", ...
+        "Trial %d is INVALID: %s The DMD playlist may have been shifted " + ...
+        "against mod488, which can put Vstim on the full-FOV blanket mask. " + ...
+        "Its record is archived with blanket_validity " + ...
+        "invalid_dmd_advance_mismatch, and the run stopped.", ...
+        trialIndex,dmdAdvance.detail);
+end
+if dmdAdvance.status~="matched"
+    warning("adaptive_optopatch:DmdAdvanceUnverified", ...
+        "Trial %d: the DMD advance count could not be verified (%s). " + ...
+        "It is archived as unverified_dmd_advance_count.", ...
+        trialIndex,dmdAdvance.detail);
+end
 end
 
 function path=linked_reference_path(runDirectory)

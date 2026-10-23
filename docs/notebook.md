@@ -2739,3 +2739,122 @@ before their blue pulses and rejects protocols without that dark interval.
 Virtual Upright retains its existing slave sequence policy. This change
 follows the Luminos ALP driver behavior and simulation tests; the physical
 output still requires a rig retest.
+
+## 2026-10-23 — Blanket-depolarization round robin (commissioning, VU only)
+
+Inhibitory-cell round robins want every cell slightly depolarized so IPSPs
+have driving force. A protocol-level `blanket_depolarization` block (default
+off; absent means off, and a protocol without it is left byte-identical)
+turns a fixed-order round robin into 1 ms cycles locked to the camera frame:
+0.2 ms full-FOV mask at `mod488_v`, then 0.8 ms of the epoch's target at its
+own Vstim, or of the blank mask at 0 V between epochs. The blanket dose is a
+duty cycle at one AOTF voltage, never a lower AOTF voltage, because the AOTF
+transfer curve is nonlinear.
+
+**One state table.** `build_blanket_state_table` is the only place blanket
+timing exists: one round of states in DAQ samples, each with its mask,
+mod488 level and logical epoch. The FLUT playlist (one entry per state) and
+both DAQ lines (`luminos_round_waveform`, evaluated by sample index) are read
+from it, so a DMD advance and its mod488 level start on the same sample.
+Nothing is rounded: a cycle, phase, guard, camera period or round start that
+is not a whole number of samples, or a cycle that is not exactly one camera
+frame, is refused.
+
+**One round, wrapped.** The playlist holds one round and is declared to wrap
+(`playlist_wraps`); later rounds are the ALP replaying it. That rests on the
+2026-09-17/23 VU slave FLUT diagnostics (3 entries, 8 triggers, spots
+1,2,3,1,2,3,1,2) and on the same data showing that a slave picture stays up
+~95 ms after its trigger despite the 44 us programmed picture time. Wrapping
+plans refuse non-FLUT devices and Spinning Upright's master stepping. The
+acquisition is a whole number of rounds and the events must be exactly the
+frozen round repeated (cell, timing, voltage, mask), because the DMD replays
+round 1 whatever the table says. Order is fixed; randomized orders are not
+supported yet.
+
+**Target-onset guard.** mod488 is 0 V for the first 50 us of every target
+state. Only the blanket-to-target transition is hazardous: until the DMD
+shows the new picture, the full-FOV mask is still up, and without the guard
+the target's Vstim would light the whole FOV once per cycle for the trigger-
+to-display latency. The other transitions only lose a little light. 50 us
+covers the 44 us ALP minimum picture time and is a placeholder for the
+photodiode measurement. It also means the target is lit 75% of each cycle,
+and a 20 ms epoch delivers 15 ms of targeted light; realized pulses say so
+(`blue_delivery`, `target_illumination_s`), and a calibration advisory warns
+that continuous-pulse Blue voltages do not transfer as is.
+
+**Phase slip.** One lost or doubled DMD edge shifts the wrapped playlist
+against mod488 for the rest of the run; a test shows it puts Vstim on the
+blanket mask in every target state. Safeguards: the round is re-armed at
+entry 1 by every `Set_Playlist`; the ALP's own `ALP_PROJ_PROGRESS` counters
+are read at arming, again just before the shutter opens (a change stops the
+run before light), and after the acquisition; `verify_dmd_advance_count`
+compares the advance count with the emitted trigger count. The record carries
+`dmd_advance_verification` and `blanket_validity` (`valid`,
+`invalid_dmd_advance_mismatch`, which also stops the run, or
+`unverified_dmd_advance_count` when there is no readback). The counter model
+is not commissioned: whether arming already counts as a displayed frame has
+to be read off a slide run with a known trigger count. The readback needs the
+Luminos MEX rebuilt with `Get_Projection_Progress`; stronger runtime evidence
+would come from wiring the ALP synch output to a DAQ counter, which this
+software does not assume.
+
+**Analysis.** One protocol row per 20 ms epoch, never per state. VIPP takes a
+blanket acquisition's 1P epochs from `realized_pulses` instead of a mod488
+threshold, which would merge the whole round into one epoch because the
+blanket phase lights every frame. The expected frame map is computed in
+samples for blanket epochs.
+
+## 2026-10-23 — Two blanket calibration sweeps, on the same machinery
+
+Choosing a blanket level and a target level is an all-optical problem here:
+nothing is patched. Two helper protocols answer them, and both are the
+blanket round robin's own cycle, state table, wrapping FLUT playlist,
+waveform builders and DMD advance checks with a different logical schedule.
+`blanket_depolarization.schedule` names which: `round_robin` (the default,
+and what an existing protocol means), `recruitment_sweep` or
+`population_target_sweep`.
+
+**Recruitment sweep.** Blanket only — the cycle is [blanket mask at this
+step's level][blank mask at 0 V] — stepped upward through an explicit,
+non-decreasing level list after a dark baseline, one logical segment per
+step, ending with the last step. Short steps because the sweep cannot be
+stopped once it runs: a level that turns out to be suprathreshold is held
+for one step and there is no hold at the top afterwards. No cell is
+targeted, so every segment is a NULL event and the step's level lives in the
+frozen sweep block rather than on the row; `mod488_v` is refused for this
+schedule, because the thing it would name is what the sweep changes. A
+blanket acquisition is a 1P DMD acquisition even with only null segments:
+the shutter opens for it, and `build_manifest` says so.
+
+**Population-target sweep.** The round robin's cycle with one target, the
+union of every selected cell's own mask, stepped through target voltages
+with several short epochs per level. The union is built from
+`apply_blue_mask_adjustment` per cell, the same primitive a targeted pulse
+uses, and goes through the one camera-to-DMD transform in
+`prepare_luminos_dmd_sequence`; the rest of the FOV still receives only the
+blanket phase. Its epochs address no single cell, so they carry the sentinel
+target `population` with index 0 — the shape the simultaneous policy already
+uses for `multiple` — and `validate_protocol`, `preflight_trial` and
+`validate_blue_mask_executability` check the frozen contributing cells
+instead of the row. It finds a voltage RANGE: stimulating every inhibitory
+cell at once recruits network inhibition that the isolated-cell round robin
+does not, so a threshold found here need not be a cell's own.
+
+**The playlist is the shortest unit the mask sequence repeats.** A sweep's
+masks do not change between levels — only mod488 does — so the ALP wraps two
+entries for a whole recruitment sweep and one epoch-plus-gap for a whole
+population sweep, whatever the sweep's length, while the DAQ still emits one
+trigger per state. That is why a sweep of any length fits the FLUT, and it
+is derived rather than declared: a round robin's masks do change from cell to
+cell, so the same rule returns its whole round.
+
+**Archival and quick look.** The frozen sweep block carries the levels, each
+segment's level/repetition/pulse and timing, and a population sweep's
+contributing cells. Realized pulses report what each segment actually
+delivered, measured from its own states, so a recruitment segment says
+plainly that it delivered blanket light and no targeted light.
+`inspect_acquisition` rebuilds the grey mod488 trace from the archived state
+table — exactly while that stays under 100k states, as a per-camera-frame
+maximum beyond — and draws the logical units as bars: one per voltage step,
+or one per target epoch. No analysis of the recordings and no voltage
+recommendation is computed anywhere; these protocols deliver and record.

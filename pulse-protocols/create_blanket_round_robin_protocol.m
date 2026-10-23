@@ -1,14 +1,14 @@
 % Fixed-order 1P ROUND ROBIN WITH BLANKET DEPOLARIZATION (commissioning).
 %
-% For inhibitory-cell round robins: every 1 ms cycle the whole camera FOV gets
-% a short Blue pulse that slightly depolarizes every cell, and during a target
-% epoch the rest of the cycle goes to the target at its own calibrated Blue
-% voltage. Between epochs the rest of the cycle is dark.
+% For inhibitory-cell round robins: every 1 ms cycle the union of the
+% Stim-enabled cells gets a short Blue pulse that slightly depolarizes all of
+% them, and during a target epoch the rest of the cycle goes to that one cell
+% at its own calibrated Blue voltage. Between epochs the rest is dark.
 %
-%   target epoch, each cycle:  0.2 ms full-FOV mask at blanket_mod488_v
+%   target epoch, each cycle:  0.2 ms Stim-enabled union at blanket_mod488_v
 %                              0.8 ms target mask at the cell's Blue V
 %                                     (first 50 us held at 0 V, see guard)
-%   gap, each cycle:           0.2 ms full-FOV mask at blanket_mod488_v
+%   gap, each cycle:           0.2 ms Stim-enabled union at blanket_mod488_v
 %                              0.8 ms blank mask at 0 V
 %
 % The blanket dose is the DUTY CYCLE at one AOTF voltage, never a lower AOTF

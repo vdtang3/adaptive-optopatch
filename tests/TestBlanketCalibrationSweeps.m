@@ -101,7 +101,7 @@ classdef TestBlanketCalibrationSweeps < matlab.unittest.TestCase
             [mod488,trigger]=compiled_lines(props,wfm);
             delivered=walk_wrapped_playlist(plan,mod488,trigger,0);
             testCase.verifyEqual(numel(delivered.slot),plan.expected_trigger_count);
-            blanketSlot=find(plan.slot_mask_keys=="blanket");
+            blanketSlot=slot_for(plan,"blanket");
             states=plan.state_table.states;
             for k=1:numel(delivered.slot)
                 level=delivered.levels{k};
@@ -128,8 +128,10 @@ classdef TestBlanketCalibrationSweeps < matlab.unittest.TestCase
             testCase.verifyEqual(dmd.playlist,plan.programmed_playlist_slots);
             testCase.verifyEqual(dmd.slot_write_count,2);
             testCase.verifyEqual(configuration.execution_mode,"flut_playlist");
-            testCase.verifyTrue(all(dmd.slot_patterns{ ...
-                plan.slot_mask_keys=="blanket"}(:)));
+            % The union of the Stim-enabled cells, not the whole FOV.
+            testCase.verifyEqual(dmd.slot_patterns{slot_for(plan,"blanket")}, ...
+                logical(dmd.setPatterningROI(cells_union(targets,1:3), ...
+                "write_when_complete",false)));
         end
 
         function levelListIsValidatedAndNeverExtrapolated(testCase)
@@ -157,7 +159,7 @@ classdef TestBlanketCalibrationSweeps < matlab.unittest.TestCase
             [protocol,targets]=population(testCase,[1;2],3);
             plan=adaptive_optopatch.build_dmd_sequence_plan(protocol,targets, ...
                 "SampleRateHz",200000,"CameraFramePeriodS",0.001);
-            slot=find(plan.slot_mask_keys=="population");
+            slot=slot_for(plan,"population");
             testCase.verifyNumElements(slot,1);
             union=plan.unique_camera_masks(:,:,slot);
             expected=any(targets.canonical_roi_masks,3);
@@ -166,10 +168,11 @@ classdef TestBlanketCalibrationSweeps < matlab.unittest.TestCase
             testCase.verifyEqual(sweep.population_cell_ids, ...
                 string({targets.targets.cell_id})');
             testCase.verifyEqual(sweep.population_target_indices,(1:3)');
-            % Not the whole field of view: only the blanket mask is all-on.
+            % Not the whole field of view. The blanket phase lights the
+            % same union at the blanket level, so both phases of a
+            % population epoch are one slot driven at two voltages.
             testCase.verifyLessThan(nnz(union),numel(union));
-            testCase.verifyTrue(all(plan.unique_camera_masks(:,:, ...
-                plan.slot_mask_keys=="blanket"),"all"));
+            testCase.verifyEqual(slot_for(plan,"blanket"),slot);
         end
 
         function targetPhasesUseTheUnionAndGapsKeepModulating(testCase)
@@ -180,17 +183,24 @@ classdef TestBlanketCalibrationSweeps < matlab.unittest.TestCase
             [mod488,trigger]=compiled_lines(props,wfm);
             delivered=walk_wrapped_playlist(plan,mod488,trigger,0);
             states=plan.state_table.states;
-            keys=plan.slot_mask_keys(delivered.slot);
             guard=plan.state_table.target_onset_guard_samples;
             blanketV=protocol.blanket_depolarization.mod488_v;
-            for k=1:numel(keys)
+            unionSlot=slot_for(plan,"population");
+            blankSlot=slot_for(plan,"blank");
+            % By state type, not by mask key: the blanket phase and the
+            % target phase of an epoch are now the same pixels, so the key
+            % alone no longer tells them apart - the voltage does.
+            for k=1:numel(delivered.slot)
                 level=delivered.levels{k};
-                switch keys(k)
+                switch states.state_type(k)
                     case "blanket"
+                        testCase.verifyEqual(delivered.slot(k),unionSlot);
                         testCase.verifyEqual(unique(level),blanketV);
-                    case "blank"
+                    case "dark"
+                        testCase.verifyEqual(delivered.slot(k),blankSlot);
                         testCase.verifyEqual(unique(level),0);
-                    case "population"
+                    case "target"
+                        testCase.verifyEqual(delivered.slot(k),unionSlot);
                         testCase.verifyEqual(level(1:guard),zeros(1,guard));
                         testCase.verifyEqual(unique(level(guard+1:end)), ...
                             states.level_v(k));
@@ -252,7 +262,9 @@ classdef TestBlanketCalibrationSweeps < matlab.unittest.TestCase
             % epoch plus its gap and the ALP wraps it for the whole sweep.
             testCase.verifyEqual(plan.programmed_playlist_length,200);
             testCase.verifyEqual(plan.playlist_repeats_per_round,12);
-            testCase.verifyEqual(plan.unique_mask_count,3);
+            % Two: the union the blanket and target phases share, and the
+            % blank mask of the gaps.
+            testCase.verifyEqual(plan.unique_mask_count,2);
             testCase.verifyEqual(plan.expected_trigger_count,2400);
             [props,wfm]=waveforms(protocol,plan);
             [~,trigger]=compiled_lines(props,wfm);
@@ -345,6 +357,98 @@ classdef TestBlanketCalibrationSweeps < matlab.unittest.TestCase
         end
 
         % ---------------------------------------------------------------
+        % Through the controller, which is how the rig reaches them
+        % ---------------------------------------------------------------
+
+        function everyBlanketProtocolSurvivesApplyPlanDraft(testCase)
+            % The rig's Update plan is applyPlanDraft, and a recruitment
+            % sweep broke it: preflightPlan asked "has 1P events?" to decide
+            % which hardware to resolve, and a sweep that targets no cell
+            % has none - so it resolved nothing and reached into an empty
+            % struct for a camera.
+            for which=["ordinary","round_robin","recruitment","population"]
+                controller=configured_controller(testCase,protocol_for(which));
+                draft=struct("cells",struct("cell_id",{"cell_001","cell_002"}, ...
+                    "SelectedBlueVoltageV",{2.5,3.0}));
+
+                controller.applyPlanDraft(draft);
+
+                trials=controller.ActiveRunPlan.manifest.trials;
+                route=adaptive_optopatch.manifest_execution_route(trials);
+                testCase.verifyEqual(route.runner,"1p_dmd", ...
+                    "A blanket acquisition drives the Blue DMD, so it is 1P work.");
+                testCase.verifyTrue(route.has_one_photon);
+                testCase.verifyEqual(string(trials.stimulation_mode(1)),"1p_dmd");
+            end
+        end
+
+        function everyProtocolNeedsAStimEnabledCell(testCase)
+            % Including a recruitment sweep, which targets no cell: its
+            % blanket is the union of the Stim-enabled cells' own masks, so
+            % with none ticked there would be nothing to illuminate at all.
+            for which=["ordinary","round_robin","recruitment","population"]
+                controller=configured_controller(testCase,protocol_for(which));
+                testCase.verifyError(@()controller.applyPlanDraft(struct( ...
+                    "cells",struct("cell_id",{"cell_001","cell_002"}, ...
+                    "StimulationEnabled",{false,false}))), ...
+                    "adaptive_optopatch:PlanNotReady", ...
+                    which+" must require a Stim-enabled cell.");
+            end
+        end
+
+        function theBlanketFollowsTheStimSelection(testCase)
+            % Which cells the blanket lights is not a protocol decision: it
+            % is whichever cells are Stim-enabled at Update plan, frozen
+            % into the acquisition so the archive says which pixels carried
+            % it. Untick one and it leaves the union.
+            for which=["round_robin","recruitment","population"]
+                controller=configured_controller(testCase,protocol_for(which));
+
+                controller.applyPlanDraft(struct("cells",struct( ...
+                    "cell_id",{"cell_001","cell_002"}, ...
+                    "StimulationEnabled",{true,false}, ...
+                    "SelectedBlueVoltageV",{2.5,3.0})));
+
+                protocol=controller.ActiveRunPlan.manifest.trials.pulse_schedule{1};
+                mask=protocol.blanket_depolarization.mask;
+                testCase.verifyEqual(mask.source,"stim_enabled_union");
+                testCase.verifyEqual(mask.cell_ids,"cell_001", ...
+                    which+" should light only the Stim-enabled cell.");
+            end
+        end
+
+        function aSweepWithNoTargetedEventsIsStillOnePhotonWork(testCase)
+            % The unit behind that: event counts cannot answer it, because a
+            % recruitment sweep's logical segments are all null.
+            [protocol,~]=recruitment(testCase,[0.4;0.8]);
+            testCase.verifyEqual(sum(protocol.events.stimulation_source=="1p_dmd"),0);
+            trials=table({protocol},0,0,"1p_dmd", ...
+                'VariableNames',{'pulse_schedule','onephoton_event_count', ...
+                'twophoton_event_count','stimulation_mode'});
+
+            route=adaptive_optopatch.manifest_execution_route(trials);
+
+            testCase.verifyTrue(route.has_one_photon);
+            testCase.verifyFalse(route.has_two_photon);
+            testCase.verifyEqual(route.runner,"1p_dmd");
+            testCase.verifyEqual(route.checkpoint_file,"run_checkpoint.mat");
+        end
+
+        function anOrdinaryManifestRoutesExactlyAsBefore(testCase)
+            ordinary=adaptive_optopatch.generate_screen_protocol( ...
+                "PulseCount",1,"ModulatorVoltage",1);
+            trials=table({ordinary},0,0,"none", ...
+                'VariableNames',{'pulse_schedule','onephoton_event_count', ...
+                'twophoton_event_count','stimulation_mode'});
+            route=adaptive_optopatch.manifest_execution_route(trials);
+            testCase.verifyFalse(route.has_one_photon);
+            trials.onephoton_event_count=1;
+            route=adaptive_optopatch.manifest_execution_route(trials);
+            testCase.verifyTrue(route.has_one_photon);
+            testCase.verifyEqual(route.runner,"1p_dmd");
+        end
+
+        % ---------------------------------------------------------------
         % Feature-off parity
         % ---------------------------------------------------------------
 
@@ -364,6 +468,42 @@ end
 % -----------------------------------------------------------------------
 % Fixtures
 % -----------------------------------------------------------------------
+
+function controller=configured_controller(testCase,protocol)
+%CONFIGURED_CONTROLLER A controller with a reference, two somas and a protocol.
+root=string(tempname); mkdir(root);
+testCase.addTeardown(@()rmdir(root,"s"));
+camera=struct("name","Orca Fusion","ROI",[0 0 100 80],"bin",1, ...
+    "x_world_limits",[974 1074],"y_world_limits",[984 1064]);
+info=struct("snapshot_name","blanket_sweep_controller", ...
+    "snapshot_directory",root,"snapshot_path",fullfile(root,"snapshot.mat"), ...
+    "metadata",struct("rig_name","Virtual_Upright","voltage_camera",camera));
+controller=adaptive_optopatch.AdaptiveOptopatchController( ...
+    "LuminosApp",simulatedLuminosApp("CameraRoi",[974 100 984 80]), ...
+    "RunRoot",root);
+testCase.addTeardown(@()delete(controller));
+controller.setReferenceData(uint16(reshape(mod(1:80*100,4096),80,100)),info, ...
+    {[25 25;40 25;40 40;25 40],[60 40;75 40;75 55;60 55]});
+controller.setPlanParameter("mode","1p_dmd");
+controller.setProtocol(protocol);
+end
+
+function protocol=protocol_for(which)
+switch which
+    case "ordinary"
+        protocol=adaptive_optopatch.generate_screen_protocol( ...
+            "PulseCount",1,"ModulatorVoltage",1);
+    case "round_robin"
+        protocol=adaptive_optopatch.generate_blanket_round_robin_protocol( ...
+            "BlanketMod488V",1,"Rounds",2);
+    case "recruitment"
+        protocol=adaptive_optopatch.generate_blanket_recruitment_sweep_protocol( ...
+            [0.4;0.8],"StepDurationS",0.1,"PreDarkS",0.1);
+    otherwise
+        protocol=adaptive_optopatch.generate_blanket_population_target_sweep_protocol( ...
+            [1;2],"BlanketMod488V",0.5,"RepetitionsPerLevel",2);
+end
+end
 
 function [reference,fov,targets,gui]=sweep_fov(nCells)
 image=zeros(40,8*nCells+8); masks=false([size(image),nCells]);
@@ -512,4 +652,20 @@ stops=[edges(2:end)-1 plan.state_table.final_sample];
 k=(1:numel(edges))'+slip;
 delivered.slot=plan.programmed_playlist_slots(mod(k-1,L)+1);
 delivered.levels=arrayfun(@(a,b)mod488(a:b),edges(:),stops(:),"UniformOutput",false);
+end
+
+function slot=slot_for(plan,key)
+%SLOT_FOR The playlist slot showing KEY. Masks that are identical pixels
+%   share one slot, so a slot's label can name more than one key - the
+%   blanket union and a population-target union are the same pixels.
+slot=find(cellfun(@(labels)any(labels==key), ...
+    arrayfun(@(entry)split(entry,","),plan.slot_mask_keys, ...
+    "UniformOutput",false)));
+end
+
+function mask=cells_union(targets,indices)
+mask=false(size(targets.blank_dmd_mask));
+for k=reshape(double(indices),1,[])
+    mask=mask | targets.canonical_roi_masks(:,:,k);
+end
 end

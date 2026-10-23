@@ -8,10 +8,10 @@ function protocol=generate_blanket_population_target_sweep_protocol(levelsV,opti
 %
 %   WHAT IT DELIVERS, cycle by cycle, exactly as the blanket round robin:
 %
-%     target epoch:  0.2 ms full-FOV mask at the blanket level
+%     target epoch:  0.2 ms Stim-enabled union at the blanket level
 %                    0.8 ms union-of-all-selected-cells mask at this level,
 %                           the first target_onset_guard_s of it at 0 V
-%     between:       0.2 ms full-FOV mask at the blanket level
+%     between:       0.2 ms Stim-enabled union at the blanket level
 %                    0.8 ms blank mask at 0 V
 %
 %   The target is the UNION of the selected cells' own stimulation masks, so

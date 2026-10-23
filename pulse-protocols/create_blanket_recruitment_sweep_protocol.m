@@ -1,12 +1,12 @@
 % BLANKET RECRUITMENT SWEEP (calibration helper, Virtual Upright).
 %
 % Steps the blanket level upward, one short step at a time, so you can see
-% where the blanket alone starts to make cells fire. No cell is targeted at
-% any point.
+% where the blanket alone starts to make cells fire. No cell is targeted
+% individually: every Stim-enabled cell receives the same blanket.
 %
 % Each 1 ms cycle, throughout:
 %
-%     0.2 ms  full-FOV mask at this step's level
+%     0.2 ms  Stim-enabled union at this step's level
 %     0.8 ms  blank mask at 0 V
 %
 % which is the same flickered blanket the connectivity experiment delivers,

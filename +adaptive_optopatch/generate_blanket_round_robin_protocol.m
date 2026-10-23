@@ -3,7 +3,7 @@ function protocol=generate_blanket_round_robin_protocol(options)
 %
 %   protocol=GENERATE_BLANKET_ROUND_ROBIN_PROTOCOL(...) returns a
 %   field-of-view-independent schema-4 definition for inhibitory-cell round
-%   robins: every cycle the whole camera FOV gets a short blanket pulse, and
+%   robins: every cycle every Stim-enabled cell gets a short blanket pulse, and
 %   the target of the current epoch gets the rest of the cycle at its own
 %   calibrated Blue voltage. See BLANKET_DEPOLARIZATION_SPEC for the optics.
 %

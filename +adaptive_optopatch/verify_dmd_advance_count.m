@@ -7,7 +7,7 @@ function report=verify_dmd_advance_count(armed,final,expectedAdvances,playlistLe
 %
 %   WHY. A blanket playlist wraps one round. If one edge is lost or doubled
 %   the DMD stays shifted against mod488 for every later state, which can put
-%   a target's Vstim on the full-FOV blanket mask. A wrong count makes the
+%   a target's Vstim on the blanket union mask. A wrong count makes the
 %   acquisition invalid; status says which way.
 %
 %   COUNTER MODEL ("alp_frames_left_v1"). ALP reports frames LEFT in the

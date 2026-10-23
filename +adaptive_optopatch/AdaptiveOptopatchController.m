@@ -361,7 +361,8 @@ classdef AdaptiveOptopatchController < handle
             if isempty(controller.FovGeometry.polygons)
                 issues(end+1,1)="Draw at least one soma.";
             elseif ~any([controller.cellRows().stimulation_enabled])
-                % NoAcceptedTargets otherwise, at resolution time.
+                % NoAcceptedTargets otherwise, at resolution time. A blanket
+                % acquisition needs them too: its blanket is their union.
                 issues(end+1,1)= ...
                     "Enable Stim on at least one cell.";
             end
@@ -1780,8 +1781,16 @@ classdef AdaptiveOptopatchController < handle
                     "Advisories",plan.manifest.advisories);
                 issues=[issues;preflight.issues(:)]; %#ok<AGROW>
             end
-            has1p=any(plan.manifest.trials.onephoton_event_count>0);
-            has2p=any(plan.manifest.trials.twophoton_event_count>0);
+            % WHICH MODALITY'S HARDWARE THIS PLAN NEEDS, asked once and in
+            % the one place that owns the question. Event counts are not the
+            % answer: a blanket recruitment sweep targets no cell, so it has
+            % no 1P events, and it still drives DMD_Blue, mod488 and the 488
+            % shutter. manifest_execution_route decides which runner will
+            % execute the manifest, so preflight resolving a different
+            % modality's hardware than the runner uses is the bug to avoid.
+            route=adaptive_optopatch.manifest_execution_route(plan.manifest.trials);
+            has1p=route.has_one_photon;
+            has2p=route.has_two_photon;
             if has2p && controller.OnePhotonProfile.rig_name=="Spinning_Upright"
                 issues(end+1)="Spinning_Upright has no declared 2P stimulation path.";
             end
@@ -1798,6 +1807,12 @@ classdef AdaptiveOptopatchController < handle
                 twoHardware=adaptive_optopatch.resolve_luminos_2p_hardware( ...
                     controller.LuminosApp,"ApplyCalibration",false);
             end
+            if isempty(issues) && ~has1p && ~has2p
+                % Nothing to resolve hardware for. Said plainly rather than
+                % reaching into an empty struct for a camera.
+                issues(end+1)="This plan commands no 1P or 2P stimulation, "+ ...
+                    "so there is no stimulation hardware to validate it against.";
+            end
             if isempty(issues)
                 if has1p, hardware=oneHardware; else, hardware=twoHardware; end
                 adaptive_optopatch.validate_camera_geometry(hardware.voltage_camera,plan.targets);
@@ -1806,13 +1821,17 @@ classdef AdaptiveOptopatchController < handle
                     oneRows=resolved.events.stimulation_source=="1p_dmd";
                     twoRows=resolved.events.stimulation_source=="2p_spiral";
                     sequencePlan=struct([]); waveforms=struct([]);
-                    if any(oneRows)
+                    % Outside any(oneRows): a blanket acquisition has a DMD
+                    % sequence even when no row targets a cell, and preflight
+                    % must measure the waveform the runner will install, not
+                    % the unmodulated one an empty plan would produce.
+                    blanket=adaptive_optopatch.blanket_depolarization_spec(resolved);
+                    if any(oneRows) || blanket.enabled
                         ids=unique(resolved.events.target_cell_id(oneRows));
                         varies=any(resolved.events.blue_mask_adjustment_pixels(oneRows)~= ...
                             plan.targets.parameters.blue_mask_adjustment_pixels);
-                        blanket=adaptive_optopatch.blanket_depolarization_spec(resolved);
                         if ~adaptive_optopatch.is_simultaneous_protocol(resolved) && ...
-                                (any(twoRows) || numel(ids)>1 || varies || blanket.enabled)
+                                (blanket.enabled || any(twoRows) || numel(ids)>1 || varies)
                             sequencePlan=adaptive_optopatch.build_dmd_sequence_plan( ...
                                 resolved,plan.targets,"HoldPatternUntilTrigger", ...
                                 controller.OnePhotonProfile.rig_name=="Spinning_Upright", ...

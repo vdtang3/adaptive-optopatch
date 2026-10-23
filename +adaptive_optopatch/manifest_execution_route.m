@@ -45,7 +45,8 @@ route=struct("schema_version","1.0.0","runner","1p_dmd", ...
     "checkpoint_file","","has_one_photon",false,"has_two_photon",false);
 if height(trials)==0, return; end
 
-route.has_one_photon=any_source(trials,"onephoton_event_count","1p_dmd");
+route.has_one_photon=any_source(trials,"onephoton_event_count","1p_dmd") || ...
+    any_blanket(trials);
 route.has_two_photon=any_source(trials,"twophoton_event_count","2p_spiral");
 
 % The runner's own rule, verbatim: any 1P event sends the batch to the 1P
@@ -57,6 +58,20 @@ else
     route.runner="2p_spiral";
     route.checkpoint_file="run_2p_checkpoint.mat";
 end
+end
+
+function tf=any_blanket(trials)
+%ANY_BLANKET Blanket depolarization is one-photon work whatever the counts say.
+%   A blanket acquisition drives DMD_Blue, mod488 and the 488 shutter on
+%   every modulation cycle. A recruitment sweep targets no cell, so it has
+%   no 1P events and no stimulation_source says so - and it is still a 1P
+%   acquisition. Asking the schedule itself is the only answer that holds
+%   for it.
+tf=false;
+if ~any(string(trials.Properties.VariableNames)=="pulse_schedule"), return; end
+tf=any(cellfun(@(schedule) ...
+    adaptive_optopatch.blanket_depolarization_spec(schedule).enabled, ...
+    trials.pulse_schedule));
 end
 
 function tf=any_source(trials,countColumn,source)

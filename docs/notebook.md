@@ -2858,3 +2858,37 @@ table — exactly while that stays under 100k states, as a per-camera-frame
 maximum beyond — and draws the logical units as bars: one per voltage step,
 or one per target epoch. No analysis of the recordings and no voltage
 recommendation is computed anywhere; these protocols deliver and record.
+
+## 2026-10-23 — The blanket is the Stim-enabled cells' union, not the whole FOV
+
+Lighting every mirror put blue on the tissue between the cells, which
+bleaches it and adds background to the recording without depolarizing
+anything that is measured. The blanket phase is now the union of the
+Stim-enabled cells' own stimulation masks, built with
+`apply_blue_mask_adjustment` per cell and carried through the one
+camera-to-DMD transform, for all three schedules. The original requirement
+is unchanged by this: every cell the acquisition addresses is in the union,
+so a non-target cell keeps its depolarization through another cell's pulse.
+
+**All three, so the calibration transfers.** A recruitment sweep exists to
+choose a level for the round robin that follows it, and a level measured
+under one blanket geometry only means something under the same geometry, so
+the sweeps and the round robin deliver it through identical pixels.
+
+The union is resolved from the Stim checkboxes at Update plan, like every
+other target decision, and frozen into
+`blanket_depolarization.mask` (source, cell ids, target indices and the
+Blue-mask adjustment it was built at) so the archive says which pixels
+carried the blanket. Untick a cell and it leaves the union.
+
+**A blanket acquisition now requires a Stim-enabled cell**, including the
+recruitment sweep, which targets none: with none ticked its union is empty
+and it would emit nothing. The brief exception that let a recruitment sweep
+resolve with no cells was removed when the geometry changed under it.
+
+**A population-target sweep's two phases are now one mask.** Its target is
+the same union as its blanket, so the two deduplicate to a single DMD slot
+driven at two voltages, and its playlist holds two masks rather than three.
+The target-onset guard still applies; with identical masks there is nothing
+for it to protect against, and it is kept because it is uniform, archived,
+and costs 50 us of a 800 us phase.

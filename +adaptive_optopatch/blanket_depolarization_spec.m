@@ -11,8 +11,8 @@ function spec=blanket_depolarization_spec(protocol)
 %   spends the rest of the cycle on the target (during a target epoch) or in
 %   the dark (between epochs):
 %
-%       target epoch:  [blanket mask, mod488_v ][target mask, cell Vstim]
-%       gap:           [blanket mask, mod488_v ][blank mask,  0 V       ]
+%       target epoch:  [union mask, mod488_v  ][target mask, cell Vstim]
+%       gap:           [union mask, mod488_v  ][blank mask,  0 V       ]
 %
 %   The blanket dose is set by blanket_fraction, a duty cycle, rather than by
 %   a lower AOTF voltage, so it never depends on the AOTF's nonlinear
@@ -29,14 +29,17 @@ function spec=blanket_depolarization_spec(protocol)
 %     target_onset_guard_s  50e-6; mod488 is held at 0 V for this long at the
 %                           start of every target state, because the DMD
 %                           shows the new mask only after its trigger-to-
-%                           display latency, and until then the full-FOV
-%                           blanket mask is still up. Without a guard that
-%                           latency puts the target's Vstim on the whole FOV
+%                           display latency, and until then the blanket
+%                           union is still up. Without a guard that latency
+%                           puts the target's Vstim on every cell at once,
 %                           once per cycle. 50 us covers the 44 us ALP
 %                           minimum picture time; set it from the commissioning
 %                           photodiode measurement.
 %     schedule              which blanket schedule this protocol runs;
 %                           "round_robin" by default. See SCHEDULES.
+%     mask                  resolved only: which cells the blanket phase
+%                           illuminates - the union of the Stim-enabled
+%                           cells' own masks, never the whole field of view
 %     round                 round_robin, resolved only: the realized fixed
 %                           order and timing (start_s, period_s, count,
 %                           cell_ids, epoch_duration_s, inter_epoch_gap_s)
@@ -96,7 +99,7 @@ if ~isstruct(raw) || ~isscalar(raw)
         "blanket_depolarization must be one scalar struct.");
 end
 known=["schema_version","enabled","mod488_v","cycle_period_s", ...
-    "blanket_fraction","target_onset_guard_s","schedule","round","sweep"];
+    "blanket_fraction","target_onset_guard_s","schedule","mask","round","sweep"];
 unknown=setdiff(string(fieldnames(raw))',known);
 if ~isempty(unknown)
     error("adaptive_optopatch:InvalidBlanketDepolarization", ...
@@ -183,6 +186,9 @@ if any(scheduled) && any(schedulerTypes(scheduled)~=expectedScheduler)
 end
 
 type=string(protocol.artifact_type);
+if type~="experiment_definition"
+    spec.mask=validate_mask(raw);
+end
 if type=="experiment_definition"
     validate_definition(protocol,spec,scheduled);
 elseif spec.schedule=="round_robin"
@@ -261,6 +267,42 @@ if any(diff(levels)<0)
     error("adaptive_optopatch:InvalidBlanketSweepLevels", ...
         "%s must not decrease: the sweep steps upward so it can be " + ...
         "stopped at the first level that recruits cells.",label);
+end
+end
+
+function mask=validate_mask(raw)
+%VALIDATE_MASK The frozen blanket geometry of a resolved acquisition.
+required=["source","cell_ids","target_indices","blue_mask_adjustment_pixels"];
+if ~isfield(raw,"mask") || ~isstruct(raw.mask) || ~isscalar(raw.mask) || ...
+        ~all(isfield(raw.mask,cellstr(required)))
+    error("adaptive_optopatch:InvalidBlanketMask", ...
+        "A resolved blanket acquisition must carry the cells its blanket " + ...
+        "illuminates: %s.",strjoin(required,", "));
+end
+mask=raw.mask;
+mask.source=string(mask.source);
+mask.cell_ids=reshape(string(mask.cell_ids),[],1);
+mask.target_indices=reshape(double(mask.target_indices),[],1);
+mask.blue_mask_adjustment_pixels=double(mask.blue_mask_adjustment_pixels);
+if mask.source~="stim_enabled_union"
+    error("adaptive_optopatch:InvalidBlanketMask", ...
+        "This build delivers the blanket through the Stim-enabled cells' " + ...
+        "union; '%s' is not a geometry it knows.",mask.source);
+end
+if isempty(mask.cell_ids) || ...
+        numel(mask.cell_ids)~=numel(mask.target_indices) || ...
+        numel(unique(mask.cell_ids))~=numel(mask.cell_ids) || ...
+        any(~isfinite(mask.target_indices) | mask.target_indices<1 | ...
+            fix(mask.target_indices)~=mask.target_indices)
+    error("adaptive_optopatch:InvalidBlanketMask", ...
+        "The blanket union needs at least one cell, each named once with " + ...
+        "a positive integer target index.");
+end
+if ~isscalar(mask.blue_mask_adjustment_pixels) || ...
+        ~isfinite(mask.blue_mask_adjustment_pixels) || ...
+        fix(mask.blue_mask_adjustment_pixels)~=mask.blue_mask_adjustment_pixels
+    error("adaptive_optopatch:InvalidBlanketMask", ...
+        "The blanket union's Blue mask adjustment must be a finite integer.");
 end
 end
 

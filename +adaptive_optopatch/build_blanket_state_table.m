@@ -6,9 +6,9 @@ function stateTable=build_blanket_state_table(protocol,sampleRateHz,cameraFrameP
 %   Every schedule is the same 0.2/0.8 ms cycle; they differ only in what
 %   the second state of each cycle shows and at which level:
 %
-%     round_robin, target epoch:  blanket (blanket mask, mod488_v)
+%     round_robin, target epoch:  blanket (union mask, mod488_v)
 %                                 target  (target mask,  cell Vstim)
-%     round_robin, gap:           blanket (blanket mask, mod488_v)
+%     round_robin, gap:           blanket (union mask, mod488_v)
 %                                 dark    (blank mask,   0 V)
 %     recruitment_sweep:          blanket (blanket mask, this step's level)
 %                                 dark    (blank mask,   0 V)

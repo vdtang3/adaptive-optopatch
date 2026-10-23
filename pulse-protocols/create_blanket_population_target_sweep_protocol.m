@@ -6,18 +6,18 @@
 %
 % Each 1 ms cycle of a target epoch:
 %
-%     0.2 ms  full-FOV mask at blanket_mod488_v
+%     0.2 ms  union of Stim-enabled cells at blanket_mod488_v
 %     0.8 ms  union of the selected cells' masks at this level
 %             (its first 50 us at 0 V, the usual target-onset guard)
 %
 % and between epochs the ordinary blanket/dark cycle:
 %
-%     0.2 ms  full-FOV mask at blanket_mod488_v
+%     0.2 ms  union of Stim-enabled cells at blanket_mod488_v
 %     0.8 ms  blank mask at 0 V
 %
-% The target is the union of the cells' own masks, so the rest of the field
-% of view receives only the blanket phase. It is never the full FOV at the
-% target level.
+% Both phases light the same union of the Stim-enabled cells' own masks, at
+% the blanket level and then at the sweep level. Tissue outside those cells is
+% never illuminated, and the full FOV is never driven at the target level.
 %
 % NOT A PER-CELL CALIBRATION. Stimulating every inhibitory cell at once
 % recruits the network's own inhibition, which the isolated-cell round robin

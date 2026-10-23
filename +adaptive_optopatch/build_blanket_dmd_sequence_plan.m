@@ -113,9 +113,40 @@ plan=struct("schema_version","2.1.0","unique_camera_masks",uniqueMasks, ...
     "state_table",stateTable);
 end
 
+function mask=union_of_cells(cellIds,indices,adjustment,targets,context)
+%UNION_OF_CELLS Union of the named cells' own stimulation masks.
+%   Each is built with APPLY_BLUE_MASK_ADJUSTMENT, the primitive a targeted
+%   pulse uses, and the union is carried through the one camera-to-DMD
+%   transform in PREPARE_LUMINOS_DMD_SEQUENCE like every other mask. There
+%   is no second coordinate path.
+mask=false(size(targets.blank_dmd_mask));
+for k=1:numel(indices)
+    index=indices(k);
+    if index<1 || index>size(targets.canonical_roi_masks,3) || fix(index)~=index
+        error("adaptive_optopatch:DmdPatternIndexMismatch", ...
+            "%s cell %s has invalid target index %g.",context,cellIds(k),index);
+    end
+    if string(targets.targets(index).cell_id)~=cellIds(k)
+        error("adaptive_optopatch:DmdPatternTargetMismatch", ...
+            "%s cell %s does not match its target geometry.",context,cellIds(k));
+    end
+    mask=mask | adaptive_optopatch.apply_blue_mask_adjustment( ...
+        targets.canonical_roi_masks(:,:,index),adjustment,"Context", ...
+        sprintf("%s cell %s",context,cellIds(k)));
+end
+if ~any(mask(:))
+    error("adaptive_optopatch:EmptyBlanketUnionMask", ...
+        "The %s union mask is empty.",context);
+end
+end
+
 function mask=mask_for_key(key,states,targets,blanket)
 if key=="blanket"
-    mask=true(size(targets.blank_dmd_mask));
+    % The union of the Stim-enabled cells' own masks. Every cell the
+    % acquisition addresses keeps its depolarization through another cell's
+    % pulse, and the tissue between them is not lit.
+    mask=union_of_cells(blanket.mask.cell_ids,blanket.mask.target_indices, ...
+        blanket.mask.blue_mask_adjustment_pixels,targets,"blanket");
     return
 end
 if key=="blank"
@@ -123,29 +154,13 @@ if key=="blank"
     return
 end
 if key=="population"
-    % The union of every selected cell's own stimulation mask, each built
-    % with the primitive a targeted pulse uses, so the rest of the FOV keeps
-    % receiving only the blanket phase. The camera-to-DMD transform is
-    % applied once to this mask in prepare_luminos_dmd_sequence, like every
-    % other mask: there is no second coordinate path.
+    % The same union the blanket phase uses, at the sweep's target level
+    % rather than the blanket level, so a population epoch is the blanket
+    % geometry driven harder. Identical pixels deduplicate to one slot.
     sweep=blanket.sweep;
-    mask=false(size(targets.blank_dmd_mask));
-    for k=1:numel(sweep.population_target_indices)
-        index=sweep.population_target_indices(k);
-        if string(targets.targets(index).cell_id)~=sweep.population_cell_ids(k)
-            error("adaptive_optopatch:DmdPatternTargetMismatch", ...
-                "Population target %s does not match its target geometry.", ...
-                sweep.population_cell_ids(k));
-        end
-        mask=mask | adaptive_optopatch.apply_blue_mask_adjustment( ...
-            targets.canonical_roi_masks(:,:,index), ...
-            sweep.blue_mask_adjustment_pixels,"Context", ...
-            sprintf("population target cell %s",sweep.population_cell_ids(k)));
-    end
-    if ~any(mask(:))
-        error("adaptive_optopatch:EmptyPopulationTargetMask", ...
-            "The population target mask is empty.");
-    end
+    mask=union_of_cells(sweep.population_cell_ids, ...
+        sweep.population_target_indices,sweep.blue_mask_adjustment_pixels, ...
+        targets,"population target");
     return
 end
 row=find(states.mask_key==key,1);

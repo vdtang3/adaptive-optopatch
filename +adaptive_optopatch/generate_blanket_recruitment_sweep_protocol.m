@@ -7,7 +7,7 @@ function protocol=generate_blanket_recruitment_sweep_protocol(levelsV,options)
 %   baseline, and then ends.
 %
 %   WHAT IT DELIVERS. The same flickered blanket the experiment uses: each
-%   1 ms cycle is 0.2 ms of the full-FOV mask at that step's level and
+%   1 ms cycle is 0.2 ms of the Stim-enabled cells' union at that step's level and
 %   0.8 ms of the blank mask at 0 V, locked to the camera frame. No targeted
 %   stimulation at any point, so every logical segment is a null event and
 %   the step's level lives in the archived sweep block. The blanket dose is

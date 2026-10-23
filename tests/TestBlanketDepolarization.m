@@ -284,8 +284,18 @@ classdef TestBlanketDepolarization < matlab.unittest.TestCase
             testCase.verifyEqual(dmd.playlist_mode,"slave");
             testCase.verifyEqual(configuration.execution_mode,"flut_playlist");
             testCase.verifyTrue(configuration.dmd_progress_armed.available);
-            blanketSlot=find(plan.slot_mask_keys=="blanket");
-            testCase.verifyTrue(all(dmd.slot_patterns{blanketSlot}(:)));
+            % The blanket is the union of the Stim-enabled cells' own
+            % masks, not the whole field of view: every cell keeps its
+            % depolarization through another cell's pulse, and the tissue
+            % between them is never lit.
+            blanketSlot=slot_for(plan,"blanket");
+            blanketMask=plan.unique_camera_masks(:,:,blanketSlot);
+            testCase.verifyEqual(blanketMask,cells_union(targets,1:3));
+            testCase.verifyLessThan(nnz(blanketMask),numel(blanketMask));
+            testCase.verifyEqual(plan.blanket_depolarization.mask.cell_ids, ...
+                string({targets.targets.cell_id})');
+            testCase.verifyEqual(plan.blanket_depolarization.mask.source, ...
+                "stim_enabled_union");
         end
 
         % ---------------------------------------------------------------
@@ -301,7 +311,7 @@ classdef TestBlanketDepolarization < matlab.unittest.TestCase
             blanketV=protocol.blanket_depolarization.mod488_v;
             for slip=[-1 0 1]
                 delivered=walk_wrapped_playlist(plan,mod488,trigger,slip);
-                onBlanket=delivered.slot==find(plan.slot_mask_keys=="blanket");
+                onBlanket=delivered.slot==slot_for(plan,"blanket");
                 overdrive=cellfun(@(level)sum(level>blanketV),delivered.levels(onBlanket));
                 if slip==0
                     testCase.verifyEqual(sum(overdrive),0);
@@ -629,5 +639,21 @@ end
 function nudge_once(dmd)
 if ~isempty(dmd.playlist) && dmd.frames_advanced==0
     dmd.frames_advanced=1;
+end
+end
+
+function slot=slot_for(plan,key)
+%SLOT_FOR The playlist slot showing KEY. Masks that are identical pixels
+%   share one slot, so a slot's label can name more than one key - the
+%   blanket union and a population-target union are the same pixels.
+slot=find(cellfun(@(labels)any(labels==key), ...
+    arrayfun(@(entry)split(entry,","),plan.slot_mask_keys, ...
+    "UniformOutput",false)));
+end
+
+function mask=cells_union(targets,indices)
+mask=false(size(targets.blank_dmd_mask));
+for k=reshape(double(indices),1,[])
+    mask=mask | targets.canonical_roi_masks(:,:,k);
 end
 end

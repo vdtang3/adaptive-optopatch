@@ -64,6 +64,7 @@ function tiers = tier_manifest()
 tiers.core = [ ...
     "TestSpinningUprightPort"
     "TestSpinningDiskPattern"
+    "TestOnePhotonProfileSelection"
     "TestWholeFovRamp"
     % Controller, actions and the React-facing boundary
     "TestAdaptiveOptopatchController"

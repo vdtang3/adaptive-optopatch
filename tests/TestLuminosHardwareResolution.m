@@ -10,6 +10,28 @@ classdef TestLuminosHardwareResolution < matlab.unittest.TestCase
     %   is the same terminal while one that differs in substance is not.
 
     methods (Test)
+        function theSoleDaqIsFoundUnderTheRigsOwnName(testCase)
+            % Virtual_Upright.json names its one DAQ "DAQ Dev1 + Dev2";
+            % the profile calls it Dev1, the NI device it owns. Luminos's
+            % getDevice used to return the only device of a type whatever
+            % name was asked for, so that mismatch never mattered. When
+            % Rig_Control_App.name_matches made a named device match
+            % exactly (2026-09-24), every 1P acquisition on the rig failed
+            % with "Required Luminos device 'Dev1' (DAQ) was not found" -
+            % on a rig nothing had changed about.
+            app=adaptive_optopatch.testing.make_simulated_luminos();
+            daq=app.getDevice("DAQ");
+            daq.name="DAQ Dev1 + Dev2";
+
+            hardware=adaptive_optopatch.resolve_luminos_1p_hardware(app, ...
+                adaptive_optopatch.virtual_upright_1p_profile());
+
+            testCase.verifyEqual(hardware.daq,daq);
+            % Not covered here: two DAQs, where the name must still match.
+            % The simulated app's device list is read-only, so that case
+            % needs a fixture of its own rather than an edit to this one.
+        end
+
         function definesVirtualUprightBlueDmdProfile(testCase)
             profile=adaptive_optopatch.virtual_upright_1p_profile();
             testCase.verifyEqual(profile.dmd.name,"DMD_Blue");

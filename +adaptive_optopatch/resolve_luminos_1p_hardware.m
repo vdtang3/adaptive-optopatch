@@ -156,10 +156,27 @@ end
 
 function device=require_device(app,type,name)
 device=app.getDevice(type,"name",name,"displayWarning",false);
-if isempty(device)
-    error("adaptive_optopatch:RequiredDeviceMissing", ...
-        "Required Luminos device '%s' (%s) was not found.",name,type);
+if ~isempty(device), return; end
+% THE SOLE DEVICE OF A TYPE IS THE ONE MEANT, which is the rule these
+% profiles were written against: Luminos's getDevice used to return the only
+% device of a type whatever name was asked for. The Virtual Upright's one
+% DAQ is named "DAQ Dev1 + Dev2" in the rig JSON, while the profile calls it
+% Dev1 - the NI device it owns and every port is addressed through - so the
+% named lookup never matched and never had to. Rig_Control_App.name_matches
+% (2026-09-24) made a named device match exactly, and this lookup started
+% failing on a rig nothing had changed about.
+%
+% The ambiguity that change removed cannot arise here: when exactly one
+% device of the type exists there is nothing to confuse it with. With two or
+% more, the name still has to match, so a rig with several DAQs is refused
+% rather than guessed at. The 2P resolver already takes the DAQ by type.
+candidates=app.getDevice(type,"displayWarning",false);
+if isscalar(candidates)
+    device=candidates;
+    return
 end
+error("adaptive_optopatch:RequiredDeviceMissing", ...
+    "Required Luminos device '%s' (%s) was not found.",name,type);
 if numel(device)~=1
     error("adaptive_optopatch:AmbiguousDevice", ...
         "Expected one Luminos device named '%s', found %d.",name,numel(device));

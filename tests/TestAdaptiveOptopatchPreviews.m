@@ -152,6 +152,8 @@ classdef TestAdaptiveOptopatchPreviews < matlab.unittest.TestCase
         function aSessionWithNothingToShowSaysSoRatherThanFailing(testCase)
             controller=adaptive_optopatch.AdaptiveOptopatchController( ...
                 "LuminosApp",simulatedLuminosApp());
+            controller.setPlanParameter("orange_recording_voltage_v", ...
+                AoFixtures.orangeRecordingVoltage());
             testCase.addTeardown(@()delete(controller));
 
             preview=controller.spatialPreview("1p_dmd");

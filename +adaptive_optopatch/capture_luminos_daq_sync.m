@@ -1,7 +1,15 @@
-function sync = capture_luminos_daq_sync(daq)
+function sync = capture_luminos_daq_sync(daq,options)
 %CAPTURE_LUMINOS_DAQ_SYNC Read the active multi-DAQ timing state without writes.
 arguments
     daq
+    % The timing to describe, when it is not the one the device is carrying.
+    % Adaptive Optopatch builds its own global_props from the rig profile
+    % instead of inheriting the Waveforms tab's, so the configuration worth
+    % checking before a run is the one AO is about to install - on a fresh
+    % Luminos the device's own global_props is empty and describing THAT
+    % would report every acquisition as unsynchronised. The device's
+    % terminals, tasks and waveform records are still read from the device.
+    options.GlobalProps = struct([])
 end
 
 sync=struct;
@@ -20,7 +28,12 @@ sync.active_waveform_devices=strings(1,0);
 sync.buffered_tasks=struct([]);
 sync.issues=strings(0,1);
 
+sync.timing_source="live_device";
 globalProps=safe_get(daq,"global_props",struct());
+if isstruct(options.GlobalProps) && ~isempty(fieldnames(options.GlobalProps))
+    globalProps=options.GlobalProps;
+    sync.timing_source="adaptive_optopatch";
+end
 if isstruct(globalProps)
     if isfield(globalProps,"clock_source")
         sync.selected_clock_source=string(globalProps.clock_source);

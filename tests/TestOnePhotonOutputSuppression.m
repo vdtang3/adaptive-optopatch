@@ -15,11 +15,19 @@ classdef TestOnePhotonOutputSuppression < matlab.unittest.TestCase
     %     inactive 2P hardware  - removed from the temporary run and NOT
     %                             replaced. AO owns the terminal and has
     %                             nothing to say on it this run.
-    %     orange imaging        - left exactly as the operator configured
-    %                             it. AO does not own the terminal at all,
-    %                             and the operator sets recording power by
-    %                             putting a mod594 voltage in the Luminos
-    %                             waveform tab.
+    %     orange recording      - removed and REPLACED with AO's own
+    %                             constant at the Orange recording voltage.
+    %                             AO owns the terminal for the length of
+    %                             the acquisition because there is no
+    %                             longer a Waveforms protocol to inherit a
+    %                             recording level from.
+    %
+    %   The orange half of that used to read the other way round, and the
+    %   tests below used to assert it: the operator set recording power by
+    %   putting a mod594 constant in the Waveforms tab and AO left it alone.
+    %   That stopped being true when AO started building its own
+    %   global_props, because a run that inherits nothing would record in
+    %   the dark.
     %
     %   Both builders are checked. build_luminos_1p_waveform_config is the
     %   commissioning/parity builder; build_luminos_mixed_waveform_config
@@ -123,70 +131,94 @@ classdef TestOnePhotonOutputSuppression < matlab.unittest.TestCase
         end
 
         % -----------------------------------------------------------------
-        % F, G: the operator's orange imaging configuration is inherited
+        % F, G: AO owns the orange recording illumination
         % -----------------------------------------------------------------
-        function ambientMod594IsInheritedWithItsVoltageUntouched(testCase)
-            % This is how the operator sets recording power: open a Luminos
-            % waveform configuration, include mod594, give it a constant
-            % voltage, then run AO. AO must not command, replace or rewrite
-            % it - the number the operator typed is the number that runs.
+        function ambientMod594IsReplacedByTheAoRecordingConstant(testCase)
+            % The operator used to set recording power by putting a mod594
+            % constant in the Waveforms tab. AO now drives it, so whatever
+            % is ambient on Dev1/ao1 has to GO: Luminos combines two records
+            % that resolve to one terminal, so leaving the old one beside
+            % AO's would illuminate at the sum of two voltages.
+            staleImagingPower=1.37;
+            expected=AoFixtures.orangeRecordingVoltage();
+            ambient=ambient_with(constant("mod594","mod594",staleImagingPower));
+            configured=build("mixed",ambient);
+            records=records_on(configured.ao,"Dev1/ao1");
+            testCase.assertNumElements(records,1, ...
+                "Exactly one mod594 record must survive the build.");
+            testCase.verifyEqual(string(records.wavefile),"awfm_constant");
+            testCase.verifyEqual(records.params{1},expected,"AbsTol",0);
+            testCase.verifyEqual(string(records.script_owner), ...
+                adaptive_optopatch.script_owner_tag(), ...
+                "AO must claim the record it installed.");
+            % Every sample that would reach the wire, not just the
+            % parameter. The final sample is excluded because Luminos
+            % itself forces data(end)=0 on every terminal in
+            % Build_Waveforms_DevicePartitioned; that zero is the
+            % acquisition ending, not a modulation AO applied.
+            samples=compiled_samples(configured.ao,"Dev1/ao1");
+            testCase.verifyTrue(all(samples(1:end-1)==expected), ...
+                "The orange recording level must be constant.");
+        end
+
+        function theLegacyBuilderStillInheritsMod594(testCase)
+            % build_luminos_1p_waveform_config is a frozen reference of how
+            % a run was built when AO inherited the operator's Waveforms
+            % protocol, and TestMixedStimulationTimeline compares the live
+            % builder against it. It is deliberately NOT updated: a frozen
+            % reference that moves with the code it is meant to pin is not
+            % a reference. Asserted so that is a decision rather than an
+            % oversight somebody later "fixes".
             imagingPower=1.37;
             ambient=ambient_with(constant("mod594","mod594",imagingPower));
-            for builder=both_builders()
-                configured=build(builder,ambient);
-                records=records_on(configured.ao,"Dev1/ao1");
-                testCase.assertNumElements(records,1, ...
-                    builder+" did not preserve the mod594 record.");
-                testCase.verifyEqual(string(records.wavefile),"awfm_constant", ...
-                    "The waveform definition must be unchanged.");
-                testCase.verifyEqual(records.params{1},imagingPower, ...
-                    "AbsTol",0, ...
-                    builder+" changed the operator's imaging power.");
-                % Untagged, so AO's own cleanup can never take it out with
-                % the records AO added.
-                testCase.verifyEmpty(records.script_owner, ...
-                    "AO must not claim ownership of mod594.");
-                % And every sample that would reach the wire is still the
-                % operator's value. The final sample is excluded because
-                % Luminos itself forces data(end)=0 on every terminal in
-                % Build_Waveforms_DevicePartitioned; that zero is the
-                % acquisition's, not something AO did to mod594.
-                samples=compiled_samples(configured.ao,"Dev1/ao1");
-                testCase.verifyTrue(all(samples(1:end-1)==imagingPower), ...
-                    builder+" altered the inherited mod594 samples.");
-            end
+            configured=build("1p",ambient);
+            records=records_on(configured.ao,"Dev1/ao1");
+            testCase.assertNumElements(records,1);
+            testCase.verifyEqual(records.params{1},imagingPower,"AbsTol",0);
+            testCase.verifyEmpty(records.script_owner);
         end
 
-        function ambientShutter594IsInheritedUnchanged(testCase)
+        function ambientShutter594IsClearedForImperativeOwnership(testCase)
+            % An NI_DAQ_Shutter is an on-demand digital write and the runner
+            % opens and closes it around the armed window, so no buffered
+            % record may own the line - exactly the rule shutter488 has
+            % always followed. Cleared, not replaced with a constant: a
+            % constant would be the second owner.
             ambient=empty_wfm_data();
             ambient.do=constant("shutter594","shutter594",1);
-            for builder=both_builders()
-                configured=build(builder,ambient);
-                records=records_on(configured.do,"Dev1/port0/line1");
-                testCase.assertNumElements(records,1, ...
-                    builder+" did not preserve the shutter594 record.");
-                testCase.verifyEqual(records.params{1},1);
-                testCase.verifyEmpty(records.script_owner);
-            end
+            configured=build("mixed",ambient);
+            testCase.verifyEmpty(records_on(configured.do,"Dev1/port0/line1"), ...
+                "No buffered record may hold shutter594 during a 1P run.");
         end
 
-        function theOrangeOutputsAreNotClassifiedAsInactiveStimulation(testCase)
-            % The declaration the builders rely on. If mod594 ever became an
-            % AO-owned output, suppression would take the operator's
-            % imaging illumination out of the run along with the galvos.
+        function theOrangeOutputsAreOwnedButNotStimulation(testCase)
+            % The declaration both builders and the accounting read. The
+            % distinction that has to survive is OWNERSHIP without
+            % STIMULATION: AO drives these, and nothing may read 594 nm as
+            % an optogenetic output.
             manifest=adaptive_optopatch.virtual_upright_stimulation_manifest();
-            roles=string({manifest.inherited.role});
+            roles=string({manifest.recording_illumination.role});
             testCase.verifyTrue(all(ismember( ...
                 ["orange_modulator","orange_shutter"],roles)));
             for role=["orange_modulator","orange_shutter"]
-                entry=manifest.inherited(roles==role);
+                entry=manifest.recording_illumination(roles==role);
                 testCase.verifyEqual(entry.classification, ...
-                    "inherited_non_stimulation");
-                testCase.verifyFalse(entry.stimulation_capable);
-                testCase.verifyEqual(entry.owner.one_photon,"operator");
+                    "ao_owned_recording_illumination");
+                testCase.verifyFalse(entry.stimulation_capable, ...
+                    "594 nm must never be classified as stimulation.");
             end
+            testCase.verifyEqual( ...
+                manifest.recording_illumination(roles=="orange_modulator").owner.one_photon, ...
+                "buffered");
+            testCase.verifyEqual( ...
+                manifest.recording_illumination(roles=="orange_shutter").owner.one_photon, ...
+                "imperative");
+            % And they are not in the stimulation list, which is what keeps
+            % suppression and neutralization away from them.
             testCase.verifyFalse(any(string({manifest.outputs.role})== ...
                 "orange_modulator"));
+            testCase.verifyEmpty(manifest.inherited, ...
+                "Nothing is inherited from a Waveforms protocol any more.");
         end
 
         % -----------------------------------------------------------------
@@ -213,9 +245,13 @@ classdef TestOnePhotonOutputSuppression < matlab.unittest.TestCase
         % I: the whole representative configuration, in one assertion
         % -----------------------------------------------------------------
         function aRepresentativeAmbientConfigurationIsPartitionedCorrectly(testCase)
-            % One incoming Luminos waveform configuration containing all
-            % three kinds of record at once, and the three different things
-            % that must happen to them.
+            % One incoming Luminos waveform configuration containing every
+            % kind of record at once, and the four different things that
+            % must happen to them: suppressed, replaced, cleared, and left
+            % alone. Only the live builder: the frozen 1P reference does
+            % not own the orange terminals, so running it through the same
+            % assertions would be asking it to behave like the code it
+            % exists to pin.
             ambient=empty_wfm_data();
             ambient.ao=[galvo_x_record() galvo_y_record() ...
                 constant("legacy pockels","2P mod",4.4), ...
@@ -225,36 +261,41 @@ classdef TestOnePhotonOutputSuppression < matlab.unittest.TestCase
             ambient.do=[constant("shutter594","shutter594",1), ...
                 constant("unrelated digital","Dev1/port0/line6",1)];
 
-            for builder=both_builders()
-                configured=build(builder,ambient);
+            builder="mixed";
+            configured=build(builder,ambient);
 
-                % Suppressed: absent, and not replaced.
-                for terminal=["Dev2/ao0","Dev2/ao1","Dev1/ao3"]
-                    verify_absent(testCase,configured,terminal,builder);
-                end
-                % Inherited: byte for byte the operator's.
-                testCase.verifyEqual( ...
-                    records_on(configured.ao,"Dev1/ao1").params{1},1.37);
-                testCase.verifyEqual( ...
-                    records_on(configured.do,"Dev1/port0/line1").params{1},1);
-                testCase.verifyEqual( ...
-                    records_on(configured.ao,"Dev1/ao7").params{1},4.2);
-                testCase.verifyEqual( ...
-                    records_on(configured.do,"Dev1/port0/line6").params{1},1);
-                % AO-owned: replaced by AO's own pulse train.
-                mod488=records_on(configured.ao,"Dev1/ao2");
-                testCase.assertNumElements(mod488,1);
-                testCase.verifyEqual(string(mod488.wavefile), ...
-                    "adaptive_optopatch.luminos_event_waveform");
-
-                % Exactly one AO analog record, and it is mod488: nothing
-                % else on an analog terminal belongs to AO during a 1P run.
-                owned=configured.ao(record_owners(configured.ao)== ...
-                    adaptive_optopatch.script_owner_tag());
-                testCase.verifyNumElements(owned,1, ...
-                    builder+" installed an AO analog record besides mod488.");
-                testCase.verifyEqual(string(owned.name),"mod488");
+            % Suppressed: absent, and not replaced.
+            for terminal=["Dev2/ao0","Dev2/ao1","Dev1/ao3"]
+                verify_absent(testCase,configured,terminal,builder);
             end
+            % Replaced: the operator's stale orange constant is gone and
+            % AO's own recording level is in its place.
+            orange=records_on(configured.ao,"Dev1/ao1");
+            testCase.assertNumElements(orange,1);
+            testCase.verifyEqual(orange.params{1}, ...
+                AoFixtures.orangeRecordingVoltage(),"AbsTol",0);
+            % Cleared: the orange shutter has one imperative owner.
+            verify_absent(testCase,configured,"Dev1/port0/line1",builder);
+            % Untouched: anything AO does not own is the operator's still.
+            testCase.verifyEqual( ...
+                records_on(configured.ao,"Dev1/ao7").params{1},4.2);
+            testCase.verifyEqual( ...
+                records_on(configured.do,"Dev1/port0/line6").params{1},1);
+            % AO-owned: replaced by AO's own pulse train.
+            mod488=records_on(configured.ao,"Dev1/ao2");
+            testCase.assertNumElements(mod488,1);
+            testCase.verifyEqual(string(mod488.wavefile), ...
+                "adaptive_optopatch.luminos_event_waveform");
+
+            % Exactly two AO analog records: the blue stimulus command and
+            % the orange recording level. Nothing else on an analog
+            % terminal belongs to AO during a 1P run - in particular not
+            % the galvo card.
+            owned=configured.ao(record_owners(configured.ao)== ...
+                adaptive_optopatch.script_owner_tag());
+            testCase.verifyEqual(sort(string({owned.name})), ...
+                sort(["mod488","mod594"]), ...
+                "AO installed an analog record it does not own.");
         end
 
         function accountingAcceptsTheRepresentativeConfiguration(testCase)
@@ -276,9 +317,14 @@ classdef TestOnePhotonOutputSuppression < matlab.unittest.TestCase
                 "A representative 1P configuration must pass even " + ...
                 "fail_closed: everything in it is declared.");
             orange=report.terminals(report.terminals.role=="orange_modulator",:);
-            testCase.verifyEqual(orange.classification, ...
-                "inherited_non_stimulation");
-            testCase.verifyEqual(orange.measured_maximum,1.37);
+            testCase.verifyEqual(orange.classification,"commanded");
+            testCase.verifyTrue(orange.ao_owned_records, ...
+                "AO must own the orange record it installed.");
+            testCase.verifyEqual(orange.runtime_owner,"buffered");
+            % The ambient 1.37 V is gone and AO's own level is what the
+            % terminal measures.
+            testCase.verifyEqual(orange.measured_maximum, ...
+                AoFixtures.orangeRecordingVoltage(),"AbsTol",1e-12);
         end
 
         % -----------------------------------------------------------------
@@ -372,7 +418,8 @@ switch builder
     case "mixed"
         [globalProps,configured]= ...
             adaptive_optopatch.build_luminos_mixed_waveform_config( ...
-            live_global_props(),ambient,protocol);
+            live_global_props(),ambient,protocol, ...
+            "OnePhotonProfile",AoFixtures.onePhotonProfile());
 end
 end
 
@@ -388,7 +435,8 @@ wave=struct("sample_rate_hz",rate, ...
 [globalProps,wfmData]= ...
     adaptive_optopatch.build_luminos_mixed_waveform_config( ...
     live_global_props(),empty_wfm_data(),protocol, ...
-    "TwoPhotonWaveforms",wave);
+    "TwoPhotonWaveforms",wave, ...
+    "OnePhotonProfile",AoFixtures.onePhotonProfile());
 end
 
 function ambient=ambient_with(records)

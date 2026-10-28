@@ -60,8 +60,45 @@ test("the allowlist matches the one the MATLAB dispatcher publishes", () => {
     "save_fov", "set_cell_eligibility", "set_cell_blue_voltage",
     "add_soma", "update_soma", "delete_soma",
     "load_protocol_choice", "set_plan_parameter",
-    "apply_plan_draft", "update_plan", "run", "stop_after_current",
+    "apply_plan_draft", "update_plan",
+    "show_recording_mask", "clear_recording_mask",
+    "run", "stop_after_current",
   ]));
+});
+
+test("the recording-mask preview is one piece of state an edit invalidates", () => {
+  // What the tab is written against: one control, two legal_actions flags
+  // of which exactly one is true, and a preview that does not outlive the
+  // geometry it was drawn from.
+  const session = newSession();
+  assert.equal(session.state.recording_mask_preview.active, false);
+  assert.equal(session.state.legal_actions.show_recording_mask, true);
+
+  act(session, "show_recording_mask");
+  assert.equal(session.state.recording_mask_preview.active, true);
+  assert.equal(session.state.legal_actions.show_recording_mask, false);
+  assert.equal(session.state.legal_actions.clear_recording_mask, true);
+  assert.equal(
+    session.state.recording_mask_preview.applies_recording_voltage,
+    false,
+    "the preview must never claim to apply an orange level"
+  );
+
+  // The orange level is the one editable value that does NOT take it down:
+  // the mask is what the operator is looking at while choosing that number.
+  act(session, "set_plan_parameter", {
+    name: "orange_recording_voltage_v",
+    value: 0.42,
+  });
+  assert.equal(session.state.recording_mask_preview.active, true);
+  assert.equal(session.state.plan_parameters.orange_recording_voltage_v, 0.42);
+
+  // Anything that changes what would be recorded does.
+  act(session, "set_cell_eligibility", {
+    cell_id: session.state.cells[0].cell_id,
+    recording_enabled: false,
+  });
+  assert.equal(session.state.recording_mask_preview.active, false);
 });
 
 test("every reply carries the state after the action, refused or not", async () => {

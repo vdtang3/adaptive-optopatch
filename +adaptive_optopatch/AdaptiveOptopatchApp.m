@@ -33,6 +33,8 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
         RunNextButton
         RunAllButton
         RepeatBatchCount
+        OrangeRecordingVoltage
+        RecordingMaskButton
         StartNewBatchButton
         ReturnToEditingButton
         StopButton
@@ -203,6 +205,19 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             app.Controller.returnToEditing();
         end
 
+        function toggleRecordingMask(app)
+            %TOGGLERECORDINGMASK Project the Orange recording mask, or clear it.
+            %   One control for one piece of state. Which way it goes is
+            %   read from the controller rather than from the button's own
+            %   label, so a preview cleared by an edit elsewhere - a target
+            %   change, a new FOV - cannot leave this out of step.
+            if app.Controller.getState().recording_mask_preview.active
+                app.Controller.clearRecordingMask();
+            else
+                app.Controller.showRecordingMask();
+            end
+        end
+
         function value=returnToEditingEnabled(app)
             value=app.Controller.returnToEditingEnabled();
         end
@@ -289,8 +304,8 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 "adaptive_optopatch.testing.SimulatedLuminosApp");
             % Keep the protocol and trial regions stable while allowing the
             % camera/planning region to use additional window height.
-            root.RowHeight={"1x",36,250,130,70};
-            if ~simulation, root.RowHeight={"1x",0,250,130,70}; end
+            root.RowHeight={"1x",36,292,130,70};
+            if ~simulation, root.RowHeight={"1x",0,292,130,70}; end
             banner=uilabel(root,"Text","SIMULATION — NO HARDWARE OUTPUT", ...
                 "HorizontalAlignment","center","FontWeight","bold", ...
                 "FontSize",16,"FontColor",[1 1 1], ...
@@ -323,8 +338,14 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
             % grid, and a sixth row overflowed it and clipped the buttons
             % sitting on it. Spacing and padding are stated explicitly so
             % the fit is a decision rather than an inherited default.
-            controls=uigridlayout(runtime,[5 8]);
-            controls.RowHeight={30,45,30,38,30};
+            % Six rows since the orange recording controls joined: the
+            % level AO drives while acquiring, and the mask preview that
+            % exists to help choose it. The root grid's allotment for this
+            % panel grew with them - TestGuiPanelPresentation checks that
+            % the two still agree, which is the check this panel has
+            % silently clipped its bottom row past before.
+            controls=uigridlayout(runtime,[6 8]);
+            controls.RowHeight={30,45,30,38,30,30};
             controls.ColumnWidth={105,100,115,105,115,105,115,"1x"};
             controls.RowSpacing=6; controls.ColumnSpacing=6;
             controls.Padding=[6 6 6 6];
@@ -402,6 +423,35 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 "Tag","RepeatBatchCount");
             app.RepeatBatchCount.Layout.Row=5;
             app.RepeatBatchCount.Layout.Column=8;
+            % The 594 nm level AO drives while acquiring, and only then.
+            % Volts on the rig's own mod594 command - not mW, because
+            % nothing here applies an absolute calibration. It starts empty
+            % because there is no default: the plan stays not_ready until
+            % somebody chooses one against the live view.
+            orangeLabel=uilabel(controls,"Text","Orange recording (V)", ...
+                "HorizontalAlignment","right");
+            orangeLabel.Layout.Row=6; orangeLabel.Layout.Column=[1 2];
+            app.OrangeRecordingVoltage=uieditfield(controls,"numeric", ...
+                "Value",0,"AllowEmpty","on","Limits",[0 5], ...
+                "Tag","OrangeRecordingVoltage", ...
+                "Tooltip",["The 594 nm recording level Adaptive Optopatch " ...
+                "drives during an acquisition, in volts on mod594. It has " ...
+                "no default: show the recording mask, tune the ordinary " ...
+                "Luminos orange control against the live camera, and enter " ...
+                "what you settled on. Editing this never changes the live view."]);
+            app.OrangeRecordingVoltage.Layout.Row=6;
+            app.OrangeRecordingVoltage.Layout.Column=3;
+            % One button that changes its label, because there is one piece
+            % of state: a mask is projected or it is not. It applies no
+            % orange power - the live level stays under Luminos's controls.
+            app.RecordingMaskButton=uibutton(controls, ...
+                "Text","Show recording mask", ...
+                "ButtonPushedFcn",@(~,~)app.invoke(@()app.toggleRecordingMask()), ...
+                "Tooltip",["Project the Orange recording mask through the " ...
+                "same calibration an acquisition uses. Spatial only: it " ...
+                "applies no orange power."]);
+            app.RecordingMaskButton.Layout.Row=6;
+            app.RecordingMaskButton.Layout.Column=[4 5];
             app.WaveformAxes=uiaxes(runtime);
             title(app.WaveformAxes,"Waveform / DMD preview");
 
@@ -421,7 +471,8 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 app.MaximumAcceleration,"maximum_acceleration_v_per_s2"; ...
                 app.AllowCalibrationExtrapolation,"allow_calibration_extrapolation"; ...
                 app.AllowCameraRateOverride,"allow_camera_rate_override"; ...
-                app.RepeatBatchCount,"repeat_batch_count"};
+                app.RepeatBatchCount,"repeat_batch_count"; ...
+                app.OrangeRecordingVoltage,"orange_recording_voltage_v"};
             for k=1:size(watched,1)
                 name=watched{k,2};
                 watched{k,1}.ValueChangedFcn= ...
@@ -465,6 +516,20 @@ classdef AdaptiveOptopatchApp < adaptive_optopatch.ReferencePreparationApp
                 parameters.allow_calibration_extrapolation;
             app.AllowCameraRateOverride.Value=parameters.allow_camera_rate_override;
             app.RepeatBatchCount.Value=parameters.repeat_batch_count;
+            % Empty rather than zero when nothing has been chosen. Zero is a
+            % voltage somebody could have meant - and it records a black
+            % movie - so the unset state has to look unset.
+            if isfinite(parameters.orange_recording_voltage_v)
+                app.OrangeRecordingVoltage.Value= ...
+                    parameters.orange_recording_voltage_v;
+            else
+                app.OrangeRecordingVoltage.Value=[];
+            end
+            projected=state.recording_mask_preview.active;
+            app.RecordingMaskButton.Text=ternary(projected, ...
+                "Clear recording mask","Show recording mask");
+            app.RecordingMaskButton.Enable=ternary(projected || ...
+                state.legal_actions.show_recording_mask,"on","off");
             switch state.plan_state
                 case "FROZEN"
                     if state.legal_actions.start_new_batch

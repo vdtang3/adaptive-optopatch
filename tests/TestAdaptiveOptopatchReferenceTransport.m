@@ -42,6 +42,8 @@ classdef TestAdaptiveOptopatchReferenceTransport < matlab.unittest.TestCase
 
         function thereIsNoImageBeforeAReferenceIsLoaded(testCase)
             controller = adaptive_optopatch.AdaptiveOptopatchController();
+            controller.setPlanParameter("orange_recording_voltage_v", ...
+                AoFixtures.orangeRecordingVoltage());
             testCase.addTeardown(@() delete(controller));
 
             testCase.verifyEmpty(controller.referenceDisplayImage());
@@ -324,6 +326,8 @@ classdef TestAdaptiveOptopatchReferenceTransport < matlab.unittest.TestCase
                 "LuminosApp", simulatedLuminosApp("CameraRoi", ...
                     [974 size(image, 2) 984 size(image, 1)]), ...
                 "RunRoot", root);
+            controller.setPlanParameter("orange_recording_voltage_v", ...
+                AoFixtures.orangeRecordingVoltage());
             testCase.addTeardown(@() delete(controller));
             controller.setReferenceData(image, reference_info(root, image), {});
         end

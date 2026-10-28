@@ -528,6 +528,8 @@ classdef TestNewFovLifecycle < matlab.unittest.TestCase
             % nothing, and making it conditional would give a frontend a
             % second rule to get wrong.
             controller = adaptive_optopatch.AdaptiveOptopatchController();
+            controller.setPlanParameter("orange_recording_voltage_v", ...
+                AoFixtures.orangeRecordingVoltage());
             testCase.addTeardown(@() delete(controller));
             testCase.assertTrue(controller.legalActions().start_new_fov);
             revisionBefore = controller.Revision;
@@ -666,6 +668,8 @@ classdef TestNewFovLifecycle < matlab.unittest.TestCase
             app = simulatedLuminosApp("CameraRoi", [974 160 984 128]);
             controller = adaptive_optopatch.AdaptiveOptopatchController( ...
                 "LuminosApp", app, "RunRoot", testCase.temporaryFolder());
+            controller.setPlanParameter("orange_recording_voltage_v", ...
+                AoFixtures.orangeRecordingVoltage());
             testCase.addTeardown(@() delete(controller));
             controller.SnapshotRoot = folder;
             controller.loadSnapshotChoice("120000newfov_cam-OrcaFusion");
@@ -705,6 +709,8 @@ classdef TestNewFovLifecycle < matlab.unittest.TestCase
             controller = adaptive_optopatch.AdaptiveOptopatchController( ...
                 "LuminosApp", simulatedLuminosApp("CameraRoi", [974 100 984 80]), ...
                 "RunRoot", root);
+            controller.setPlanParameter("orange_recording_voltage_v", ...
+                AoFixtures.orangeRecordingVoltage());
             testCase.addTeardown(@() delete(controller));
             controller.setReferenceData(ones(80, 100), testCase.plainInfo(root), ...
                 {[25 25; 40 25; 40 40; 25 40], [60 40; 75 40; 75 55; 60 55]});

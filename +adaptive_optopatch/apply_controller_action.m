@@ -206,8 +206,25 @@ function names=action_names()
 %         needs a second look before it happens.
 %
 %     send_orange_recording_mask
-%         drives a DMD. Hardware output is not something a state-editing
-%         surface should carry.
+%         THIS DECISION HAS CHANGED, and the two actions below replace it.
+%         It was refused on the grounds that a state-editing surface
+%         should not drive hardware, which was right while the only
+%         reason to project the recording mask was to look at it.
+%
+%         It is no longer the only reason. AO now owns the orange
+%         recording illumination and the operator has to choose its
+%         voltage, and the only way to choose it is to see the mask on
+%         the preparation through the live camera while turning the
+%         ordinary Luminos orange control. Without these the operator
+%         cannot answer a question AO is asking them.
+%
+%         What made the original objection sharp is still honoured: the
+%         preview puts no POWER on anything. It writes a static pattern to
+%         a DMD through AO's existing ownership machinery and touches
+%         neither mod594 nor the 594 shutter, so the light reaching the
+%         sample stays entirely under the ordinary Luminos controls. The
+%         one acquisition-time value AO holds - the Orange recording
+%         voltage - is deliberately NOT applied by it.
 names=[ ...
     "load_reference_choice"
     "load_snapshot_choice"
@@ -222,6 +239,8 @@ names=[ ...
     "set_plan_parameter"
     "apply_plan_draft"
     "update_plan"
+    "show_recording_mask"
+    "clear_recording_mask"
     "run"
     "stop_after_current"];
 end
@@ -311,6 +330,17 @@ switch action
         % the snapshot's own folder), not a browser's. Refused by the
         % controller when the experiment is not describable yet.
         controller.updatePlan();
+
+    case "show_recording_mask"
+        % Takes nothing. WHICH mask is projected is the session's current
+        % Orange recording mask and never a caller's argument, exactly as
+        % an acquisition's is: the whole value of the preview is that it
+        % is the same geometry, through the same calibration, as the
+        % recording it is previewing.
+        controller.showRecordingMask();
+
+    case "clear_recording_mask"
+        controller.clearRecordingMask();
 
     case "run"
         % Execute the whole prepared plan, repeated as many times as it

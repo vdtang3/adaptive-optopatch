@@ -146,6 +146,11 @@ controller.setCellEligibility("cell_002","StimulationEnabled",false);
 controller.setProtocol(adaptive_optopatch.generate_screen_protocol( ...
     "PulseCount",1,"ModulatorVoltage",1));
 controller.setPlanParameter("mode","1p_dmd");
+% The 594 nm level AO drives while acquiring. There is no default - the
+% plan stays not_ready until somebody chooses one - so a LOADED fixture has
+% to carry one, and the empty fixture deliberately does not: between them
+% they give the harness both sides of the control.
+controller.setPlanParameter("orange_recording_voltage_v",0.42);
 % The experimenter's step, not the internal one: a fixture should show the
 % session a frontend actually produces.
 controller.updatePlan();

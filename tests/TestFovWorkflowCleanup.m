@@ -180,6 +180,11 @@ classdef TestFovWorkflowCleanup < matlab.unittest.TestCase
             sim=adaptive_optopatch.testing.make_simulated_luminos( ...
                 "MissingDevice","DMD_Blue");
             app=launch_adaptive_optopatch_gui(sim,"Visible","off","RunRoot",root);
+            % AO drives mod594 during an acquisition and has no default
+            % level for it, so a plan is not preparable until one is set.
+            % These tests are about the FOV workflow, not illumination.
+            app.Controller.setPlanParameter("orange_recording_voltage_v", ...
+                AoFixtures.orangeRecordingVoltage());
             appCleanup=onCleanup(@()delete(app));
             app.setReferenceData(ones(70,90),test_info(root),test_polygon());
             app.setPulseProtocol(adaptive_optopatch.generate_screen_protocol( ...

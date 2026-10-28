@@ -24,6 +24,16 @@
  * +adaptive_optopatch/apply_controller_action.m. Written out rather than
  * inferred, so that an action added there and not thought about here shows up
  * as an unknown_action in the browser instead of silently doing nothing. */
+/* No mask projected. The shape the tab reads whether or not one is. */
+export const emptyRecordingMaskPreview = () => ({
+  active: false,
+  dmd_name: "",
+  recording_cell_ids: [],
+  recording_cell_count: 0,
+  shown_at: "",
+  applies_recording_voltage: false,
+});
+
 export const ACTIONS = [
   "load_reference_choice",
   "load_snapshot_choice",
@@ -38,6 +48,8 @@ export const ACTIONS = [
   "set_plan_parameter",
   "apply_plan_draft",
   "update_plan",
+  "show_recording_mask",
+  "clear_recording_mask",
   "run",
   "stop_after_current",
 ];
@@ -485,6 +497,15 @@ export class FakeAoSession {
         return this.applyPlanDraft(payload);
       case "update_plan":
         return this.updatePlan();
+      /* The recording-mask preview. In MATLAB this writes a static pattern
+       * to DMD_Orange through AO's ownership machinery; here there is no
+       * device, so what is imitated is the only part the tab is written
+       * against - that it is one piece of state, that an edit invalidates
+       * it, and that it never touches the orange level. */
+      case "show_recording_mask":
+        return this.showRecordingMask();
+      case "clear_recording_mask":
+        return this.clearRecordingMask();
       case "run":
         return this.runPreparedPlan();
       case "stop_after_current":
@@ -508,6 +529,12 @@ export class FakeAoSession {
     if (stimulation_enabled != null) {
       cell.stimulation_enabled = !!stimulation_enabled;
     }
+    /* Record eligibility IS which cells the Orange mask contains, so a
+     * projected preview is stale the moment one changes. Cleared here
+     * rather than through markEditableChanged, which this does not call -
+     * mirroring the controller, where the same decision is made for the
+     * same reason. */
+    this.clearRecordingMask();
   }
 
   /* Many cells' decisions at once, the way the controller's
@@ -934,6 +961,15 @@ export class FakeAoSession {
       }
       this.state.plan_parameters[name] = number;
     }
+    /* The Orange recording voltage changes no geometry, so it does not
+     * take the projected mask down - which matters, because the mask is
+     * what the operator is looking at while they choose the number. */
+    if (name === "orange_recording_voltage_v") {
+      this.state.editable_state_changed = true;
+      this.state.active_run = { ...this.state.active_run };
+      this.refreshDerivedState();
+      return;
+    }
     this.markEditableChanged();
   }
 
@@ -1348,6 +1384,11 @@ export class FakeAoSession {
     const hasFov = !!state.fov.loaded;
     const hasCells = state.cells.length > 0;
     const frozen = !!state.active_run.frozen;
+    /* A fixture captured before the preview existed carries no such field,
+     * and a browser must not read that as a mask being projected. */
+    if (!state.recording_mask_preview) {
+      state.recording_mask_preview = emptyRecordingMaskPreview();
+    }
 
     state.fov.cell_count = state.cells.length;
     state.lifecycle =
@@ -1383,10 +1424,35 @@ export class FakeAoSession {
       return_to_editing: frozen && editing,
       start_new_batch: frozen && editing && !!state.active_run.batch_complete,
       resume_run: editing,
+      show_recording_mask:
+        editing && hasFov && hasCells && !state.recording_mask_preview.active,
+      clear_recording_mask: !!state.recording_mask_preview.active,
     };
   }
 
+  showRecordingMask() {
+    const recording = this.state.cells.filter((cell) => cell.recording_enabled);
+    this.state.recording_mask_preview = {
+      active: true,
+      dmd_name: "DMD_Orange",
+      recording_cell_ids: recording.map((cell) => cell.cell_id),
+      recording_cell_count: recording.length,
+      shown_at: new Date().toISOString(),
+      /* Always false. The preview is spatial only. */
+      applies_recording_voltage: false,
+    };
+  }
+
+  clearRecordingMask() {
+    this.state.recording_mask_preview = emptyRecordingMaskPreview();
+  }
+
   markEditableChanged() {
+    /* A projected recording mask is stale as soon as what would be
+     * recorded changes, exactly as in the controller. The Orange recording
+     * voltage is the one editable value that does not invalidate it - see
+     * setPlanParameter. */
+    this.clearRecordingMask();
     this.state.editable_state_changed = true;
     if (!this.state.active_run.frozen) this.state.plan_state = "EDITABLE";
   }

@@ -27,6 +27,14 @@ classdef ControllerCallRecorder < adaptive_optopatch.AdaptiveOptopatchController
             % Passes the real controller's options straight through, so a
             % test builds one exactly the way it builds a controller.
             recorder@adaptive_optopatch.AdaptiveOptopatchController(varargin{:});
+            % The Orange recording voltage has no default - AO drives
+            % mod594 during an acquisition and will not invent an
+            % illumination level - so a plan is not preparable until it is
+            % set. These suites are about the ACTION SURFACE rather than
+            % about illumination, so the one value they would otherwise
+            % all have to set is seeded here.
+            recorder.setPlanParameter("orange_recording_voltage_v", ...
+                AoFixtures.orangeRecordingVoltage());
         end
 
         function run=runNext(recorder)

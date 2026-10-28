@@ -16,4 +16,12 @@ luminosApp=simulatedLuminosApp( ...
     "SimulationOutputRoot",options.SimulationOutputRoot);
 app=launch_adaptive_optopatch_gui(luminosApp, ...
     "Visible",options.Visible,"RunRoot",options.RunRoot);
+% AO drives mod594 during its acquisitions and declares no default level
+% for it, so a plan is not preparable until one is chosen. The suites that
+% open this GUI are about the run lifecycle, the batch identity and the
+% frozen artifacts rather than about illumination, so the one value they
+% would all otherwise have to set is seeded here. TestHardwareOwnership is
+% where the unset case is asserted.
+app.Controller.setPlanParameter("orange_recording_voltage_v", ...
+    AoFixtures.orangeRecordingVoltage());
 end

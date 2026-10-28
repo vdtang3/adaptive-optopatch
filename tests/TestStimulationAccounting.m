@@ -217,7 +217,19 @@ classdef TestStimulationAccounting < matlab.unittest.TestCase
             report=adaptive_optopatch.account_stimulation_outputs( ...
                 globalProps,configured,"Modality","1p_dmd");
             declared=report.declared;
-            testCase.verifyEqual(height(declared),6);
+            % Six stimulation outputs plus the two the VU now owns for
+            % recording illumination. A missing mod594 record is exactly
+            % what this roll-up is for: the difference between a recording
+            % and a black movie.
+            testCase.verifyEqual(height(declared),8);
+            orange=declared(declared.role=="orange_modulator",:);
+            testCase.verifyTrue(orange.present, ...
+                "A run must install the orange recording constant.");
+            testCase.verifyEqual(orange.runtime_owner,"buffered");
+            orangeShutter=declared(declared.role=="orange_shutter",:);
+            testCase.verifyFalse(orangeShutter.present, ...
+                "shutter594 is opened imperatively, not from the buffer.");
+            testCase.verifyEqual(orangeShutter.runtime_owner,"imperative");
             shutter=declared(declared.role=="blue_shutter",:);
             testCase.verifyFalse(shutter.present, ...
                 "A 1P run installs no buffered record for the 488 shutter.");
@@ -294,9 +306,14 @@ record=struct("name",char(name),"port",char(port), ...
 end
 
 function [globalProps,configured]=one_photon_configuration()
+% The LIVE builder. run_1p_manifest calls the mixed one, and the roll-up
+% this fixture feeds is about what a real run installs - including the
+% orange recording constant the frozen 1P reference builder knows nothing
+% about.
 protocol=one_photon_protocol();
-[globalProps,configured]=adaptive_optopatch.build_luminos_1p_waveform_config( ...
-    live_global_props(),empty_wfm_data(),protocol);
+[globalProps,configured]=adaptive_optopatch.build_luminos_mixed_waveform_config( ...
+    live_global_props(),empty_wfm_data(),protocol, ...
+    "OnePhotonProfile",AoFixtures.onePhotonProfile());
 end
 
 function [globalProps,configured]=two_photon_configuration()

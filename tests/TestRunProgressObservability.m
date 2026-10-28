@@ -272,6 +272,8 @@ classdef TestRunProgressObservability < matlab.unittest.TestCase
             app=simulatedLuminosApp("CameraRoi",[974 100 984 80]);
             controller=adaptive_optopatch.AdaptiveOptopatchController( ...
                 "LuminosApp",app,"RunRoot",testCase.temporaryFolder());
+            controller.setPlanParameter("orange_recording_voltage_v", ...
+                AoFixtures.orangeRecordingVoltage());
             testCase.addTeardown(@()delete(controller));
         end
 

@@ -14,6 +14,17 @@ arguments
     options.MissingDevice (1,1) string = ""
     options.LaserInterlockEnabled (1,1) logical = true
     options.Modulator488Port (1,1) string = "Dev1/ao2"
+    % Where the live-view orange control was left before AO took the
+    % terminal. Deliberately not zero and not the recording voltage, so a
+    % test that checks the live level came back cannot pass by accident.
+    options.OrangeLiveLevelV (1,1) double = 0.25
+    % A rig where the Waveforms tab has never been opened: no global_props
+    % and no wfm_data at all. The normal expected state once AO owns its
+    % own acquisition timing.
+    options.WaveformsNeverOpened (1,1) logical = false
+    % The camera cadence the rig is found in, for tests that check AO
+    % imposes its own. "Off" is Luminos\'s free-running start-trigger mode.
+    options.CameraTriggerSource (1,1) string = "DAQ"
     options.ValidDaqSync (1,1) logical = true
     % Which camera the DMD calibrations are stored against. Defaults to the
     % profile's voltage camera, which is the camera an AO reference is taken
@@ -40,14 +51,23 @@ if strlength(options.CalibrationCamera)==0
 end
 daq=device("DAQ","Dev1");
 daq.alias_list=adaptive_optopatch.stimulation_manifest_for_profile(profile1p).alias_list;
-daq.global_props=struct("rate",200000,"total_time",1, ...
-    "clock_source",profile1p.daq.default_clock, ...
-    "trigger_source",profile1p.daq.default_trigger, ...
-    "completion_trigger","None","daq_master",true);
-daq.wfm_data=struct("ao",base_outputs(),"do",[],"ai",[],"di",[], ...
-    "ctri",[],"ao_camera_triggered",[],"do_camera_triggered",[]);
-if options.RigName=="Spinning_Upright"
-    daq.wfm_data.ao=daq.wfm_data.ao(1);
+if options.WaveformsNeverOpened
+    % WHAT A FRESH LUMINOS LOOKS LIKE. DAQ.global_props is an unset
+    % property until load_waveform_from_json runs, and wfm_data with it -
+    % so this is the state of a rig where nobody has opened the Waveforms
+    % tab, which is the state AO is now supposed to run from.
+    daq.global_props=struct([]);
+    daq.wfm_data=[];
+else
+    daq.global_props=struct("rate",200000,"total_time",1, ...
+        "clock_source",profile1p.daq.default_clock, ...
+        "trigger_source",profile1p.daq.default_trigger, ...
+        "completion_trigger","None","daq_master",true);
+    daq.wfm_data=struct("ao",base_outputs(),"do",[],"ai",[],"di",[], ...
+        "ctri",[],"ao_camera_triggered",[],"do_camera_triggered",[]);
+    if options.RigName=="Spinning_Upright"
+        daq.wfm_data.ao=daq.wfm_data.ao(1);
+    end
 end
 daq.default_trigger=profile1p.daq.default_trigger;
 daq.clock_bridge=profile1p.daq.clock_bridge;
@@ -62,7 +82,7 @@ camera=device("Camera",profile1p.camera.name);
 camera.cam_id="S/N: "+profile1p.camera.serial;
 camera.ROI=options.CameraRoi;
 camera.bin=options.CameraBin;
-camera.frametrigger_source="DAQ";
+camera.frametrigger_source=options.CameraTriggerSource;
 camera.daqtrig_period_ms=1000/options.CameraFrameRateHz;
 camera.maximum_frame_rate_hz=max(options.CameraFrameRateHz/0.85, ...
     options.CameraFrameRateHz+1);
@@ -97,6 +117,23 @@ scanner.galvoy_physport=profile2p.scanner.y_port;
 scanner.sample_rate=profile2p.scanner.sample_rate_hz;
 mod2p=device("NI_DAQ_Modulator",profile2p.modulator.name);
 mod2p.port=profile2p.modulator.port;
+% The 594 nm recording path, on a rig profile that declares it. AO drives
+% both for the length of an acquisition, so a simulated rig without them is
+% a rig AO now refuses - which is the point: the resolver should fail on a
+% rig that genuinely lacks the hardware it is about to command.
+orangeDevices=adaptive_optopatch.testing.SimulatedLuminosDevice.empty(1,0);
+if isfield(profile1p,"orange_modulator")
+    orangeModulator=device("NI_DAQ_Modulator",profile1p.orange_modulator.name);
+    orangeModulator.port=profile1p.orange_modulator.port;
+    orangeModulator.level=options.OrangeLiveLevelV;
+    orangeDevices(end+1)=orangeModulator;
+end
+if isfield(profile1p,"orange_shutter")
+    orangeShutter=device("NI_DAQ_Shutter",profile1p.orange_shutter.name);
+    orangeShutter.port=profile1p.orange_shutter.port;
+    orangeShutter.State=profile1p.orange_shutter.closed_state;
+    orangeDevices(end+1)=orangeShutter;
+end
 
 if isempty(fieldnames(options.GalvoCalibration))
     calibration=synthetic_calibration(profile2p);
@@ -104,7 +141,7 @@ else
     calibration=options.GalvoCalibration;
 end
 scanner.tform=calibration.calibration.tform;
-devices=[daq camera dmd orangeDmd laser mod488 shutter dmdTrigger scanner mod2p];
+devices=[daq camera dmd orangeDmd laser mod488 shutter dmdTrigger scanner mod2p orangeDevices];
 if options.RigName=="Spinning_Upright"
     blueCamera=device("Camera","Orca Flash Blue");
     blueCamera.cam_id="S/N: 001339";

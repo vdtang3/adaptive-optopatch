@@ -84,6 +84,8 @@ classdef TestSpinningUprightPort < matlab.unittest.TestCase
                 "RigName","Spinning_Upright");
             controller=adaptive_optopatch.AdaptiveOptopatchController( ...
                 "LuminosApp",app);
+            controller.setPlanParameter("orange_recording_voltage_v", ...
+                AoFixtures.orangeRecordingVoltage());
             [fovState,~]=AoFixtures.fovState();
             testCase.verifyError(@()controller.setFovState(fovState), ...
                 "adaptive_optopatch:WrongReferenceCamera");
@@ -112,7 +114,12 @@ classdef TestSpinningUprightPort < matlab.unittest.TestCase
                 'output_tag','acquisition_status','experiment_directory'});
             run=adaptive_optopatch.run_mixed_manifest( ...
                 struct("trials",trials),targets,app, ...
-                "ConfirmLiveOutput",true);
+                "ConfirmLiveOutput",true, ...
+                ... % This rig's own profile. It declares no orange
+                ... % modulator and no camera cadence, so the Spinning
+                ... % Upright keeps inheriting both - which is the point
+                ... % of this test running here at all.
+                "OnePhotonProfile",adaptive_optopatch.spinning_upright_1p_profile())
             testCase.verifyEqual(run.trials.acquisition_status,"completed");
             testCase.verifyEqual(run.hardware_profile.rig_name,"Spinning_Upright");
             executed=run.trials.executed_pulse_schedule{1};

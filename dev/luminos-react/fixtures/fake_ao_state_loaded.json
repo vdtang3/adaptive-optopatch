@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0.0",
-  "revision": 9,
+  "revision": 10,
   "lifecycle": "frozen",
   "plan_state": "FROZEN",
   "editable_state_changed": false,
@@ -8,7 +8,7 @@
   "status": [
     "Plan updated and ready to run.",
     "2 stimulating cells, 2 acquisitions per repeat, 1 repeats, 2 acquisitions in total.",
-    "<dev fixture>/tpa6b4bc60_8bb4_4c46_b722_1fc53df0347d/adaptive_optopatch_run_x120000ao_full_cam_OrcaFusion_20260916_181314"
+    "<dev fixture>/tp502a39d3_18b1_4f98_9ee9_c2db60503621/adaptive_optopatch_run_x120000ao_full_cam_OrcaFusion_20261028_132243"
   ],
   "scanner_warning": "",
   "fov": {
@@ -17,10 +17,10 @@
     "rig_name": "Virtual_Upright",
     "camera_name": "Orca Fusion",
     "camera_bin": 1,
-    "snapshot_path": "<dev fixture>/tpa29de7be_511f_46c2_9b40_2a69dffa1d61/120000ao_full_cam-OrcaFusion.mat",
-    "snapshot_directory": "<dev fixture>/tpa29de7be_511f_46c2_9b40_2a69dffa1d61",
+    "snapshot_path": "<dev fixture>/tp5f94e542_12bf_41e2_97d7_1334c20cd7b9/120000ao_full_cam-OrcaFusion.mat",
+    "snapshot_directory": "<dev fixture>/tp5f94e542_12bf_41e2_97d7_1334c20cd7b9",
     "source_kind": "snapshot",
-    "source_path": "<dev fixture>/tpa29de7be_511f_46c2_9b40_2a69dffa1d61/120000ao_full_cam-OrcaFusion.mat",
+    "source_path": "<dev fixture>/tp5f94e542_12bf_41e2_97d7_1334c20cd7b9/120000ao_full_cam-OrcaFusion.mat",
     "image_size": [
       128,
       160
@@ -194,12 +194,18 @@
       "definition_acquisition_count": 1,
       "event_count": 1,
       "light_event_count": 1,
+      "onephoton_event_count": 1,
+      "twophoton_event_count": 0,
       "condition_count": 1,
       "duration_range_s": [
         0.005,
         0.005
       ],
-      "random_seed": 1
+      "random_seed": 1,
+      "scheduled_acquisition_count": 0,
+      "pulses_per_selected_cell": 0,
+      "scheduler_types": [],
+      "targets_resolved_at_update_plan": false
     }
   },
   "plan_parameters": {
@@ -220,12 +226,13 @@
     "maximum_acceleration_v_per_s2": 6.0E+6,
     "allow_calibration_extrapolation": false,
     "allow_camera_rate_override": false,
+    "orange_recording_voltage_v": 0.42,
     "repeat_batch_count": 1
   },
   "active_run": {
     "frozen": true,
-    "folder": "<dev fixture>/tpa6b4bc60_8bb4_4c46_b722_1fc53df0347d/adaptive_optopatch_run_x120000ao_full_cam_OrcaFusion_20260916_181314",
-    "batch_id": "adaptive_optopatch_run_x120000ao_full_cam_OrcaFusion_20260916_181314",
+    "folder": "<dev fixture>/tp502a39d3_18b1_4f98_9ee9_c2db60503621/adaptive_optopatch_run_x120000ao_full_cam_OrcaFusion_20261028_132243",
+    "batch_id": "adaptive_optopatch_run_x120000ao_full_cam_OrcaFusion_20261028_132243",
     "batch_number": 1,
     "trial_count": 2,
     "completed_trial_count": 0,
@@ -250,6 +257,11 @@
     "repeats": 1,
     "total_acquisitions": 2,
     "light_event_count": 2,
+    "onephoton_event_count": 2,
+    "twophoton_event_count": 0,
+    "onephoton_acquisition_count": 2,
+    "twophoton_acquisition_count": 0,
+    "mixed_acquisition_count": 0,
     "acquisition_duration_s": 0.41000000000000003,
     "protocol_id": "connectivity_screen_seed_1",
     "stimulating_cell_ids": [
@@ -265,7 +277,65 @@
     "repeat_count": 1,
     "acquisitions_per_repeat": 2,
     "completed_acquisitions": 0,
-    "total_acquisitions": 2
+    "total_acquisitions": 2,
+    "current_acquisition": 0,
+    "current_trial_id": null,
+    "current_status": "",
+    "experiment_directory": ""
+  },
+  "hardware_ownership": {
+    "schema_version": "1.0.0",
+    "camera_name": "Orca Fusion",
+    "owns_camera_timing": true,
+    "frame_period_ms": 1,
+    "frame_rate_hz": 1000,
+    "acquisition_exposure_s": 0.001,
+    "frame_trigger_source": "DAQ",
+    "owns_daq_timing": true,
+    "sample_rate_hz": 200000,
+    "clock_source": "Internal Dev1",
+    "daq_master": true,
+    "start_triggers": [
+      "Dev1/PFI9",
+      "Dev2/PFI1"
+    ],
+    "clock_bridge": [
+      "Dev1/PFI12",
+      "Dev2/PFI0"
+    ],
+    "owns_orange_illumination": true,
+    "orange_modulator_name": "mod594",
+    "orange_minimum_v": 0,
+    "orange_maximum_v": 5,
+    "camera_roi": [
+      0,
+      160,
+      0,
+      128
+    ],
+    "camera_roi_order": [
+      "left",
+      "width",
+      "top",
+      "height"
+    ],
+    "camera_bin": 1,
+    "camera_state_readable": true,
+    "requires_waveforms_protocol": false,
+    "notes": [
+      "Adaptive Optopatch controls acquisition timing, synchronized DAQ waveforms, stimulation outputs, DMD patterns and orange recording illumination during acquisition.",
+      "Inherited from Luminos: the current camera ROI/FOV and the active spatial calibrations.",
+      "Choose the ROI/FOV in the Camera tab. No Waveforms protocol needs to be loaded."
+    ]
+  },
+  "recording_mask_preview": {
+    "schema_version": "1.0.0",
+    "active": false,
+    "dmd_name": "",
+    "recording_cell_ids": [],
+    "recording_cell_count": 0,
+    "shown_at": "",
+    "applies_recording_voltage": false
   },
   "legal_actions": {
     "edit_cells": true,
@@ -280,6 +350,8 @@
     "stop_after_current": false,
     "return_to_editing": true,
     "start_new_batch": false,
+    "show_recording_mask": true,
+    "clear_recording_mask": false,
     "resume_run": true
   }
 }

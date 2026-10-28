@@ -244,6 +244,20 @@ for k=1:n
         run.trials.settings_snapshot{k}= ...
             adaptive_optopatch.snapshot_luminos_settings(app);
 
+        % THE ACQUISITION'S TIMING, built from the rig profile for this
+        % trial's duration. It used to be original.global_props - the
+        % struct the Waveforms tab had been left on - with total_time
+        % overwritten, which made the sample rate every pulse boundary is
+        % quantised to a property of another tab.
+        trialTiming=struct([]);
+        trialGlobalProps=original.global_props;
+        if hardware.owns_daq_timing
+            [trialGlobalProps,trialTiming]= ...
+                adaptive_optopatch.build_luminos_global_props( ...
+                profile,protocol.acquisition_duration_s, ...
+                "PreviousGlobalProps",original.global_props);
+        end
+
         onePhotonRows=protocol.events.stimulation_source=="1p_dmd";
         twoPhotonRows=protocol.events.stimulation_source=="2p_spiral";
         pulseTargets=unique(protocol.events.target_cell_id(onePhotonRows),"stable");
@@ -265,7 +279,7 @@ for k=1:n
             dmdSequencePlan=adaptive_optopatch.build_dmd_sequence_plan( ...
                 protocol,trialTargets, ...
                 "HoldPatternUntilTrigger",profile.rig_name=="Spinning_Upright", ...
-                "SampleRateHz",double(original.global_props.rate), ...
+                "SampleRateHz",double(trialGlobalProps.rate), ...
                 "CameraFramePeriodS", ...
                     adaptive_optopatch.daq_camera_frame_period_s(hardware.voltage_camera));
             config=adaptive_optopatch.prepare_luminos_dmd_sequence( ...
@@ -289,7 +303,7 @@ for k=1:n
             target=trialTargets.targets(targetIndices(1));
             twoPhotonWaveforms=adaptive_optopatch.build_2p_trial_waveforms( ...
                 protocol,target,targetingTform, ...
-                "SampleRateHz",double(original.global_props.rate), ...
+                "SampleRateHz",double(trialGlobalProps.rate), ...
                 "MaximumVelocityVPerS",options.MaximumVelocityVPerS, ...
                 "MaximumAccelerationVPerS2",options.MaximumAccelerationVPerS2);
             if isfinite(twoPhotonCommandOverride)
@@ -298,7 +312,7 @@ for k=1:n
         end
         [globalProps,wfmData,waveformSummary]= ...
             adaptive_optopatch.build_luminos_mixed_waveform_config( ...
-            original.global_props,original.wfm_data,protocol, ...
+            trialGlobalProps,original.wfm_data,protocol, ...
             "DmdSequencePlan",dmdSequencePlan, ...
             "TwoPhotonWaveforms",twoPhotonWaveforms, ...
             "OnePhotonProfile",profile,"Manifest",stimulationManifest);
@@ -333,16 +347,43 @@ for k=1:n
         hardware.daq.global_props=globalProps;
         hardware.daq.wfm_data=wfmData;
         hardware.daq.waveforms_built=false;
+        % THE CAMERA CADENCE IS AO'S, on a rig whose profile declares it.
+        % The voltage camera is put into DAQ-triggered synchronous readout
+        % at the declared frame period and exposure, whatever the Camera
+        % tab was left on, and restored afterwards. AO used only to READ
+        % these - and a camera left free-running fell through to AutoN and
+        % recorded an untriggered movie whose frame rate the archive could
+        % only estimate.
+        %
+        % Every other camera keeps the established behaviour: its frame
+        % count is sized for the acquisition and nothing else about it is
+        % touched. ROI, binning and field of view are the Camera tab's on
+        % every camera, including this one.
+        cameraPlan=struct([]);
+        if hardware.owns_camera_timing
+            [hardware.cameras(hardware.voltage_camera_index),cameraPlan]= ...
+                adaptive_optopatch.apply_camera_acquisition_state( ...
+                hardware.cameras(hardware.voltage_camera_index), ...
+                profile,globalProps.total_time);
+            hardware.voltage_camera=hardware.cameras(hardware.voltage_camera_index);
+        end
         onlyCameraIndex=0;
         if profile.rig_name=="Spinning_Upright"
             onlyCameraIndex=hardware.voltage_camera_index;
         end
+        % Run over every camera as before, voltage camera included. For the
+        % AO-owned one it now reads back the cadence just applied and
+        % arrives at the same frame count, which is what makes the archived
+        % camera_frame_plan describe the recording rather than whatever the
+        % Camera tab had been set to.
         [hardware.cameras,cameraFramePlan]= ...
             adaptive_optopatch.set_camera_frames_for_duration( ...
             hardware.cameras,globalProps.total_time, ...
             "AllowRateLimitOverride",options.AllowCameraRateOverride, ...
             "OnlyCameraIndex",onlyCameraIndex);
         waveformSummary.camera_frame_plan=cameraFramePlan;
+        waveformSummary.camera_acquisition_state=cameraPlan;
+        waveformSummary.daq_timing=trialTiming;
         waveformSummary.two_photon_release_level=options.TwoPhotonReleaseLevel;
         run.trials.waveform_summary{k}=waveformSummary;
 
@@ -357,10 +398,19 @@ for k=1:n
             % one mask late.
             check_blanket_dmd_still_armed(hardware.dmd,config);
         end
+        % The orange recording shutter, opened for EVERY acquisition
+        % whatever it stimulates: 594 nm is how the voltage is read out, so
+        % a trial with no blue light at all still needs it. Opened before
+        % the blue shutter so the two settle together under one pause.
+        if ~isempty(hardware.orange_shutter)
+            hardware.orange_shutter.State=profile.orange_shutter.open_state;
+        end
         if any(onePhotonRows) || blanketMode
             % A blanket recruitment sweep targets no cell and still emits
             % 488 nm light on every cycle, so the shutter opens for it too.
             hardware.shutter.State=profile.shutter.open_state;
+        end
+        if ~isempty(hardware.orange_shutter) || any(onePhotonRows) || blanketMode
             pause(options.ShutterSettleTimeS);
         end
         app.acquisition_active=true;
@@ -378,6 +428,7 @@ for k=1:n
         wait_for_acquisition(globalProps.total_time+options.TimeoutMarginS);
         hardware.shutter.State=profile.shutter.closed_state;
         hardware.modulator.level=profile.modulator.dark_v;
+        close_orange_shutter(hardware,profile);
         if blanketMode
             % Read before the DMD is blanked: blanking reloads the device.
             dmdAdvance=adaptive_optopatch.verify_dmd_advance_count( ...
@@ -457,6 +508,10 @@ for k=1:n
         end
         try
             hardware.shutter.State=profile.shutter.closed_state;
+        catch
+        end
+        try
+            close_orange_shutter(hardware,profile);
         catch
         end
         completedData=ismember(string(run.trials.acquisition_status(k)), ...
@@ -690,10 +745,37 @@ end
 end
 
 function original=capture_original_state(hardware)
+%CAPTURE_ORIGINAL_STATE Everything this run is about to take over.
+%   Read once, before anything is written, and handed to
+%   restore_1p_hardware - which runs on success, on error, on abort and on
+%   Ctrl-C. What is captured here is exactly what is written during the run;
+%   nothing else is captured, so nothing else can be "restored" over an
+%   operator's deliberate change.
 original=struct("global_props",hardware.daq.global_props, ...
     "wfm_data",hardware.daq.wfm_data, ...
     "camera_frames",arrayfun(@(camera)camera.frames_requested,hardware.cameras), ...
     "laser_power_w",hardware.laser_power_w);
+% The voltage camera's cadence, when this rig's profile says AO owns it.
+% Only the voltage camera: a second camera on the rig is not part of the
+% acquisition AO configures, and its frame count is already covered above.
+original.camera_acquisition_state=struct([]);
+if isfield(hardware,"owns_camera_timing") && hardware.owns_camera_timing
+    original.camera_acquisition_state= ...
+        adaptive_optopatch.capture_camera_acquisition_state( ...
+            hardware.voltage_camera);
+end
+% The live-view orange level. AO installs a buffered constant on this
+% terminal, and when the task releases the line the channel keeps the last
+% sample it played - so without putting this back the live view returns at
+% the recording voltage rather than at whatever the operator had been
+% looking at.
+original.orange_level=NaN;
+if ~isempty(hardware.orange_modulator)
+    try
+        original.orange_level=double(hardware.orange_modulator.level);
+    catch
+    end
+end
 end
 
 function trials=ensure_column(trials,name,value)
@@ -734,6 +816,33 @@ try
     hardware.modulator.level=profile.modulator.dark_v;
 catch
 end
+% THE ORANGE SHUTTER IS CLOSED, NOT RESTORED, and the orange LEVEL is
+% restored, not zeroed. They are opposite decisions about one light path
+% and both are deliberate.
+%
+% The shutter is the mechanical block. Cleanup runs when an acquisition
+% ended, failed, was aborted or was interrupted, and the state that is
+% right in all four cases is closed - the same rule shutter488 has always
+% followed. Putting back an open shutter because the operator happened to
+% have one open would mean a failed run leaving the preparation
+% illuminated, which is the case cleanup exists for.
+%
+% The level is different: it is not a hazard, it is the operator's live
+% view. AO drove a buffered constant onto that terminal and the channel
+% holds its last sample once the task releases it, so without this the
+% live view comes back at the recording voltage rather than at whatever
+% the operator had been looking at before the run. Restoring it is undoing
+% AO's own write, not overriding a choice.
+try
+    close_orange_shutter(hardware,profile);
+catch
+end
+try
+    if ~isempty(hardware.orange_modulator) && isfinite(original.orange_level)
+        hardware.orange_modulator.level=original.orange_level;
+    end
+catch
+end
 try
     if isprop(app,"acquisition_active") && logical(app.acquisition_active)
         for k=1:numel(hardware.cameras)
@@ -758,6 +867,17 @@ try
     hardware.daq.waveforms_built=false;
 catch
 end
+% The voltage camera's cadence first, then every camera's frame count. The
+% cadence restore writes frames_requested too, so the loop below runs after
+% it and has the last word - which matters on a rig where AO owns the
+% cadence but the capture could not read one of the other properties.
+try
+    if ~isempty(original.camera_acquisition_state)
+        adaptive_optopatch.restore_camera_acquisition_state( ...
+            hardware.voltage_camera,original.camera_acquisition_state);
+    end
+catch
+end
 for k=1:numel(hardware.cameras)
     try
         hardware.cameras(k).frames_requested=original.camera_frames(k);
@@ -778,6 +898,12 @@ end
 % Write Stack setting, and doing it earlier would let the generic stack
 % reload over the blank if anything else armed an acquisition in between.
 adaptive_optopatch.release_dmd_pattern_ownership(dmdOwnership);
+end
+
+function close_orange_shutter(hardware,profile)
+%CLOSE_ORANGE_SHUTTER Block 594 nm, on a rig that declares the shutter.
+if isempty(hardware.orange_shutter), return; end
+hardware.orange_shutter.State=profile.orange_shutter.closed_state;
 end
 
 function disconnect_clock_bridge(daq)

@@ -6,7 +6,7 @@
   "editable_state_changed": true,
   "stop_after_current_requested": false,
   "status": [
-    "Ready. In Luminos, click Snap for Camera 1.",
+    "Ready. In Luminos, click Snap for Orca Fusion.",
     "Then load its MAT file from the Luminos Snaps folder."
   ],
   "scanner_warning": "",
@@ -58,6 +58,7 @@
     "maximum_acceleration_v_per_s2": 6.0E+6,
     "allow_calibration_extrapolation": false,
     "allow_camera_rate_override": false,
+    "orange_recording_voltage_v": null,
     "repeat_batch_count": 1
   },
   "active_run": {
@@ -78,11 +79,12 @@
     "blocking_issues": [
       "Load a reference FOV.",
       "Draw at least one soma.",
-      "Load a pulse protocol."
+      "Load a pulse protocol.",
+      "Set the Orange recording voltage."
     ],
     "stale_inputs": [],
     "prepared": false,
-    "message": "Not ready. Load a reference FOV. Draw at least one soma. Load a pulse protocol."
+    "message": "Not ready. Load a reference FOV. Draw at least one soma. Load a pulse protocol. Set the Orange recording voltage."
   },
   "plan_summary": {
     "schema_version": "1.0.0",
@@ -92,6 +94,11 @@
     "repeats": 1,
     "total_acquisitions": 0,
     "light_event_count": 0,
+    "onephoton_event_count": 0,
+    "twophoton_event_count": 0,
+    "onephoton_acquisition_count": 0,
+    "twophoton_acquisition_count": 0,
+    "mixed_acquisition_count": 0,
     "acquisition_duration_s": null,
     "protocol_id": "",
     "stimulating_cell_ids": []
@@ -104,7 +111,60 @@
     "repeat_count": 1,
     "acquisitions_per_repeat": 0,
     "completed_acquisitions": 0,
-    "total_acquisitions": 0
+    "total_acquisitions": 0,
+    "current_acquisition": 0,
+    "current_trial_id": null,
+    "current_status": "",
+    "experiment_directory": ""
+  },
+  "hardware_ownership": {
+    "schema_version": "1.0.0",
+    "camera_name": "Orca Fusion",
+    "owns_camera_timing": true,
+    "frame_period_ms": 1,
+    "frame_rate_hz": 1000,
+    "acquisition_exposure_s": 0.001,
+    "frame_trigger_source": "DAQ",
+    "owns_daq_timing": true,
+    "sample_rate_hz": 200000,
+    "clock_source": "Internal Dev1",
+    "daq_master": true,
+    "start_triggers": [
+      "Dev1/PFI9",
+      "Dev2/PFI1"
+    ],
+    "clock_bridge": [
+      "Dev1/PFI12",
+      "Dev2/PFI0"
+    ],
+    "owns_orange_illumination": true,
+    "orange_modulator_name": "mod594",
+    "orange_minimum_v": 0,
+    "orange_maximum_v": 5,
+    "camera_roi": [],
+    "camera_roi_order": [
+      "left",
+      "width",
+      "top",
+      "height"
+    ],
+    "camera_bin": null,
+    "camera_state_readable": false,
+    "requires_waveforms_protocol": false,
+    "notes": [
+      "Adaptive Optopatch controls acquisition timing, synchronized DAQ waveforms, stimulation outputs, DMD patterns and orange recording illumination during acquisition.",
+      "Inherited from Luminos: the current camera ROI/FOV and the active spatial calibrations.",
+      "Choose the ROI/FOV in the Camera tab. No Waveforms protocol needs to be loaded."
+    ]
+  },
+  "recording_mask_preview": {
+    "schema_version": "1.0.0",
+    "active": false,
+    "dmd_name": "",
+    "recording_cell_ids": [],
+    "recording_cell_count": 0,
+    "shown_at": "",
+    "applies_recording_voltage": false
   },
   "legal_actions": {
     "edit_cells": false,
@@ -119,6 +179,8 @@
     "stop_after_current": false,
     "return_to_editing": false,
     "start_new_batch": false,
+    "show_recording_mask": false,
+    "clear_recording_mask": false,
     "resume_run": true
   }
 }

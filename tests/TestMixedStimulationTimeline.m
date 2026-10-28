@@ -56,7 +56,8 @@ classdef TestMixedStimulationTimeline < matlab.unittest.TestCase
             [configured,wfm,summary]= ...
                 adaptive_optopatch.build_luminos_mixed_waveform_config( ...
                 props,ambient,protocol,"TwoPhotonWaveforms",wave, ...
-                "DmdSequencePlan",plan);
+                "DmdSequencePlan",plan, ...
+                "OnePhotonProfile",AoFixtures.onePhotonProfile());
             testCase.verifyTrue(summary.has_mixed_sources);
             testCase.verifyEqual(summary.onephoton_event_count,1);
             testCase.verifyEqual(summary.twophoton_event_count,1);
@@ -85,10 +86,11 @@ classdef TestMixedStimulationTimeline < matlab.unittest.TestCase
             props=active_props(); ambient=empty_wfm();
             plan=struct("dmd_trigger_s",0.1,"unique_camera_masks",false(1));
             [oldProps,old]=adaptive_optopatch.build_luminos_1p_waveform_config( ...
-                props,ambient,protocol,adaptive_optopatch.virtual_upright_1p_profile(), ...
+                props,ambient,protocol,AoFixtures.onePhotonProfile(), ...
                 "DmdSequencePlan",plan);
             [newProps,new]=adaptive_optopatch.build_luminos_mixed_waveform_config( ...
-                props,ambient,protocol,"DmdSequencePlan",plan);
+                props,ambient,protocol,"DmdSequencePlan",plan, ...
+                "OnePhotonProfile",AoFixtures.onePhotonProfile());
             verify_same_outputs(testCase,oldProps,old,newProps,new);
         end
 
@@ -104,7 +106,8 @@ classdef TestMixedStimulationTimeline < matlab.unittest.TestCase
             [oldProps,old]=adaptive_optopatch.build_luminos_2p_waveform_config( ...
                 props,ambient,wave);
             [newProps,new]=adaptive_optopatch.build_luminos_mixed_waveform_config( ...
-                props,ambient,protocol,"TwoPhotonWaveforms",wave);
+                props,ambient,protocol,"TwoPhotonWaveforms",wave, ...
+                "OnePhotonProfile",AoFixtures.onePhotonProfile());
             verify_same_outputs(testCase,oldProps,old,newProps,new);
         end
     end
@@ -126,10 +129,25 @@ value=struct("ao",[],"do",[],"ai",[],"di",[],"ctri",[], ...
 end
 
 function verify_same_outputs(testCase,oldProps,old,newProps,new)
+% The parity these tests guard is over the STIMULATION outputs: that the
+% mixed builder emits the same mod488, DMD trigger, galvo and Pockels
+% samples the hardened single-modality builder did.
+%
+% The orange recording terminal is excluded, and that is not a weakening.
+% build_luminos_1p_waveform_config is a frozen reference of how AO built a
+% run when it inherited the operator's Waveforms protocol, and the whole
+% point of this change is that the mixed builder no longer does - it
+% installs its own mod594 constant where the old one left whatever was
+% there. A terminal only one of the two builders is supposed to drive
+% cannot be a parity assertion about either.
 manifest=adaptive_optopatch.virtual_upright_stimulation_manifest();
+orange=adaptive_optopatch.canonical_terminal( ...
+    [manifest.recording_illumination.terminal],manifest.alias_list);
 for subsystem=["ao","do"]
     a=adaptive_optopatch.compile_output_samples(oldProps,old.(subsystem),manifest.alias_list);
     b=adaptive_optopatch.compile_output_samples(newProps,new.(subsystem),manifest.alias_list);
+    a=a(~ismember(string({a.canonical_terminal}),orange));
+    b=b(~ismember(string({b.canonical_terminal}),orange));
     [~,ia]=sort(string({a.canonical_terminal})); [~,ib]=sort(string({b.canonical_terminal}));
     testCase.verifyEqual(string({a(ia).canonical_terminal}),string({b(ib).canonical_terminal}));
     for k=1:numel(ia), testCase.verifyEqual(a(ia(k)).samples,b(ib(k)).samples); end

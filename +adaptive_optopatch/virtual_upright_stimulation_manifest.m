@@ -118,20 +118,53 @@ manifest.outputs=[ ...
         "Chameleon scan mirror Y command. Suppressed during 1P, as galvo X is.")];
 
 % ---------------------------------------------------------------------
-% Non-stimulation infrastructure AO deliberately inherits
+% Recording illumination AO owns during an acquisition
 % ---------------------------------------------------------------------
-% AO does not clear the operator's Waveforms configuration: it still runs
-% inside a Luminos acquisition and still depends on the operator's imaging
-% illumination. These are the terminals a waveform is EXPECTED on, with the
-% reason it is expected, so that finding one there is not a surprise and
-% finding a waveform anywhere else still is.
-manifest.inherited=[ ...
-    inherited("orange_modulator","mod594","Dev1/ao1","mod594","ao", ...
-        ["594 nm recording illumination. AO records voltage with the " ...
-         "operator's own orange imaging configuration and never commands " ...
-         "it; its waveform is part of the acquisition AO was asked to run."]); ...
-    inherited("orange_shutter","shutter594","Dev1/port0/line1","shutter594","do", ...
-        "Mechanical 594 nm shutter, gated with mod594 by the operator.")];
+% NOT STIMULATION, and classified apart from the block above for that
+% reason: 594 nm is what the voltage indicator is read out with. It does not
+% drive the opsin and it is not part of any protocol's event table. What it
+% shares with the stimulation outputs is ownership - AO drives both for the
+% length of an acquisition - and accounting therefore applies the same
+% one-runtime-owner rules to it.
+%
+% These two were declared operator-owned and inherited until the acquisition
+% stopped inheriting the operator's Waveforms protocol. That classification
+% was honest while AO ran inside the operator's own imaging configuration;
+% once AO builds global_props itself there is no protocol to inherit a
+% mod594 record FROM, and a run that inherited nothing would record in the
+% dark. So AO installs its own constant at the Orange recording voltage.
+%
+% The neutral values are the rig's own declarations, read from the profile
+% like every other neutral here. Nothing in this package infers that zero is
+% safe - though for recording illumination zero is also simply dark, which
+% is the one case where the safe value and the off value coincide.
+manifest.recording_illumination=[ ...
+    recording("orange_modulator",oneP.orange_modulator.name, ...
+        oneP.orange_modulator.port,"mod594","ao", ...
+        double(oneP.orange_modulator.dark_v), ...
+        "virtual_upright_1p_profile.orange_modulator.dark_v", ...
+        owner("buffered","buffered"), ...
+        ["594 nm recording illumination. AO installs a constant at the " ...
+         "Orange recording voltage for the whole acquisition window. It " ...
+         "illuminates the preparation for readout and does not stimulate " ...
+         "it; the live-view orange level is a separate, operator-owned " ...
+         "on-demand write that AO restores afterwards."]); ...
+    recording("orange_shutter",oneP.orange_shutter.name, ...
+        oneP.orange_shutter.port,"shutter594","do", ...
+        double(oneP.orange_shutter.closed_state), ...
+        "virtual_upright_1p_profile.orange_shutter.closed_state", ...
+        owner("imperative","imperative"), ...
+        ["Mechanical 594 nm shutter. An NI_DAQ_Shutter is an on-demand " ...
+         "digital write, so the runner opens it before arming and closes " ...
+         "it after - exactly as it drives shutter488, and for the same " ...
+         "reason: a buffered record here would be a second runtime owner " ...
+         "of one line."])];
+
+% Nothing is inherited any more. The field is kept, and kept empty, because
+% account_stimulation_outputs reads it by name and because an empty list is
+% the statement that matters: there is no terminal on this rig whose
+% waveform AO expects somebody else to have configured.
+manifest.inherited=inherited_none();
 
 % ---------------------------------------------------------------------
 % Infrastructure Luminos itself adds at acquisition time
@@ -216,13 +249,31 @@ value=struct("one_photon",string(onePhoton),"two_photon",string(twoPhoton), ...
     "mixed",string(mixed));
 end
 
-function record=inherited(role,deviceName,terminal,aliases,kind,reason)
+function record=recording(role,deviceName,terminal,aliases,kind, ...
+        neutralValue,neutralSource,runtimeOwner,reason)
+%RECORDING An output AO owns for readout rather than for stimulation.
+%   Carries a neutral and a runtime owner like an ao_owned_stimulation
+%   entry, so the same accounting rules apply - one runtime owner per line,
+%   no duplicate records, no buffered record on an imperative line - while
+%   stimulation_capable stays false so nothing reads 594 nm as an
+%   optogenetic output.
 record=base_record(role,deviceName,terminal,aliases,kind,reason);
-record.classification="inherited_non_stimulation";
+record.classification="ao_owned_recording_illumination";
 record.stimulation_capable=false;
-record.neutral_value=[];
-record.neutral_source="";
-record.owner=owner("operator","operator");
+record.neutral_value=neutralValue;
+record.neutral_source=string(neutralSource);
+record.owner=runtimeOwner;
+end
+
+function records=inherited_none()
+%INHERITED_NONE An empty inherited list with the right shape.
+records=base_record("","","",strings(1,0),"","");
+records.classification="inherited_non_stimulation";
+records.stimulation_capable=false;
+records.neutral_value=[];
+records.neutral_source="";
+records.owner=owner("operator","operator");
+records(:)=[];
 end
 
 function record=infrastructure(role,deviceName,terminal,aliases,kind,reason)

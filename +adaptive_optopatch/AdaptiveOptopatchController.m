@@ -126,6 +126,12 @@ classdef AdaptiveOptopatchController < handle
         SnapshotChoiceCache = []
         %REFERENCECHOICECACHE The listing loadReferenceChoice resolves against.
         ReferenceChoiceCache = []
+        %RECORDINGMASKPREVIEW What DMD_Orange is currently showing, if anything.
+        %   Empty means no preview is projected. Holds the configuration
+        %   prepare_luminos_orange_mask returned and the DMD ownership
+        %   claim, so clearRecordingMask can release exactly what
+        %   showRecordingMask took.
+        RecordingMaskPreview = struct([])
     end
 
     methods
@@ -192,7 +198,112 @@ classdef AdaptiveOptopatchController < handle
             state.plan_readiness=controller.planReadiness(status,stale);
             state.plan_summary=summary;
             state.run_progress=controller.runProgress(summary,trials);
+            state.hardware_ownership=controller.hardwareOwnership();
+            state.recording_mask_preview=controller.recordingMaskPreviewState();
             state.legal_actions=controller.legalActions(status,trials);
+        end
+
+        function value=hardwareOwnership(controller)
+            %HARDWAREOWNERSHIP What AO controls, and what it takes from Luminos.
+            %   Answered by the controller rather than written into a
+            %   frontend, so the panel an operator reads cannot drift from
+            %   what the runner will actually do. Everything below is read
+            %   from the live rig profile and the live camera; nothing is
+            %   a literal in an interface.
+            profile=controller.OnePhotonProfile;
+            cadence=adaptive_optopatch.camera_cadence_for_profile(profile);
+            value=struct("schema_version","1.0.0");
+            value.camera_name=string(profile.camera.name);
+            value.owns_camera_timing=cadence.declared;
+            value.frame_period_ms=cadence.frame_period_ms;
+            value.frame_rate_hz=cadence.frame_rate_hz;
+            value.acquisition_exposure_s=cadence.acquisition_exposure_s;
+            value.frame_trigger_source=cadence.frame_trigger_source;
+            % owns_daq_timing is the same opt-in the resolver and the
+            % runner read: a rig whose profile declares no acquisition rate
+            % still takes its timing from the Waveforms tab, and the panel
+            % says so rather than showing a rate AO would not impose.
+            value.owns_daq_timing=isfield(profile.daq,"sample_rate_hz");
+            value.sample_rate_hz=NaN;
+            if value.owns_daq_timing
+                value.sample_rate_hz=double(profile.daq.sample_rate_hz);
+            end
+            value.clock_source=string(profile.daq.default_clock);
+            value.daq_master=logical(profile.daq.requires_self_trigger);
+            value.start_triggers=reshape(string(profile.daq.default_trigger),1,[]);
+            value.clock_bridge=reshape(string(profile.daq.clock_bridge),1,[]);
+            value.owns_orange_illumination=isfield(profile,"orange_modulator");
+            value.orange_modulator_name="";
+            value.orange_minimum_v=NaN;
+            value.orange_maximum_v=NaN;
+            if value.owns_orange_illumination
+                value.orange_modulator_name=string(profile.orange_modulator.name);
+                value.orange_minimum_v=double(profile.orange_modulator.minimum_v);
+                value.orange_maximum_v=double(profile.orange_modulator.maximum_v);
+            end
+            % THE INHERITED HALF. The live camera's ROI as Luminos reports
+            % it - [left width top height] on the sensor, which is the
+            % ordering Camera.roiJS and Camera.Get_ROI use - plus the
+            % binning, because the two together are what the reference
+            % geometry is expressed in. Read from the device, so the panel
+            % shows what is actually selected rather than what was selected
+            % when the FOV was loaded.
+            value.camera_roi=double.empty(1,0);
+            value.camera_roi_order=["left","width","top","height"];
+            value.camera_bin=NaN;
+            value.camera_state_readable=false;
+            try
+                camera=controller.voltageCameraDevice();
+                value.camera_roi=reshape(double(camera.ROI),1,[]);
+                value.camera_bin=double(camera.bin);
+                value.camera_state_readable=true;
+            catch
+            end
+            value.requires_waveforms_protocol=~value.owns_daq_timing;
+            value.notes=[ ...
+                "Adaptive Optopatch controls acquisition timing, " + ...
+                    "synchronized DAQ waveforms, stimulation outputs, DMD " + ...
+                    "patterns and orange recording illumination during " + ...
+                    "acquisition."; ...
+                "Inherited from Luminos: the current camera ROI/FOV and " + ...
+                    "the active spatial calibrations."; ...
+                "Choose the ROI/FOV in the Camera tab. No Waveforms " + ...
+                    "protocol needs to be loaded."];
+        end
+
+        function value=recordingMaskPreviewState(controller)
+            %RECORDINGMASKPREVIEWSTATE Whether a mask is projected, and of what.
+            %   Deliberately small, and deliberately carries no mask image:
+            %   the operator looks at the projection through the live
+            %   camera, which is the whole point of it, so a copy of the
+            %   pattern on the wire would be a second rendering of
+            %   something they are already looking at.
+            preview=controller.RecordingMaskPreview;
+            value=struct("schema_version","1.0.0","active",false, ...
+                "dmd_name","","recording_cell_ids",strings(0,1), ...
+                "recording_cell_count",0,"shown_at","", ...
+                "applies_recording_voltage",false);
+            if isempty(preview), return; end
+            value.active=true;
+            value.dmd_name=preview.dmd_name;
+            value.recording_cell_ids=reshape(string(preview.recording_cell_ids),[],1);
+            value.recording_cell_count=double(preview.recording_cell_count);
+            value.shown_at=preview.shown_at;
+        end
+
+        function camera=voltageCameraDevice(controller)
+            %VOLTAGECAMERADEVICE The live voltage camera, by its declared serial.
+            %   The same identification resolve_luminos_1p_hardware makes,
+            %   so the ROI the panel reports is the ROI the acquisition
+            %   will record through.
+            cameras=controller.LuminosApp.getDevice("Camera");
+            wanted=string(controller.OnePhotonProfile.camera.serial);
+            for k=1:numel(cameras)
+                serial=strip(erase(string(cameras(k).cam_id),"S/N: "));
+                if serial==wanted, camera=cameras(k); return; end
+            end
+            error("adaptive_optopatch:VoltageCameraNotFound", ...
+                "Voltage camera serial %s is not present in the live rig.",wanted);
         end
 
         function value=lifecycle(controller)
@@ -257,6 +368,15 @@ classdef AdaptiveOptopatchController < handle
                     ~controller.StopRequested, ...
                 "return_to_editing",controller.returnToEditingEnabled(), ...
                 "start_new_batch",controller.startNewBatchEnabled(trials), ...
+                ... % The recording-mask preview needs a field of view and
+                ... % at least one soma, because the mask IS the somata;
+                ... % there is nothing to project before then. Clearing is
+                ... % offered only while something is projected, so the
+                ... % control reads as one button that changes its label
+                ... % rather than two that are sometimes both live.
+                "show_recording_mask",editing && hasFov && hasCells && ...
+                    isempty(controller.RecordingMaskPreview), ...
+                "clear_recording_mask",~isempty(controller.RecordingMaskPreview), ...
                 "resume_run",editing);
         end
 
@@ -368,6 +488,13 @@ classdef AdaptiveOptopatchController < handle
             end
             if isempty(controller.Protocol)
                 issues(end+1,1)="Load a pulse protocol.";
+            end
+            % Only on a rig that declares the orange path. Elsewhere the
+            % operator's own Waveforms protocol still supplies it and there
+            % is nothing for AO to ask for.
+            if isfield(controller.OnePhotonProfile,"orange_modulator") && ...
+                    ~isfinite(controller.PlanParameters.orange_recording_voltage_v)
+                issues(end+1,1)="Set the Orange recording voltage.";
             end
         end
 
@@ -934,6 +1061,14 @@ classdef AdaptiveOptopatchController < handle
             % whole reference image, on the very next read of the cell
             % table. That is the expensive work a checkbox used to drag
             % behind it.
+            %
+            % A PROJECTED RECORDING MASK IS, though. Record eligibility is
+            % exactly which cells the Orange mask contains, so a preview
+            % that survived this would be showing the operator one set of
+            % cells while they chose an illumination level for another.
+            % Cleared here rather than through markEditableChanged, which
+            % this deliberately does not call.
+            controller.clearRecordingMask();
             controller.bumpRevision();
         end
 
@@ -1031,7 +1166,10 @@ classdef AdaptiveOptopatchController < handle
             end
             controller.CellState=fovState;
             % Decisions only: see setCellEligibility for why the geometry
-            % cache is left alone.
+            % cache is left alone, and why a projected recording mask is
+            % not - a batch can change which cells are recorded just as a
+            % single checkbox can.
+            controller.clearRecordingMask();
             controller.bumpRevision();
         end
 
@@ -1130,12 +1268,85 @@ classdef AdaptiveOptopatchController < handle
         % ---------------------------------------------------------------
         % Editable plan parameters
         % ---------------------------------------------------------------
+        function report=showRecordingMask(controller)
+            %SHOWRECORDINGMASK Project the Orange recording mask for inspection.
+            %   The same mask, the same Orange-DMD calibration and the same
+            %   remapping an acquisition uses - prepare_luminos_orange_mask
+            %   with the live target bundle - so what the operator looks at
+            %   through the live camera IS what will be recorded through.
+            %   A preview drawn any other way would be a drawing of the
+            %   recording rather than the recording's own geometry.
+            %
+            %   IT APPLIES NO POWER. mod594 is not touched, the 594 shutter
+            %   is not touched, and the Orange recording voltage is not
+            %   read. Brightness while previewing stays entirely with the
+            %   ordinary Luminos orange control, which is the point: the
+            %   operator tunes that against the live camera and then types
+            %   what they chose into AO, which applies it only while
+            %   acquiring. A preview that applied AO's own level would be
+            %   showing them the answer instead of letting them find it.
+            controller.assertNotRunning("Showing the recording mask");
+            if isempty(controller.ReferenceImage)
+                error("adaptive_optopatch:NoReferenceForRecordingMask", ...
+                    "Load a reference FOV before showing the recording mask.");
+            end
+            if isempty(controller.FovGeometry.polygons)
+                error("adaptive_optopatch:NoTargetsForRecordingMask", ...
+                    "Draw at least one soma before showing the recording mask.");
+            end
+            % Replaces whatever is up, rather than stacking a second claim.
+            controller.clearRecordingMask();
+            [~,targets]=controller.buildSpatialArtifacts();
+            ownership=adaptive_optopatch.claim_dmd_pattern_ownership( ...
+                controller.orangeDmdDevice());
+            try
+                configuration=adaptive_optopatch.prepare_luminos_orange_mask( ...
+                    controller.LuminosApp,targets,"DryRun",false, ...
+                    "Profile",controller.OnePhotonProfile);
+            catch exception
+                % An error must not leave the device claimed and showing
+                % half a pattern. Released first, then blanked, then the
+                % original exception is raised: cleanup never replaces the
+                % message that says what went wrong.
+                controller.releaseRecordingMaskDevice(ownership);
+                rethrow(exception)
+            end
+            controller.RecordingMaskPreview=struct( ...
+                "schema_version","1.0.0", ...
+                "shown_at",string(datetime("now","TimeZone","local")), ...
+                "dmd_name",configuration.dmd_name, ...
+                "recording_cell_ids",configuration.recording_cell_ids, ...
+                "recording_cell_count",configuration.recording_cell_count, ...
+                "orange_expansion_pixels",configuration.orange_expansion_pixels, ...
+                "calibration_identity",configuration.calibration_identity, ...
+                "owned_pattern_fingerprint",configuration.owned_pattern_fingerprint, ...
+                "ownership",ownership);
+            report=controller.RecordingMaskPreview;
+            controller.setStatus(sprintf( ...
+                "Recording mask shown on %s for %d cell(s). Tune the orange " + ...
+                "level with the ordinary Luminos control, then enter it as " + ...
+                "the Orange recording voltage.", ...
+                configuration.dmd_name,configuration.recording_cell_count));
+            controller.bumpRevision();
+        end
+
+        function clearRecordingMask(controller)
+            %CLEARRECORDINGMASK Blank DMD_Orange and release AO's claim on it.
+            %   Safe to call when nothing is projected, which is what lets
+            %   every path that invalidates a preview call it unconditionally.
+            if isempty(controller.RecordingMaskPreview), return; end
+            preview=controller.RecordingMaskPreview;
+            controller.RecordingMaskPreview=struct([]);
+            controller.releaseRecordingMaskDevice(preview.ownership);
+        end
+
         function setPlanParameter(controller,name,value)
             %SETPLANPARAMETER Update one canonical editable plan value.
             name=plan_parameter_name(name);
             controller.assertNotRunning("Changing plan parameters");
             controller.PlanParameters.(name)=coerce_plan_value(name,value);
-            controller.markEditableChanged();
+            controller.markEditableChanged("InvalidatesRecordingMask", ...
+                name~="orange_recording_voltage_v");
             controller.bumpRevision();
         end
 
@@ -1835,8 +2046,10 @@ classdef AdaptiveOptopatchController < handle
                             sequencePlan=adaptive_optopatch.build_dmd_sequence_plan( ...
                                 resolved,plan.targets,"HoldPatternUntilTrigger", ...
                                 controller.OnePhotonProfile.rig_name=="Spinning_Upright", ...
-                                "SampleRateHz",double(oneHardware.daq.global_props.rate), ...
-                                "CameraFramePeriodS",adaptive_optopatch.daq_camera_frame_period_s( ...
+                                "SampleRateHz",planned_sample_rate_hz( ...
+                                    controller.OnePhotonProfile,oneHardware), ...
+                                "CameraFramePeriodS",planned_frame_period_s( ...
+                                    controller.OnePhotonProfile, ...
                                     oneHardware.voltage_camera));
                             % Capacity is a live-device property. Validate it
                             % during Update Plan, before Run can upload or arm
@@ -1851,14 +2064,32 @@ classdef AdaptiveOptopatchController < handle
                         target=plan.targets.targets(index(1));
                         waveforms=adaptive_optopatch.build_2p_trial_waveforms( ...
                             resolved,target,plan_targeting_transform(plan), ...
-                            "SampleRateHz",double(twoHardware.daq.global_props.rate), ...
+                            "SampleRateHz",planned_sample_rate_hz( ...
+                                controller.OnePhotonProfile,twoHardware), ...
                             "MaximumVelocityVPerS",parameters.maximum_velocity_v_per_s, ...
                             "MaximumAccelerationVPerS2",parameters.maximum_acceleration_v_per_s2);
                     end
+                    % Preflight measures the configuration the RUNNER will
+                    % install, so it builds the same profile-derived timing
+                    % rather than reading whatever the live DAQ is carrying.
+                    plannedProps=hardware.daq.global_props;
+                    % hardware is the 2P struct on a pure-2P plan, and that
+                    % resolver reports no ownership flag of its own, so the
+                    % profile is asked directly rather than the struct.
+                    if isfield(controller.OnePhotonProfile.daq,"sample_rate_hz")
+                        plannedProps=adaptive_optopatch.build_luminos_global_props( ...
+                            controller.OnePhotonProfile, ...
+                            resolved.acquisition_duration_s);
+                    end
+                    % With the Orange recording voltage this plan carries,
+                    % so preflight refuses an unset or out-of-range one
+                    % here rather than at arming time.
+                    plannedProfile=profile_with_orange_voltage( ...
+                        controller.OnePhotonProfile,parameters);
                     [globalProps,wfmData]=adaptive_optopatch.build_luminos_mixed_waveform_config( ...
-                        hardware.daq.global_props,hardware.daq.wfm_data,resolved, ...
+                        plannedProps,hardware.daq.wfm_data,resolved, ...
                         "DmdSequencePlan",sequencePlan,"TwoPhotonWaveforms",waveforms, ...
-                        "OnePhotonProfile",controller.OnePhotonProfile, ...
+                        "OnePhotonProfile",plannedProfile, ...
                         "Manifest",adaptive_optopatch.stimulation_manifest_for_profile( ...
                             controller.OnePhotonProfile));
                     if any(oneRows)&&any(twoRows), modality="mixed";
@@ -1874,9 +2105,20 @@ classdef AdaptiveOptopatchController < handle
                     if controller.OnePhotonProfile.rig_name=="Spinning_Upright"
                         onlyCameraIndex=hardware.voltage_camera_index;
                     end
-                    preflight_camera_frames(hardware.cameras,globalProps.total_time, ...
-                        any(twoRows)&&parameters.allow_camera_rate_override, ...
-                        onlyCameraIndex);
+                    % Skipped entirely when AO owns the cadence. This check
+                    % exists to prove the LIVE camera can be sized for the
+                    % acquisition, and it refuses a camera that is neither
+                    % DAQ-triggered nor able to size itself - which is now
+                    % a state AO corrects at arming time rather than a
+                    % reason to refuse the plan. Leaving it in would have
+                    % made "the Camera tab is free-running" a blocker again
+                    % by a different route.
+                    if ~adaptive_optopatch.camera_cadence_for_profile( ...
+                            controller.OnePhotonProfile).declared
+                        preflight_camera_frames(hardware.cameras,globalProps.total_time, ...
+                            any(twoRows)&&parameters.allow_camera_rate_override, ...
+                            onlyCameraIndex);
+                    end
                 end
             end
             issues=unique(issues(strlength(issues)>0),"stable");
@@ -2125,6 +2367,14 @@ classdef AdaptiveOptopatchController < handle
             %   controller, so a direct endpoint call cannot do what a
             %   greyed-out button will not.
             controller.assertRunnable();
+            % THE PREVIEW GOES BEFORE THE RUN TAKES THE DEVICE. A projected
+            % recording mask holds a DMD ownership claim on DMD_Orange, and
+            % the runner claims both DMDs for itself; two live claims on
+            % one device is a state neither of them can release cleanly.
+            % Cleared here rather than inside the runner so that the claim
+            % the preview took is released by the code that took it, before
+            % any acquisition machinery starts.
+            controller.clearRecordingMask();
             % A completed plan is still a valid plan: with nothing changed,
             % Run means run it again. startNewBatch is the existing
             % transition for that - a sibling run folder from the same
@@ -2598,7 +2848,68 @@ classdef AdaptiveOptopatchController < handle
             end
         end
 
-        function markEditableChanged(controller)
+        function device=orangeDmdDevice(controller)
+            %ORANGEDMDDEVICE The recording DMD, resolved the way a run does.
+            profile=controller.OnePhotonProfile;
+            if ~isfield(profile,"orange_dmd")
+                error("adaptive_optopatch:OrangeDmdNotDeclared", ...
+                    "The active rig profile declares no Orange DMD.");
+            end
+            device=controller.LuminosApp.getDevice("DMD", ...
+                "name",profile.orange_dmd.name,"displayWarning",false);
+            if numel(device)~=1
+                error("adaptive_optopatch:RequiredDeviceMissing", ...
+                    "Expected one Luminos DMD named '%s', found %d.", ...
+                    profile.orange_dmd.name,numel(device));
+            end
+        end
+
+        function releaseRecordingMaskDevice(controller,ownership)
+            %RELEASERECORDINGMASKDEVICE Blank the preview and give the DMD back.
+            %   Blank BEFORE release, for the reason restore_1p_hardware
+            %   releases last: releasing restores the device's Write Stack
+            %   setting, and a generic stack could reload over the blank if
+            %   anything armed an acquisition in between.
+            %
+            %   Neither step may throw. This runs from error paths and from
+            %   every invalidation hook, and a DMD that refuses to blank
+            %   must not stop the claim being released or replace the
+            %   exception already propagating.
+            try
+                device=controller.orangeDmdDevice();
+                device.Target=adaptive_optopatch.blank_dmd_pattern(device);
+                device.Write_Static();
+            catch
+            end
+            try
+                adaptive_optopatch.release_dmd_pattern_ownership(ownership);
+            catch
+            end
+        end
+
+        function markEditableChanged(controller,options)
+            arguments
+                controller
+                % Whether this edit changes WHAT WOULD BE RECORDED. Almost
+                % every editable change does - a target selection, a soma
+                % edit, a spatial parameter, a loaded protocol - and a
+                % projected mask that outlived the geometry it was drawn
+                % from would be showing the operator the wrong cells while
+                % they chose an illumination level for them.
+                %
+                % The Orange recording voltage is the exception, and the
+                % reason this is a flag rather than an unconditional
+                % clear: it is a level AO applies during an acquisition
+                % and changes no geometry, so taking the mask down when
+                % the operator types it in would remove the mask at
+                % exactly the moment it is being used to choose that number.
+                options.InvalidatesRecordingMask (1,1) logical = true
+            end
+            % Cleared rather than redrawn: AO does not put light on the
+            % preparation that nobody just asked for.
+            if options.InvalidatesRecordingMask
+                controller.clearRecordingMask();
+            end
             % A frozen run (or one loaded via resumeRun) is authoritative
             % once it exists and is never mutated or discarded here:
             % editable edits made afterward apply only to a future run.
@@ -2666,6 +2977,10 @@ classdef AdaptiveOptopatchController < handle
             %   each caller does exactly one of each, so a FOV replacement
             %   is one externally visible transition rather than a cascade.
             %   Callers guarantee not-RUNNING before reaching here.
+            % Before the cells it was drawn from are forgotten. A recording
+            % mask projected for the old field of view is not a preview of
+            % anything this session can still do.
+            controller.clearRecordingMask();
             controller.ReferenceImage=[];
             controller.ReferenceInfo=struct([]);
             controller.ReferenceSourceKind="";
@@ -2864,7 +3179,12 @@ classdef AdaptiveOptopatchController < handle
                 "maximum_velocity_v_per_s",parameters.maximum_velocity_v_per_s, ...
                 "maximum_acceleration_v_per_s2",parameters.maximum_acceleration_v_per_s2, ...
                 "allow_calibration_extrapolation",parameters.allow_calibration_extrapolation, ...
-                "allow_camera_rate_override",parameters.allow_camera_rate_override);
+                "allow_camera_rate_override",parameters.allow_camera_rate_override, ...
+                ... % Frozen with the plan, and part of the staleness
+                ... % comparison: changing the orange level changes the
+                ... % recording, so a prepared plan must not be run with a
+                ... % value it was not prepared against.
+                "orange_recording_voltage_v",parameters.orange_recording_voltage_v);
         end
 
         function [plan,paths]=saveExecutionBatch( ...
@@ -2980,7 +3300,8 @@ classdef AdaptiveOptopatchController < handle
                 "OutputRoot",outputRoot,"Resume",true,"StopAfterTrial",count, ...
                 "ConfirmTrajectoryTest",true,"ConfirmLiveOutput",true, ...
                 "LaserPowerW",frozenControls.laser_power_w, ...
-                "OnePhotonProfile",controller.OnePhotonProfile, ...
+                "OnePhotonProfile",profile_with_orange_voltage( ...
+                    controller.OnePhotonProfile,frozenControls), ...
                 "MaximumVelocityVPerS",frozenControls.maximum_velocity_v_per_s, ...
                 "MaximumAccelerationVPerS2",frozenControls.maximum_acceleration_v_per_s2, ...
                 "AllowCalibrationExtrapolation",frozenControls.allow_calibration_extrapolation, ...
@@ -3503,6 +3824,13 @@ parameters=struct( ...
     "maximum_acceleration_v_per_s2",6e6, ...
     "allow_calibration_extrapolation",false, ...
     "allow_camera_rate_override",false, ...
+    ... % 594 nm recording illumination, in VOLTS on the rig's own
+    ... % modulator command - not mW and not mW/mm2, because nothing here
+    ... % applies an absolute calibration and a unit that implies one would
+    ... % be a lie. NaN until somebody chooses it: AO drives mod594 during
+    ... % its acquisitions and has no business inventing an illumination
+    ... % level, so the plan stays not_ready until it is set.
+    "orange_recording_voltage_v",NaN, ...
     "repeat_batch_count",1);
 end
 
@@ -3530,6 +3858,17 @@ switch name
         end
     case {"allow_calibration_extrapolation","allow_camera_rate_override"}
         value=logical(value);
+    case "orange_recording_voltage_v"
+        % The one plan parameter whose unset state is meaningful, so NaN
+        % is accepted here and refused by planBlockingIssues instead -
+        % which is what lets the interface show an empty field rather
+        % than a number nobody chose. The range is the rig's, read from
+        % the live profile by orange_recording_voltage at build time.
+        value=double(value);
+        if ~isscalar(value)
+            error("adaptive_optopatch:InvalidPlanParameter", ...
+                "%s must be a scalar voltage.",name);
+        end
     otherwise
         value=double(value);
         if ~isscalar(value) || ~isfinite(value)
@@ -3739,6 +4078,15 @@ controls.maximum_velocity_v_per_s=saved.maximum_velocity_v_per_s;
 controls.maximum_acceleration_v_per_s2=saved.maximum_acceleration_v_per_s2;
 controls.allow_calibration_extrapolation=saved.allow_calibration_extrapolation;
 controls.allow_camera_rate_override=saved.allow_camera_rate_override;
+% The orange recording level this plan was frozen with. A bundle written
+% before AO owned mod594 carries none, and NaN is the honest answer there:
+% orange_recording_voltage refuses it by name, which is a better outcome
+% than re-running an old plan at a level nobody chose for it.
+controls.orange_recording_voltage_v=NaN;
+if isfield(saved,"orange_recording_voltage_v")
+    controls.orange_recording_voltage_v= ...
+        double(saved.orange_recording_voltage_v);
+end
 % How many repeats one press of Run performs. Archived with the plan so the
 % summary and the progress count describe the plan rather than whatever the
 % editable field says now; a bundle written before this carried it reports
@@ -3747,6 +4095,47 @@ controls.repeat_batch_count=1;
 if isfield(saved,"repeat_batch_count")
     controls.repeat_batch_count=double(saved.repeat_batch_count);
 end
+end
+
+function profile=profile_with_orange_voltage(profile,parameters)
+%PROFILE_WITH_ORANGE_VOLTAGE The rig profile carrying this plan's orange level.
+%   The Orange recording voltage is an experimental choice, so it lives in
+%   the plan parameters and is frozen with the run - but every consumer of
+%   it reads the rig PROFILE, which is also what declares the modulator's
+%   name, port and range and what is already archived with each acquisition.
+%   Injecting it here keeps one reader (orange_recording_voltage) and makes
+%   the archived profile say what was actually driven.
+if ~isfield(profile,"orange_modulator"), return; end
+if ~isfield(parameters,"orange_recording_voltage_v"), return; end
+profile.orange_modulator.recording_v= ...
+    double(parameters.orange_recording_voltage_v);
+end
+
+function rate=planned_sample_rate_hz(profile,hardware)
+%PLANNED_SAMPLE_RATE_HZ The rate this acquisition WILL be quantised at.
+%   A rig AO owns the timing of uses the profile's rate; one that still
+%   inherits uses whatever the Waveforms tab is on, which is what its
+%   resolver already validated.
+if isfield(profile.daq,"sample_rate_hz")
+    rate=double(profile.daq.sample_rate_hz);
+    return
+end
+rate=double(hardware.daq.global_props.rate);
+end
+
+function period=planned_frame_period_s(profile,camera)
+%PLANNED_FRAME_PERIOD_S The frame period this acquisition WILL run at.
+%   On a rig whose profile declares the cadence, AO sets it at arming time,
+%   so the period a blanket state table must lock to is the declared one -
+%   not whatever the Camera tab happens to be showing while the plan is
+%   being updated. Rigs that still inherit their cadence read the live
+%   camera, exactly as before.
+cadence=adaptive_optopatch.camera_cadence_for_profile(profile);
+if cadence.declared
+    period=cadence.frame_period_ms/1000;
+    return
+end
+period=adaptive_optopatch.daq_camera_frame_period_s(camera);
 end
 
 function preflight_camera_frames(cameras,durationS,allowOverride,onlyCameraIndex)

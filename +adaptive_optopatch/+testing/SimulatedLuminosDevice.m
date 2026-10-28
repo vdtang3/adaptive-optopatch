@@ -19,6 +19,12 @@ classdef SimulatedLuminosDevice < handle
         frames_requested double = 1
         frametrigger_source string = "DAQ"
         daqtrig_period_ms double = 1
+        % The two exposure setpoints Luminos keeps, of which AO owns the
+        % acquisition one. Defaulted to a stream exposure far from any
+        % acquisition value so a test that checks the restore cannot pass
+        % by the two happening to coincide.
+        acquisition_exposuretime double = 0.15
+        stream_exposuretime double = 0.15
         maximum_frame_rate_hz double = 1200
         % Luminos device order is [width height]; Target is [rows columns].
         Dimensions double = [1920 1080]

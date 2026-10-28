@@ -596,6 +596,8 @@ classdef TestAdaptiveOptopatchReferenceChooser < matlab.unittest.TestCase
             % what a session that has not written a snap yet looks like.
             controller = adaptive_optopatch.AdaptiveOptopatchController( ...
                 "LuminosApp", simulatedLuminosApp());
+            controller.setPlanParameter("orange_recording_voltage_v", ...
+                AoFixtures.orangeRecordingVoltage());
             testCase.addTeardown(@() delete(controller));
 
             testCase.verifyEmpty(controller.snapshotChoices());
@@ -760,6 +762,8 @@ classdef TestAdaptiveOptopatchReferenceChooser < matlab.unittest.TestCase
         function controller=emptyController(testCase)
             controller=adaptive_optopatch.AdaptiveOptopatchController( ...
                 "LuminosApp",simulatedLuminosApp());
+            controller.setPlanParameter("orange_recording_voltage_v", ...
+                AoFixtures.orangeRecordingVoltage());
             testCase.addTeardown(@()delete(controller));
         end
 
@@ -771,6 +775,8 @@ classdef TestAdaptiveOptopatchReferenceChooser < matlab.unittest.TestCase
             folder=testCase.snapshotFolder();
             controller=adaptive_optopatch.AdaptiveOptopatchController( ...
                 "LuminosApp",simulatedLuminosApp("CameraRoi",[974 160 984 128]));
+            controller.setPlanParameter("orange_recording_voltage_v", ...
+                AoFixtures.orangeRecordingVoltage());
             testCase.addTeardown(@()delete(controller));
             controller.SnapshotRoot=folder;
             controller.loadSnapshotChoice("120000full_cam-OrcaFusion");
@@ -786,6 +792,8 @@ classdef TestAdaptiveOptopatchReferenceChooser < matlab.unittest.TestCase
             %SNAPSHOTSESSION A session with a snapshot folder and no FOV.
             controller=adaptive_optopatch.AdaptiveOptopatchController( ...
                 "LuminosApp",simulatedLuminosApp());
+            controller.setPlanParameter("orange_recording_voltage_v", ...
+                AoFixtures.orangeRecordingVoltage());
             testCase.addTeardown(@()delete(controller));
             controller.SnapshotRoot=snapshotRoot;
         end

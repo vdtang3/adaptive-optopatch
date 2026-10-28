@@ -38,6 +38,30 @@ classdef AoFixtures
                 "spiral_radius_um",2,"spiral_density_points_per_volt",10);
         end
 
+        function profile=onePhotonProfile(varargin)
+            %ONEPHOTONPROFILE The VU profile with an Orange recording voltage set.
+            %   The rig profile ships with recording_v = NaN, because AO
+            %   drives mod594 during its acquisitions and will not invent an
+            %   illumination level for somebody's slice. Every test that
+            %   builds a waveform or runs a manifest therefore has to say
+            %   what level it expects, and this is where that one value
+            %   lives so the suites agree about it.
+            %
+            %   0.42 V is arbitrary and deliberately not 0, 1 or 5: a test
+            %   asserting the installed constant cannot pass against a
+            %   dark line, a stray logical true, or a rail.
+            profile=adaptive_optopatch.virtual_upright_1p_profile();
+            profile.orange_modulator.recording_v=AoFixtures.orangeRecordingVoltage();
+            for k=1:2:numel(varargin)
+                profile.(varargin{k})=varargin{k+1};
+            end
+        end
+
+        function value=orangeRecordingVoltage()
+            %ORANGERECORDINGVOLTAGE The level the suites expect on mod594.
+            value=0.42;
+        end
+
         function protocol=resolvedProtocol(definition,mode)
             %RESOLVEDPROTOCOL Resolve a definition against a single-target FOV.
             %   Every non-null event is forced to the requested source and only
@@ -202,6 +226,8 @@ classdef AoFixtures
             controller=adaptive_optopatch.AdaptiveOptopatchController( ...
                 "LuminosApp",simulatedLuminosApp( ...
                     "CameraRoi",[974 columns 984 rows]));
+            controller.setPlanParameter("orange_recording_voltage_v", ...
+                AoFixtures.orangeRecordingVoltage());
             testCase.addTeardown(@()delete(controller));
             controller.SnapshotRoot=folder;
             controller.loadSnapshotChoice("120000preview_cam-OrcaFusion");

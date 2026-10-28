@@ -76,6 +76,42 @@ wfmData.do=adaptive_optopatch.remove_output_records(wfmData.do, ...
     [one.shutter.name one.shutter.port "AdaptiveOptopatch DMD trigger" ...
      one.dmd.trigger_alias one.dmd.trigger_port],aliases);
 
+% ORANGE RECORDING ILLUMINATION, on a rig whose profile declares it.
+%
+% 594 nm is what the voltage indicator is read out with, not something the
+% protocol stimulates with, so it carries no events and takes no part in the
+% pulse arithmetic above: it is one constant held across the acquisition
+% window at the Orange recording voltage the operator chose against the live
+% view. That is a faithful replacement for what it displaces - a saved VU
+% Waveforms protocol drives mod594 with an awfm_constant and nothing else,
+% with no blanking, ramp or within-acquisition modulation to preserve.
+%
+% The ambient record goes first, every spelling of it, for the same reason
+% the mod488 one does: Luminos COMBINES two records that resolve to one
+% terminal, so leaving the operator's constant beside AO's would record at
+% the sum of two voltages. shutter594 is cleared from the buffer entirely
+% rather than replaced, because the runner opens and closes it imperatively
+% and one line cannot have two runtime owners.
+orangeSummary=struct("owned",false);
+if isfield(one,"orange_modulator")
+    wfmData.ao=adaptive_optopatch.remove_output_records(wfmData.ao, ...
+        [one.orange_modulator.name one.orange_modulator.port],aliases);
+    level=adaptive_optopatch.orange_recording_voltage(one);
+    wfmData.ao=append_record(wfmData.ao,constant_record( ...
+        one.orange_modulator.name,one.orange_modulator.name,level));
+    orangeSummary=struct("owned",true, ...
+        "modulator_name",string(one.orange_modulator.name), ...
+        "modulator_port",string(one.orange_modulator.port), ...
+        "recording_voltage_v",level, ...
+        "waveform","constant", ...
+        "duration_s",duration, ...
+        "shutter_runtime_owner","imperative");
+end
+if isfield(one,"orange_shutter")
+    wfmData.do=adaptive_optopatch.remove_output_records(wfmData.do, ...
+        [one.orange_shutter.name one.orange_shutter.port],aliases);
+end
+
 % A blanket-depolarization plan carries its own sample-exact state table,
 % and both Blue outputs are expanded from it instead of from the pulse list.
 blanketPlan=~isempty(options.DmdSequencePlan) && ...
@@ -152,6 +188,7 @@ summary=struct("schema_version","1.0.0","sample_rate_hz",rate, ...
         string(ternary(has1p||blanketPlan,"imperative","buffered")), ...
     "script_owner",adaptive_optopatch.script_owner_tag());
 summary.auxiliary_input=auxiliaryInput;
+summary.orange_recording_illumination=orangeSummary;
 if blanketPlan
     summary.blanket_depolarization=blanketSummary;
     summary.pulses=describe_blanket_delivery(summary.pulses, ...

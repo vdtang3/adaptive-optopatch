@@ -114,7 +114,8 @@ classdef TestWholeFovRamp < matlab.unittest.TestCase
             sim=adaptive_optopatch.testing.make_simulated_luminos("SimulationOutputRoot",outputRoot, ...
                 "CameraRoi",targets.reference_camera.roi);
             run=adaptive_optopatch.run_1p_manifest(manifest,targets,sim, ...
-                "ConfirmLiveOutput",true,"ShutterSettleTimeS",0,"OutputDirectory",outputRoot);
+                "ConfirmLiveOutput",true,"ShutterSettleTimeS",0,"OutputDirectory",outputRoot, ...
+                "Profile",AoFixtures.onePhotonProfile())
             t.verifyEqual(run.trials.acquisition_status,"completed");
             t.verifyNumElements(sim.AcquisitionHistory,1);
             dmd=sim.getDevice("DMD","name","DMD_Blue");

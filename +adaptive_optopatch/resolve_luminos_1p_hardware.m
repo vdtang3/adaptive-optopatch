@@ -157,30 +157,33 @@ end
 function device=require_device(app,type,name)
 device=app.getDevice(type,"name",name,"displayWarning",false);
 if ~isempty(device), return; end
-% THE SOLE DEVICE OF A TYPE IS THE ONE MEANT, which is the rule these
-% profiles were written against: Luminos's getDevice used to return the only
-% device of a type whatever name was asked for. The Virtual Upright's one
-% DAQ is named "DAQ Dev1 + Dev2" in the rig JSON, while the profile calls it
-% Dev1 - the NI device it owns and every port is addressed through - so the
-% named lookup never matched and never had to. Rig_Control_App.name_matches
+% THE SOLE DAQ IS THE ONE MEANT, which is the rule these profiles were
+% written against: Luminos's getDevice used to return the only device of a
+% type whatever name was asked for. The Virtual Upright's one DAQ is named
+% "DAQ Dev1 + Dev2" in the rig JSON, while the profile calls it Dev1 - the
+% NI device it owns and every port is addressed through - so the named
+% lookup never matched and never had to. Rig_Control_App.name_matches
 % (2026-09-24) made a named device match exactly, and this lookup started
 % failing on a rig nothing had changed about.
 %
-% The ambiguity that change removed cannot arise here: when exactly one
-% device of the type exists there is nothing to confuse it with. With two or
-% more, the name still has to match, so a rig with several DAQs is refused
-% rather than guessed at. The 2P resolver already takes the DAQ by type.
-candidates=app.getDevice(type,"displayWarning",false);
-if isscalar(candidates)
-    device=candidates;
-    return
+% THE DAQ AND NOTHING ELSE. This fallback was written for any type, which
+% was wrong in a way a rig would have found before a reader did: the VU has
+% TWO DMDs, so on a rig where DMD_Blue is absent or renamed the sole
+% remaining DMD is DMD_Orange - and AO would have programmed stimulation
+% patterns onto the recording DMD while reporting, in DMD_Blue's name, that
+% it was uncalibrated. A rig has exactly one DAQ by Luminos's own rule
+% (Waveform_Camera_Sync_Acquisition refuses more than one), so there is
+% genuinely nothing to confuse it with; every other type has to match by
+% name or be refused.
+if type=="DAQ"
+    candidates=app.getDevice(type,"displayWarning",false);
+    if isscalar(candidates)
+        device=candidates;
+        return
+    end
 end
 error("adaptive_optopatch:RequiredDeviceMissing", ...
     "Required Luminos device '%s' (%s) was not found.",name,type);
-if numel(device)~=1
-    error("adaptive_optopatch:AmbiguousDevice", ...
-        "Expected one Luminos device named '%s', found %d.",name,numel(device));
-end
 end
 
 function tf=is_identity_transform(tform)

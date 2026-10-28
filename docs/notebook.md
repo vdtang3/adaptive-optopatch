@@ -1,5 +1,78 @@
 # Engineering notebook
 
+## 2026-10-28 — Adaptive Optopatch owns its acquisition
+
+AO used to run *inside* the operator's own Luminos acquisition. It copied
+`DAQ.global_props` from whatever the Waveforms tab had been left on and
+overwrote `total_time` in it; it read the Camera tab's frame cadence and
+refused to proceed, or worse did not refuse and fell through to
+`Camera.AutoN`; and it inherited whatever record happened to sit on
+`mod594`, which is what actually illuminated the preparation. All three
+were configuration the experiment depended on and nothing in AO stated.
+
+The sample rate is the sharp case. Every 1P pulse boundary, the blanket
+state table and the 2P galvo waveforms are quantised to it, so a tab left
+at a different rate silently changed the experiment. AO now builds the
+whole six-field struct from the rig profile — `build_luminos_global_props`
+— and nothing about the run depends on another tab.
+
+**The gate that actually stopped people** was
+`resolve_luminos_1p_hardware`'s `NoActiveLuminosWaveform`, not the message
+in `build_luminos_1p_waveform_config` that reads as though it is. That
+builder is test-only; `build_luminos_mixed_waveform_config` is the live
+path for 1P, 2P and mixed alike. Worth knowing before reading either.
+
+**Ownership is opt-in per rig**, through two profile fields:
+`daq.sample_rate_hz` for the timing and the `camera.frame_*` trio for the
+cadence. The Virtual Upright declares both. The Spinning Upright declares
+neither and must not: its DAQ is genuinely clocked from the Orange camera's
+line sync (see the 2026-10-16 entry), so its real rate is a property of
+that camera rather than a number a profile can state, and its camera is
+counter-triggered through a different path. It keeps inheriting until
+somebody has checked it there.
+
+**`Internal Dev1`, not `Dev1/PFI0`.** The VU rig file offers the camera's
+own clock terminal as the Waveforms tab's default and `DESIGN.md` repeated
+it, but AO triggers that camera from the DAQ — clocking the DAQ from it
+would be circular. Both are 200 kHz, which is why the two descriptions were
+never visibly in conflict. `DESIGN.md` was describing the Spinning Upright
+and has been corrected.
+
+**594 nm is owned but not stimulation.** The manifest grew a second
+ownership group, `recording_illumination`, holding `mod594` (a buffered
+constant at the Orange recording voltage) and `shutter594` (imperative
+open/close, as `shutter488` has always been). `stimulation_capable` is
+false for both — 594 nm reads the indicator out, it does not drive the
+opsin — but accounting applies the same one-runtime-owner rules, because a
+second owner on the orange modulator corrupts a recording exactly as surely
+as one on `mod488` corrupts a stimulus. `manifest.inherited` is now empty
+on the VU: there is no terminal on this rig whose waveform AO expects
+somebody else to have configured.
+
+**The Orange recording voltage has no default, deliberately.** Zero records
+a black movie and looks like a configuration that worked; any other guess
+changes everybody's photobleaching silently. The plan stays `not_ready`
+until it is set, and `Show recording mask` exists so it can be chosen the
+only way it can be: by looking at the real mask through the live camera
+while turning the ordinary Luminos orange control. That preview applies no
+power, which is the whole point of it.
+
+**Cleanup is asymmetric on purpose.** The orange shutter is always CLOSED,
+never restored: cleanup runs when a run ended, failed, was aborted or was
+interrupted, and closed is right in all four. The orange LEVEL is restored,
+because AO drove a buffered constant onto that terminal and the channel
+keeps its last sample once the task releases it — without the restore the
+live view returns at the recording voltage.
+
+**One bug this found.** `require_device`'s sole-device fallback, added on
+2026-10-27 so the VU's one DAQ could be found under the rig's own name,
+applied to *any* device type. The VU has two DMDs, so on a rig where
+`DMD_Blue` was absent or renamed it returned `DMD_Orange` — AO would have
+programmed stimulation patterns onto the recording DMD while reporting, in
+DMD_Blue's name, that it was uncalibrated. It is now restricted to the DAQ,
+where Luminos's own rule guarantees there is exactly one.
+
+
 ## 2026-10-16 — Spinning Upright DAQ runs on the camera's line clock
 
 The 2026-10-15 cadence entry below measured the right spacing but the wrong

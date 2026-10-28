@@ -718,12 +718,16 @@ If the VU copy is not a Git checkout, record the commit identifier manually.
 Start Luminos normally. Before any light-producing test:
 
 - confirm both DAQs are present as the combined DAQ;
-- select `Internal Dev1`;
-- select self-trigger;
 - confirm the DAQ is idle;
-- load a waveform protocol that contains the Camera 1 acquisition settings;
 - use `Dev2/ai1` and `Dev2/ai2` in the active protocol when galvo feedback
   recording is desired.
+
+Selecting `Internal Dev1`, selecting self-trigger and loading a waveform
+protocol are no longer prerequisites for Adaptive Optopatch: it builds
+`DAQ.global_props` itself from the rig profile, at `200 kHz` on
+`Internal Dev1` with self-trigger and the declared `Dev1/PFI9` + `Dev2/PFI1`
+start triggers and `Dev1/PFI12` -> `Dev2/PFI0` clock bridge. The galvo
+calibration GUI below still uses whatever the Waveforms tab provides.
 
 Run the read-only checker:
 
@@ -1097,6 +1101,78 @@ factor, no crop origin, no camera transform — those are applied on this side
 already, and applying any of them a second time in a frontend would put every
 soma in the wrong place.
 
+## Hardware ownership
+
+Adaptive Optopatch owns the acquisition while one is running. Luminos supplies
+the spatial state it is worth inheriting, and nothing else.
+
+> **You do not need to load or configure a Waveforms protocol before running
+> Adaptive Optopatch.**
+
+> **Use the normal Camera tab to select the imaging ROI/FOV.**
+
+| Setting | Owner |
+| --- | --- |
+| Camera ROI / FOV | Luminos Camera tab |
+| Camera binning | Luminos Camera tab |
+| Camera frame trigger | Adaptive Optopatch |
+| Frame period | Adaptive Optopatch: `1.000 ms` |
+| Frame count | Adaptive Optopatch |
+| Camera acquisition exposure / readout mode | Adaptive Optopatch |
+| DAQ rate | Adaptive Optopatch: `200 kHz` |
+| DAQ clock, master and trigger topology | Adaptive Optopatch |
+| DAQ output waveforms | Adaptive Optopatch |
+| Blue DMD patterns | Adaptive Optopatch |
+| Orange DMD recording mask | Adaptive Optopatch |
+| Blue stimulation command | Adaptive Optopatch protocol |
+| Orange recording power during acquisition | Adaptive Optopatch |
+| Live-view orange power | ordinary Luminos control |
+| DMD calibrations | active Luminos calibration |
+| 2P galvo calibration | active or frozen AO calibration |
+
+### What AO sets on the camera, and puts back
+
+Four properties, for the length of an acquisition, captured before and
+restored on success, on error, on abort and on Ctrl-C:
+
+| Property | Acquisition value |
+| --- | --- |
+| `frametrigger_source` | `"DAQ"` |
+| `daqtrig_period_ms` | `1.000` |
+| `acquisition_exposuretime` | `0.001 s` |
+| `frames_requested` | `ceil(duration / 1 ms)` |
+
+`frametrigger_source = "DAQ"` is the whole readout-mode switch:
+`Camera.set.frametrigger_source` calls `Set_Readout_Mode(1)`, which is
+Hamamatsu external synchronous-triggered mode — one frame per trigger, each
+frame ending when the next arrives. Trigger polarity, trigger overlap, readout
+speed and acquisition mode have no MATLAB-side property and are not set.
+The exposure equals the frame period because in that mode
+`Camera.calculate_framerate` reads the exposure *as* the period between
+triggers.
+
+ROI, binning and field of view are never written.
+
+### Choosing the orange recording voltage
+
+AO drives `mod594` during its acquisitions, so it needs to be told what level
+to drive it at. There is no default: zero would record a black movie and any
+other guess would change photobleaching and signal-to-noise silently. The plan
+stays `not_ready`, saying `Set the Orange recording voltage.`, until one is
+set.
+
+To choose it:
+
+1. press **Show recording mask**, which projects the exact acquisition
+   recording mask onto `DMD_Orange` through the same Orange calibration a run
+   uses — and applies no power of its own;
+2. tune the ordinary Luminos orange control while watching the live camera;
+3. type the voltage you settled on into **Orange recording voltage**;
+4. press **Clear recording mask**.
+
+AO applies that value only while acquiring, and restores the live-view level
+afterwards. Editing the field never changes the live view.
+
 ## Calibration ownership
 
 ### 1P spatial calibration
@@ -1189,6 +1265,26 @@ vector against the declared neutral, not inferred from the record. The
 measured report is archived as `run.stimulation_accounting` and in each
 acquisition's `adaptive_optopatch_record`.
 
+The manifest declares AO ownership in two groups, because ownership and
+stimulation are different claims:
+
+- `manifest.outputs` — **AO-owned stimulation**: `mod488`, `shutter488`, the
+  Blue DMD advance trigger, and the 2P Pockels and galvo outputs.
+- `manifest.recording_illumination` — **AO-owned recording illumination**:
+  `mod594` (buffered constant at the Orange recording voltage) and
+  `shutter594` (imperative open/close). `stimulation_capable` is false for
+  both: 594 nm is how the voltage indicator is read out, not something a
+  protocol stimulates with. They are policed by the same one-runtime-owner
+  rules as the stimulation group, because a second owner on the orange
+  modulator corrupts a recording exactly as surely as one on `mod488`
+  corrupts a stimulus.
+
+`manifest.inherited` is now empty on the Virtual Upright. There is no terminal
+on this rig whose waveform AO expects somebody else to have configured. The
+Spinning Upright still inherits its `mod607` / `shutter607` pair, because its
+camera is counter-triggered through a different path and nothing has been
+checked on it.
+
 Two kinds of finding are kept apart:
 
 - **Violations** are what the code can prove unsafe — a record commanding
@@ -1208,8 +1304,9 @@ actual ambient configuration before the manifest is declared complete.
 
 ### Report-only commissioning check on the VU
 
-With Luminos running and a waveform protocol loaded, and with no
-acquisition armed:
+With Luminos running and no acquisition armed (a waveform protocol is no
+longer required, though an ambient survey is more informative with whatever
+the operator normally loads):
 
 ```matlab
 app = <the running Rig_Control_App>;

@@ -68,4 +68,86 @@ summary=struct("schema_version","4.0.0", ...
     "pulses_per_selected_cell",pulsesPerCell, ...
     "scheduler_types",unique(schedulerTypes,"stable"), ...
     "targets_resolved_at_update_plan",scheduledCount>0);
+% WHAT KIND OF STIMULATION THIS IS, said plainly, because "dithered" and
+% "not dithered" are the two things an operator most needs to tell apart
+% and protocol_type alone does not say it. A blanket protocol alternates
+% the DMD every millisecond under a duty-cycled background; everything else
+% holds a static mask while mod488 shapes the intensity.
+blanket=adaptive_optopatch.blanket_depolarization_spec(protocol);
+summary.blanket_dithered=blanket.enabled;
+summary.stimulation_style=ternary(blanket.enabled, ...
+    "blanket-dithered","standard (static mask)");
+summary.display_name=display_name(protocol);
+summary.command_amplitudes=command_amplitudes(acquisitions);
+% HOW MANY CELLS ONE ACQUISITION DRIVES, and through what pattern. A
+% simultaneous protocol lights the union of every Stim-enabled cell's mask
+% at once and holds it; a per-cell one runs the protocol again for each
+% cell through that cell's own mask; a multi-target one steps between them
+% within an acquisition. Those are different experiments and the policy
+% name alone does not say which.
+[summary.targeting,summary.pattern_style]=targeting_text(protocol);
+end
+
+function [targeting,pattern]=targeting_text(protocol)
+switch string(protocol.target_policy)
+    case "simultaneous_stimulation_enabled_cells"
+        targeting="all stim-enabled cells simultaneously";
+        pattern="static union mask";
+    case "each_stimulation_enabled_cell"
+        targeting="each stim-enabled cell in turn";
+        pattern="static per-cell mask";
+    case "multi_target_continuous"
+        targeting="scheduled across the stim-enabled cells";
+        pattern="stepped per-cell masks";
+    otherwise
+        targeting=string(protocol.target_policy);
+        pattern="";
+end
+end
+
+function value=display_name(protocol)
+%DISPLAY_NAME The protocol type as a person would say it.
+%   Only for types whose identifier does not already read as English. An
+%   unlisted type falls back to its own name rather than to a prettified
+%   guess, which would be a second naming convention.
+switch string(protocol.protocol_type)
+    case "four_pulse_ramp",              value="4 pulses + ramp";
+    case "blanket_round_robin",          value="Blanket round robin (dithered)";
+    case "blanket_recruitment_sweep",    value="Blanket recruitment sweep (dithered)";
+    case "blanket_population_target_sweep", value="Blanket population sweep (dithered)";
+    case "whole_fov_blue_ramp",          value="Whole-FOV Blue ramp";
+    case "single_cell_blue_ramp",        value="Single-cell Blue ramp";
+    case "connectivity_screen",          value="Connectivity screen";
+    otherwise,                           value=string(protocol.protocol_type);
+end
+end
+
+function value=command_amplitudes(acquisitions)
+%COMMAND_AMPLITUDES The distinct commanded levels, by waveform shape.
+%   mod488 command volts, which is the one amplitude unit this package
+%   has. NaN means the protocol defers to each cell's own Blue
+%   calibration, and is reported as such rather than dropped.
+value=struct("rectangular_v",[],"linear_ramp_end_v",[],"defers_to_cell",false);
+for k=1:numel(acquisitions)
+    events=acquisitions(k).events;
+    if isempty(events), continue; end
+    shapes=repmat("rectangular",height(events),1);
+    if ismember("command_waveform",string(events.Properties.VariableNames))
+        shapes=string(events.command_waveform);
+    end
+    levels=double(events.command_voltage_v);
+    lit=~logical(events.is_null);
+    value.defers_to_cell=value.defers_to_cell||any(isnan(levels(lit)));
+    value.rectangular_v=[value.rectangular_v; ...
+        levels(lit&shapes=="rectangular")];
+    value.linear_ramp_end_v=[value.linear_ramp_end_v; ...
+        levels(lit&shapes=="linear_ramp")];
+end
+value.rectangular_v=unique(value.rectangular_v(isfinite(value.rectangular_v)));
+value.linear_ramp_end_v=unique( ...
+    value.linear_ramp_end_v(isfinite(value.linear_ramp_end_v)));
+end
+
+function value=ternary(condition,whenTrue,whenFalse)
+if condition, value=whenTrue; else, value=whenFalse; end
 end

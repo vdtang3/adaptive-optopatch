@@ -131,9 +131,30 @@ if blanketPlan
     wfmData.do=append_record(wfmData.do,blanketTrigger);
 elseif has1p
     validate_one_photon(onePhoton,one,rate);
-    wfmData.ao=append_record(wfmData.ao,event_record(one.modulator.name, ...
-        one.modulator.name,onePhoton.onset_s,onePhoton.offset_s, ...
-        onePhoton.command_voltage_v,one.modulator.dark_v));
+    % ONE RECORD ON ONE TERMINAL, whichever shape mod488 has to take.
+    % Accounting refuses two records that resolve to the same physical
+    % terminal - Luminos combines them, so what reaches the wire is what
+    % neither of them says - which is why a protocol mixing rectangles and
+    % ramps cannot simply append a second record for the ramps. When any
+    % event asks for a shape luminos_event_waveform cannot draw, the whole
+    % mod488 trace is computed on the DAQ grid instead and installed as a
+    % single sampled record.
+    %
+    % Rectangles-only protocols keep the event record they have always
+    % had, byte for byte. That is deliberate: it is what
+    % TestMixedStimulationTimeline compares against the hardened builder,
+    % and a sampled approximation of a rectangle would be a change to
+    % every existing protocol in exchange for nothing.
+    if any_shaped_event(onePhoton)
+        wfmData.ao=append_record(wfmData.ao,sampled_record( ...
+            one.modulator.name,one.modulator.name,rate, ...
+            shaped_modulator_trace(onePhoton,rate,duration,one), ...
+            one.modulator.dark_v));
+    else
+        wfmData.ao=append_record(wfmData.ao,event_record(one.modulator.name, ...
+            one.modulator.name,onePhoton.onset_s,onePhoton.offset_s, ...
+            onePhoton.command_voltage_v,one.modulator.dark_v));
+    end
     wfmData.do=append_record(wfmData.do,dmd_record(options.DmdSequencePlan, ...
         one,manifest,rate,duration,onePhoton));
 else
@@ -357,6 +378,61 @@ pulses.target_illuminated_fraction= ...
 pulses.blanket_mod488_v=repmat(blanket.blanket_mod488_v,n,1);
 pulses.blanket_schedule=repmat(string(stateTable.schedule),n,1);
 pulses.segment_level_v=level;
+end
+
+function tf=any_shaped_event(pulses)
+%ANY_SHAPED_EVENT Does any pulse ask for something other than a rectangle?
+%   Absent column means every event is rectangular, so a protocol written
+%   before command_waveform existed is untouched by this.
+tf=false;
+if ~ismember("command_waveform",string(pulses.Properties.VariableNames))
+    return
+end
+tf=any(string(pulses.command_waveform)~="rectangular");
+end
+
+function values=shaped_modulator_trace(pulses,rate,duration,profile)
+%SHAPED_MODULATOR_TRACE The whole mod488 command, sample by sample.
+%   Built on the SAME grid Luminos evaluates waveforms on - sample k is at
+%   k/rate - and with the same half-open [onset, offset) ownership
+%   luminos_event_waveform uses, so a rectangle computed here lands on
+%   exactly the samples the event record would have lit.
+%
+%   Outside every event the trace sits at the rig's declared dark value,
+%   not at zero by assumption.
+total=round(rate*duration);
+values=repmat(double(profile.modulator.dark_v),total,1);
+shapes=repmat("rectangular",height(pulses),1);
+if ismember("command_waveform",string(pulses.Properties.VariableNames))
+    shapes=string(pulses.command_waveform);
+end
+for k=1:height(pulses)
+    first=ceil(pulses.onset_s(k)*rate-1e-9)+1;
+    last=ceil(pulses.offset_s(k)*rate-1e-9);
+    first=max(first,1); last=min(last,total);
+    if last<first, continue; end
+    n=last-first+1;
+    switch shapes(k)
+        case "rectangular"
+            values(first:last)=pulses.command_voltage_v(k);
+        case "linear_ramp"
+            % Zero on the first sample the event owns, the commanded
+            % amplitude on the last. A one-sample event is the endpoint,
+            % which is the only reading that keeps "reaches the endpoint"
+            % true without dividing by zero.
+            if n==1
+                values(first)=pulses.command_voltage_v(k);
+            else
+                values(first:last)=pulses.command_voltage_v(k)* ...
+                    (0:n-1)'/(n-1);
+            end
+        otherwise
+            error("adaptive_optopatch:UnknownCommandWaveform", ...
+                "Pulse %s asks for command_waveform '%s'; this builder " + ...
+                "knows 'rectangular' and 'linear_ramp'.", ...
+                string(pulses.pulse_id(k)),shapes(k));
+    end
+end
 end
 
 function record=event_record(name,port,onset,offset,values,dark)

@@ -186,6 +186,57 @@ targets at TRAIN granularity only; it never emits ROI1-P1, ROI2-P1, ROI1-P2,
 which would build a repeated millisecond-scale spike pairing between
 stimulated neurons.
 
+### 4 pulses + ramp
+
+An ordinary, non-dithered protocol: four 500 ms pulses with 500 ms gaps, then a
+1 s linear ramp.
+
+```matlab
+% pulse-protocols/create_four_pulse_ramp_protocol.m
+pulse_voltage_v = NaN;        % REQUIRED: the four squares, (0,5] V
+ramp_end_voltage_v = NaN;     % REQUIRED: where the ramp finishes, (0,5] V
+```
+
+**All Stim-enabled cells at once.** The Blue pattern is the pixelwise union
+of every enabled cell's adjusted mask, written once and held for the whole
+acquisition, and the pulse/ramp train runs once over all of them. Nothing
+sequences through cells. Both amplitudes are therefore global and both are
+required: one waveform drives a union of cells with different Blue
+calibrations, so there is no per-cell voltage for an unset one to defer to.
+
+Relative to the start of stimulation:
+
+| Window | What |
+| --- | --- |
+| 0.000–0.500 s | pulse 1 at `pulse_voltage_v` |
+| 0.500–1.000 s | dark |
+| 1.000–1.500 s | pulse 2 |
+| 1.500–2.000 s | dark |
+| 2.000–2.500 s | pulse 3 |
+| 2.500–3.000 s | dark |
+| 3.000–3.500 s | pulse 4 |
+| 3.500–4.000 s | dark |
+| 4.000–5.000 s | ramp, 0 V rising linearly to `ramp_end_voltage_v` |
+
+The 5 s above is the STIMULUS. The ACQUISITION also carries AO's usual
+`pre_delay_s` and `post_delay_s` (100 ms each by default), so it is 5.2 s —
+5200 camera frames at the 1 ms cadence AO imposes.
+
+**No blanket dithering.** The protocol carries no `blanket_depolarization`
+block, so there is no 20/80 cycle, no blanket mask, no millisecond DMD
+alternation and no target-onset guard. The Blue DMD holds that one static
+union mask for the whole acquisition, its advance line sits at its declared
+neutral throughout, and mod488 alone shapes the intensity.
+`TestFourPulseRampProtocol` asserts all of that, including that the blanket
+planner refuses to build a state table for it.
+
+The ramp is a continuous rise on mod488, which is a different thing from the
+whole-FOV and single-cell "ramps": those are series of short rectangular
+pulses at stepped voltages with dark gaps, i.e. ramps in the sense of a
+voltage SERIES. The event table says which it is with a `command_waveform`
+column (`rectangular` or `linear_ramp`); a protocol without that column is
+entirely rectangular, which is every protocol written before this one.
+
 Generators for Blue-mask titration, DMD diagnostics, mixed 1P/2P commissioning,
 and custom schedules are also in `pulse-protocols/`. Protocol schema 4 separates
 ROI-independent experiment definitions from fully resolved acquisitions. Target

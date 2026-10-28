@@ -1,5 +1,58 @@
 # Engineering notebook
 
+## 2026-10-28 — 4 pulses + ramp, and what a sampled waveform was doing
+
+A new ordinary non-dithered protocol: four 500 ms pulses with 500 ms gaps,
+then a 1 s linear ramp. Deliberately kept apart from blanket dithering -
+they share waveform primitives and nothing else, and the protocol carries
+no blanket block at all, which is what `TestFourPulseRampProtocol` asserts
+by watching the blanket planner refuse to build a state table for it.
+
+**All Stim-enabled cells at once.** The target policy is
+`simultaneous_stimulation_enabled_cells`, so resolution produces ONE
+acquisition whose Blue pattern is the union of every enabled cell's mask -
+the machinery the whole-FOV ramp already used - and the train runs once.
+Both amplitudes are consequently REQUIRED rather than deferrable: every
+other 1P protocol lets an unset voltage fall through to the target cell's
+own `selected_blue_voltage_v`, which works because every event names one
+cell. One waveform over a union has no per-cell voltage to fall back to,
+and picking one cell's would silently apply it to all of them.
+
+**"Ramp" already meant something else here.** `generate_whole_fov_ramp_protocol`
+and `generate_single_cell_ramp_protocol` are series of short rectangular
+pulses at stepped voltages with dark gaps between them - a ramp in the sense
+of a voltage SERIES, which is what a rheobase measurement wants. There was
+no continuous-ramp waveform anywhere in the package. Reusing the staircase
+would have meant a "1000 ms ramp" that returned to zero eight times, so this
+is a different thing and says so with an explicit `command_waveform` event
+column. A protocol without that column is entirely rectangular, which is
+every protocol written before this one.
+
+**One record on one terminal.** Accounting refuses two records resolving to
+the same physical terminal - Luminos combines them, so what reaches the wire
+is what neither says - so a protocol mixing rectangles and ramps cannot
+append a second mod488 record for the ramps. When any event asks for a shape
+`luminos_event_waveform` cannot draw, the whole mod488 trace is computed on
+the DAQ grid and installed as one `luminos_sampled_waveform` record.
+Rectangles-only protocols keep the event record they have always had, byte
+for byte, because that is what the hardened-builder parity test compares
+against and a sampled approximation of a rectangle would change every
+existing protocol in exchange for nothing.
+
+**And it found a real defect.** `luminos_sampled_waveform` mapped time to
+sample with `floor(t*rate)+1`. Luminos builds its time vector with
+`linspace(0,(n-1)/rate,n)`, which lands a good fraction of those values one
+ulp either side of the exact grid point - so that expression returned k for
+one sample and k+2 for the next, duplicating a sample and dropping its
+neighbour, for **43,116 of the 1,040,000 samples** of a 5.2 s acquisition at
+200 kHz. Four per cent. Nothing noticed because the only callers were the 2P
+galvo and Pockels paths, where one-sample jitter on a smooth trajectory looks
+like nothing at all; the ramp noticed because a monotonicity assertion is
+exactly the thing a duplicated sample breaks. Rounding maps every on-grid t
+to its own sample and is no worse off-grid. This changes 2P output too, for
+the better.
+
+
 ## 2026-10-28 — Adaptive Optopatch owns its acquisition
 
 AO used to run *inside* the operator's own Luminos acquisition. It copied
